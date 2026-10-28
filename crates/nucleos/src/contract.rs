@@ -656,3 +656,83 @@ impl ErrorCode {
         matches!(self, Self::Unavailable | Self::Timeout)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Kernel-facing types
+// ---------------------------------------------------------------------------
+
+/// Who is asking.
+///
+/// Travels as data. The kernel never authenticates, never verifies a signature, and never
+/// derives a tenant from a request field.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Principal {
+    /// The tenant this caller belongs to.
+    pub tenant: String,
+    /// The subject within it.
+    pub subject: String,
+}
+
+/// A tool, declared.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolSpec {
+    /// The name the model calls.
+    pub name: String,
+    /// What it does, in the model's words.
+    pub description: String,
+    /// A JSON Schema object, kept as text so the kernel never interprets it.
+    pub input_schema_json: String,
+}
+
+/// What a model can do.
+///
+/// Checked at `Start`, never discovered by trial: a model that silently ignores tools, or
+/// silently truncates a prompt, changes the answer without saying so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Capability {
+    /// Whether it accepts tool definitions and emits tool calls.
+    pub tools: bool,
+    /// Whether [`crate::adapter::Model::invoke`] streams, or returns one final delta.
+    pub streaming: bool,
+    /// Total context, prompt plus completion.
+    pub context_window: u32,
+    /// The largest completion the provider will produce.
+    pub max_output_tokens: u32,
+}
+
+/// How strongly a tool's execution is separated from the kernel.
+///
+/// Declared per tool source and enforced by whoever launches it. The kernel only refuses to
+/// migrate a session into a generation where it changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Isolation {
+    /// Trusted in-process code; nothing to enforce.
+    None,
+    /// A child process, confined by the OS.
+    Process,
+    /// A virtual machine or a wasm instance.
+    Vm,
+}
+
+/// A session's state, materialised at a point in its log.
+///
+/// `seq` is the event this snapshot already includes, so recovery is `load(snapshot)` then
+/// `events_since(snapshot.seq + 1)`. Two numbers that must agree, written down once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Snapshot {
+    /// The session it belongs to.
+    pub session: SessionId,
+    /// The last event folded in.
+    pub seq: u64,
+    /// The tool-source generation the session is pinned to.
+    pub generation: Generation,
+    /// Where the session was.
+    pub state: SessionState,
+    /// The conversation as of `seq`.
+    pub messages: Vec<Message>,
+    /// What it has spent.
+    pub usage: Usage,
+    /// Turns taken.
+    pub steps: u64,
+}

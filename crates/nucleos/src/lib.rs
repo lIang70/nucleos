@@ -21,11 +21,14 @@
 pub mod adapter;
 pub mod contract;
 pub mod engine;
+pub mod error;
 
 pub use contract::{
-    Budget, Content, Event, EventKind, Message, Part, PartKind, PermissionKind, PermissionOption,
-    Role, SessionId, SessionState, StopReason, ToolCall, ToolResult, Usage,
+    Budget, Capability, Content, Event, EventKind, Generation, Isolation, Message, Part, PartKind,
+    PermissionKind, PermissionOption, Principal, Role, SessionId, SessionState, Snapshot,
+    StopReason, ToolCall, ToolResult, ToolSpec, Usage,
 };
+pub use error::{Error, Result};
 
 /// The kernel's own version.
 ///

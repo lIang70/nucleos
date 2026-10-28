@@ -120,33 +120,47 @@ Every extension point is a trait. There are five; a sixth needs an argument.
 
 ```rust
 pub trait Model: Send + Sync {
-    fn capability(&self) -> Capability;   // tools? stream? context window?
-    fn invoke(&self, req: &ModelRequest) -> ModelStream;
+    fn capability(&self) -> Capability;                    // tools? stream? context window?
+    async fn invoke(&self, request: ModelRequest) -> Result<ModelStream>;
 }
 
 pub trait Tool: Send + Sync {
     fn spec(&self) -> ToolSpec;
-    async fn invoke(&self, args: Json, cx: &ToolCtx) -> ToolOutcome;
+    fn isolation(&self) -> Isolation;                      // default: none
+    async fn invoke(&self, args_json: &str, cx: &ToolCtx<'_>) -> ToolOutput;
 }
 
 pub trait Store: Send + Sync {
-    async fn append(&self, sid: SessionId, events: &[Event]) -> Result<()>;
-    async fn snapshot(&self, sid: SessionId) -> Result<Option<Snapshot>>;
-    async fn events_since(&self, sid: SessionId, seq: u64) -> Result<Vec<Event>>;
+    async fn append(&self, session: &SessionId, events: &[Event]) -> Result<()>;
+    async fn snapshot(&self, session: &SessionId) -> Result<Option<Snapshot>>;
+    async fn events_since(&self, session: &SessionId, seq: u64) -> Result<Vec<Event>>;
 }
 
 pub trait Policy: Send + Sync {
-    fn check(&self, call: &ToolCall, who: &Principal) -> Verdict;  // Allow | Deny | AskHuman
+    async fn check(&self, request: PolicyRequest<'_>) -> Verdict;   // Allow | Deny | AskHuman
 }
 
-pub trait Clock: Send + Sync { fn now(&self) -> Instant; }
+pub trait Clock: Send + Sync { fn now_unix_millis(&self) -> u64; }
 ```
 
-`Clock` exists so replay and budget tests are deterministic — wall-clock time is an input,
-not an ambient fact.
+Four of the five are `async`: the kernel is an I/O orchestrator, and a synchronous signature
+would push every implementor toward blocking a runtime worker.
+
+Three shapes are deliberate and easy to get wrong:
+
+- **`Tool::invoke` returns no `Result`.** A failed call is content with `is_error` set, because
+  the error text is what the model must read in order to recover. `Err` would leave the model
+  with a failure it cannot see.
+- **`Model::invoke` does return `Result`.** An error there means the call never started; an
+  error *inside* the stream means it started and then failed — which still costs money and
+  still has to be recorded.
+- **`Clock` reports unix milliseconds, not `Instant`.** Events carry unix milliseconds and
+  `Instant` can neither be serialised nor reconstructed, so a replay could not reproduce one.
+  Time is an input, not an ambient fact.
 
 `Tool`'s only production implementation wraps an MCP tool source (§7). The trait stays
-separate so the engine can be tested with a two-line fake.
+separate so the engine can be tested with a two-line fake, and `adapter::fake` ships those
+fakes because a fake only the kernel's tests can reach is a fake every host writes again.
 
 ## 5. Session state machine
 
