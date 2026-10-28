@@ -124,6 +124,20 @@ impl Kernel {
         self.drive(session, spec, routing, targets).await
     }
 
+    /// The events a session has recorded, from `from_seq` onward.
+    ///
+    /// The daemon's `Run` is a view of this: it replays, then ends. Resumption is the property
+    /// that makes a dropped connection harmless, and it needs nothing but the log.
+    pub async fn events(&self, id: &SessionId, from_seq: u64) -> Result<Vec<Event>> {
+        self.store.events_since(id, from_seq).await
+    }
+
+    /// The registered model names, sorted.
+    #[must_use]
+    pub fn models(&self) -> Vec<String> {
+        self.models.names()
+    }
+
     /// Pick up a parked or interrupted session and keep going.
     ///
     /// The spec is re-sent rather than remembered: a route is a deployment decision that may

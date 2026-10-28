@@ -13,6 +13,13 @@ categories = ["development-tools"]
 autotests = false
 
 [dependencies]
+prost = { workspace = true }
+prost-types = { workspace = true }
+tonic = { workspace = true }
+tonic-prost = { workspace = true }
+
+[build-dependencies]
+tonic-prost-build = { workspace = true }
 
 [lints]
 workspace = true
