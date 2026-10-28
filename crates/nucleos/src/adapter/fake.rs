@@ -353,6 +353,11 @@ impl Store for MemoryStore {
         Ok(state.snapshots.get(session.as_str()).cloned())
     }
 
+    async fn write_snapshot(&self, snapshot: Snapshot) -> Result<()> {
+        // Delegates so that the validation rule has exactly one implementation.
+        self.store_snapshot(snapshot)
+    }
+
     async fn events_since(&self, session: &SessionId, seq: u64) -> Result<Vec<Event>> {
         let state = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         Ok(state
@@ -369,9 +374,18 @@ impl Store for MemoryStore {
 }
 
 impl MemoryStore {
-    /// Record a snapshot. Not part of [`Store`]: only the engine writes one, and only at a
-    /// turn boundary.
-    pub fn write_snapshot(&self, snapshot: Snapshot) -> Result<()> {
+    /// Every event appended for a session. For assertions, not for the engine.
+    #[must_use]
+    pub fn recorded(&self, session: &SessionId) -> Vec<Event> {
+        let state = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        state
+            .events
+            .get(session.as_str())
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn store_snapshot(&self, snapshot: Snapshot) -> Result<()> {
         let mut state = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         let log_len = state
             .events
@@ -387,17 +401,6 @@ impl MemoryStore {
             .snapshots
             .insert(snapshot.session.as_str().to_owned(), snapshot);
         Ok(())
-    }
-
-    /// Every event appended for a session. For assertions, not for the engine.
-    #[must_use]
-    pub fn recorded(&self, session: &SessionId) -> Vec<Event> {
-        let state = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-        state
-            .events
-            .get(session.as_str())
-            .cloned()
-            .unwrap_or_default()
     }
 }
 

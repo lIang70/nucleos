@@ -21,6 +21,13 @@ pub trait Store: Send + Sync {
     /// The most recent snapshot, if one was ever written.
     async fn snapshot(&self, session: &SessionId) -> Result<Option<Snapshot>>;
 
+    /// Record a checkpoint.
+    ///
+    /// Part of the trait rather than of one backend: writing a snapshot is the kernel's
+    /// decision, and a store that cannot accept one makes "checkpoint only at a turn
+    /// boundary" unimplementable.
+    async fn write_snapshot(&self, snapshot: Snapshot) -> Result<()>;
+
     /// Events from `seq` onward, inclusive, oldest first.
     ///
     /// Inclusive is the only choice that makes `from_seq` in the ABI mean what it says: a

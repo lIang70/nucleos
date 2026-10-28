@@ -356,9 +356,10 @@ async fn a_snapshot_cannot_claim_more_than_the_log_holds() -> Result<()> {
         messages: Vec::new(),
         usage: Usage::default(),
         steps: 1,
+        pending: None,
     };
 
-    let error = store.write_snapshot(snapshot).unwrap_err();
+    let error = store.write_snapshot(snapshot).await.unwrap_err();
     assert_eq!(error.code(), ErrorCode::Invalid);
     Ok(())
 }
@@ -375,19 +376,22 @@ async fn a_valid_snapshot_round_trips() -> Result<()> {
             text: "hi".to_owned(),
         }))]),
     };
-    store.write_snapshot(Snapshot {
-        session: session.clone(),
-        seq: 0,
-        generation: nucleos::Generation(7),
-        state: SessionState::Done,
-        messages: vec![message.clone()],
-        usage: Usage {
-            input_tokens: 10,
-            output_tokens: 2,
-            micros_usd: Some(42),
-        },
-        steps: 1,
-    })?;
+    store
+        .write_snapshot(Snapshot {
+            session: session.clone(),
+            seq: 0,
+            generation: nucleos::Generation(7),
+            state: SessionState::Done,
+            messages: vec![message.clone()],
+            usage: Usage {
+                input_tokens: 10,
+                output_tokens: 2,
+                micros_usd: Some(42),
+            },
+            steps: 1,
+            pending: None,
+        })
+        .await?;
 
     let loaded = store.snapshot(&session).await?.unwrap();
     assert_eq!(loaded.seq, 0, "seq is the last event included");

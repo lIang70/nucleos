@@ -169,11 +169,15 @@ fakes because a fake only the kernel's tests can reach is a fake every host writ
 ## 5. Session state machine
 
 ```text
-Created → Running ─┬→ AwaitingTool  ─┐
-                   ├→ AwaitingHuman ─┤   (HITL is a state, not a callback)
-                   ├→ Cancelling ────┴→ Done | Failed | Cancelled
+Created → Running ─┬→ AwaitingTool ──→ AwaitingHuman   (a batch that needs a human)
+                   ├→ AwaitingHuman                    (HITL is a state, not a callback)
+                   ├→ Cancelling ───→ Done | Failed | Cancelled
                    └→ (turn boundary) Checkpoint
 ```
+
+A tool turn asks policy about the whole batch *before* running any of it, so a batch that needs
+a human parks with nothing executed — which is why the edge from `AwaitingTool` to
+`AwaitingHuman` exists.
 
 Three hard constraints:
 

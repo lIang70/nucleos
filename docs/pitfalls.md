@@ -252,3 +252,16 @@ availability poor. One owner, one ledger.
 
 **Failure it prevents.** A bill that does not match the attempts, and a "flaky" provider that
 was never actually retried.
+
+## 23. An attempt that produced content is never retried
+
+**Decision.** A retry or a fallback happens only when the failed attempt emitted nothing. Once
+a text or tool fragment has gone out, the turn fails instead.
+
+**Why.** The fragments are already in the event log, and the log is the record. A retry after a
+partial answer puts two half-answers in one turn's history, and no replay can tell which one the
+model was supposed to be continuing. The cost of a failed turn is one turn; the cost of a
+duplicated history is a transcript nobody can trust.
+
+**What it costs.** A flaky provider that drops mid-stream is not silently papered over. That is
+the point: the failure is visible, and the operator can see which provider dropped.

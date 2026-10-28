@@ -43,7 +43,9 @@ impl fmt::Display for SessionId {
 /// Generations are immutable snapshots of the declared sources. A session is pinned to
 /// one at start and may only move forward at a turn boundary, and only when the two
 /// generations are compatible.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 pub struct Generation(pub u64);
 
 // ---------------------------------------------------------------------------
@@ -492,14 +494,29 @@ pub enum EventKind {
         /// The provider's signature fragment, returned verbatim.
         signature: String,
     },
-    /// A tool call was issued.
+    /// A tool call began. Its arguments follow as [`EventKind::ToolCallArgs`].
     ToolCallStarted {
-        /// The call, as the model emitted it.
-        call: ToolCall,
+        /// Position in this turn's tool-call list.
+        index: u32,
+        /// The correlation id the result will be filed under.
+        tool_call_id: String,
+        /// The tool name.
+        name: String,
         /// Wall-clock deadline for this call.
         deadline_unix_millis: u64,
         /// When set, the tool reports progress under this token.
         progress_token: String,
+    },
+    /// A fragment of one call's arguments.
+    ///
+    /// Arguments stream as text because that is what providers send and because a partial
+    /// object cannot be handed to a tool. The kernel assembles and validates before anything
+    /// runs; malformed arguments become a result the model can read.
+    ToolCallArgs {
+        /// Which call this fragment belongs to.
+        index: u32,
+        /// The fragment.
+        fragment: String,
     },
     /// A tool call resolved.
     ToolFinished {
@@ -512,6 +529,23 @@ pub enum EventKind {
     Usage {
         /// What it consumed.
         usage: Usage,
+        /// Why the call happened, so a summary's spend can be told from an answer's.
+        purpose: Purpose,
+        /// The model that served it, after routing.
+        model: String,
+        /// Which attempt in the ledger it belongs to.
+        attempt_index: u32,
+    },
+    /// A field the provider could not honour.
+    ///
+    /// Reported, never swallowed: a `tool_choice = Required` that quietly became `Auto` is a
+    /// session behaving differently than it was configured to.
+    CapabilityDegraded(Degraded),
+    /// One attempt ended badly. Recorded because a retry does not erase the attempt that failed,
+    /// or the money it spent.
+    AttemptFailed {
+        /// What happened.
+        attempt: Attempt,
     },
     /// A policy verdict of `AskHuman` was reached.
     AwaitingHuman {
@@ -586,7 +620,10 @@ impl EventKind {
             Self::ReasoningDelta { .. } => "nucleos.v1.reasoning_delta",
             Self::ToolCallStarted { .. } => "nucleos.v1.tool_call_started",
             Self::ToolFinished { .. } => "nucleos.v1.tool_finished",
+            Self::ToolCallArgs { .. } => "nucleos.v1.tool_call_args",
             Self::Usage { .. } => "nucleos.v1.usage",
+            Self::CapabilityDegraded(_) => "nucleos.v1.capability_degraded",
+            Self::AttemptFailed { .. } => "nucleos.v1.attempt_failed",
             Self::AwaitingHuman { .. } => "nucleos.v1.awaiting_human",
             Self::BudgetExhausted { .. } => "nucleos.v1.budget_exhausted",
             Self::Failed { .. } => "nucleos.v1.failed",
@@ -720,6 +757,21 @@ pub enum Isolation {
     Vm,
 }
 
+/// A call waiting on a human.
+///
+/// Part of the snapshot because the wait outlives any process: a session parked on a
+/// confirmation must be resumable tomorrow, and the call it is holding has to come back with
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingCall {
+    /// The call that has not run.
+    pub call: ToolCall,
+    /// What may be answered.
+    pub options: Vec<PermissionOption>,
+    /// What was asked.
+    pub question: String,
+}
+
 /// A session's state, materialised at a point in its log.
 ///
 /// `seq` is the event this snapshot already includes, so recovery is `load(snapshot)` then
@@ -740,6 +792,8 @@ pub struct Snapshot {
     pub usage: Usage,
     /// Turns taken.
     pub steps: u64,
+    /// The call this session is parked on, when it is parked.
+    pub pending: Option<PendingCall>,
 }
 
 // ---------------------------------------------------------------------------
