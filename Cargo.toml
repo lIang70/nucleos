@@ -1,0 +1,27 @@
+[workspace]
+resolver = "3"
+members = ["crates/nucleos", "crates/nucleos-proto", "crates/nucleosd"]
+
+[workspace.package]
+version = "0.0.1-preview"
+edition = "2024"
+# Not 1.85: edition 2024 plus the async-in-trait shapes the kernel needs.
+rust-version = "1.90"
+license = "Apache-2.0"
+repository = "https://github.com/lIang70/nucleos"
+
+[workspace.dependencies]
+nucleos = { path = "crates/nucleos", version = "0.0.1-preview" }
+nucleos-proto = { path = "crates/nucleos-proto", version = "0.0.1-preview" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# `unwrap` in the kernel is a bug, not a shortcut. `expect` needs a reason on the line.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "warn"

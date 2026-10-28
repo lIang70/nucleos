@@ -1,0 +1,18 @@
+[package]
+name = "nucleos"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "An agent OS kernel: session state machine, turn loop, budget, generations, event log."
+readme = "../../README.md"
+keywords = ["agent", "kernel", "session", "mcp"]
+categories = ["development-tools"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

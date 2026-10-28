@@ -1,0 +1,658 @@
+//! The kernel's pure types.
+//!
+//! No I/O, no clocks, no sockets. Everything here is data that can be compared, logged,
+//! stored and replayed, which is what lets the engine be tested without a runtime and an
+//! event log be replayed without a network.
+//!
+//! The types are deliberately narrower than any provider's vocabulary. A capability that
+//! has no representation here is a capability the kernel does not claim to understand.
+
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::fmt;
+
+/// A session identifier.
+///
+/// The caller chooses it when resuming, so it is a string rather than an opaque handle.
+/// That makes a retried `Start` idempotent instead of creating a second session.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct SessionId(String);
+
+impl SessionId {
+    /// Wrap a caller-supplied identifier.
+    #[must_use]
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    /// The identifier as a string slice.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for SessionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// A tool-source generation.
+///
+/// Generations are immutable snapshots of the declared sources. A session is pinned to
+/// one at start and may only move forward at a turn boundary, and only when the two
+/// generations are compatible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct Generation(pub u64);
+
+// ---------------------------------------------------------------------------
+// The content model
+// ---------------------------------------------------------------------------
+
+/// Who produced a message.
+///
+/// The set is the smallest one every provider can express. A provider with a fifth role
+/// maps it onto one of these in its adapter — the kernel does not learn it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Role {
+    /// Instructions.
+    System,
+    /// The caller.
+    User,
+    /// The model.
+    Assistant,
+    /// A tool's output.
+    Tool,
+}
+
+/// One turn's worth of content.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Message {
+    /// Who produced it.
+    pub role: Role,
+    /// What it contains.
+    ///
+    /// Non-empty whenever the kernel writes one: an empty content is a bug in whatever
+    /// produced it, not something a reader has to tolerate.
+    pub content: Content,
+}
+
+/// An ordered multimodal payload.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Content {
+    /// The parts, in order.
+    pub parts: Vec<Part>,
+}
+
+impl Content {
+    /// Build a content from parts.
+    #[must_use]
+    pub fn new(parts: impl IntoIterator<Item = Part>) -> Self {
+        Self {
+            parts: parts.into_iter().collect(),
+        }
+    }
+
+    /// Concatenate every text part. Thinking, images and tool parts are skipped.
+    ///
+    /// One definition, because "the text of a content" drifting into "first text part" for
+    /// one caller and "all text parts joined" for another is how two readers of the same
+    /// value start disagreeing.
+    #[must_use]
+    pub fn text(&self) -> String {
+        let mut out = String::new();
+        for part in &self.parts {
+            if let PartKind::Text(text) = &part.kind {
+                out.push_str(&text.text);
+            }
+        }
+        out
+    }
+
+    /// Whether there is nothing to render.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.parts.is_empty()
+    }
+}
+
+/// One piece of content.
+///
+/// The union is small on purpose: seven kinds. Audio and video are [`Part::File`] with an
+/// `audio/*` or `video/*` media type, because the kernel moves those bytes and never
+/// interprets them. A kind is added when the kernel must act differently — not when a
+/// provider can emit something new.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Part {
+    /// What it is.
+    #[serde(flatten)]
+    pub kind: PartKind,
+    /// Contextual or vendor-specific data.
+    ///
+    /// The kernel never reads it, never interprets it, and never rejects an unknown key.
+    /// This is the only extension hatch: a schema with two of them has everyone using the
+    /// other one.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub meta: BTreeMap<String, String>,
+}
+
+impl Part {
+    /// A part with no extension data — the common case.
+    #[must_use]
+    pub fn new(kind: PartKind) -> Self {
+        Self {
+            kind,
+            meta: BTreeMap::new(),
+        }
+    }
+}
+
+/// The kind of a [`Part`], and its payload.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PartKind {
+    /// Plain text.
+    Text(TextPart),
+    /// An image, inline or referenced.
+    Image(ImagePart),
+    /// A reference to content that is not carried here.
+    File(FilePart),
+    /// Structured output.
+    Data(DataPart),
+    /// The model asking for a tool.
+    ToolCall(ToolCallPart),
+    /// A tool's answer, folded back into history.
+    ToolResult(ToolResultPart),
+    /// A provider reasoning trace.
+    Reasoning(ReasoningPart),
+}
+
+/// Plain text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextPart {
+    /// The text.
+    pub text: String,
+}
+
+/// An image.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImagePart {
+    /// Where the bytes are.
+    pub source: MediaSource,
+}
+
+/// Bytes, or a reference to them, plus the type that makes them renderable.
+///
+/// `url` exists because inlining a large image into an event log is a storage incident: the
+/// log is append-only and replayed, so every byte is paid for on every replay. `data` exists
+/// because a caller with no reachable store must still be able to send one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaSource {
+    /// The media type, e.g. `image/png`. Required: bytes without a type are not renderable.
+    pub media_type: String,
+    /// Where the bytes come from.
+    pub from: MediaFrom,
+}
+
+/// Where media bytes live.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "from", rename_all = "snake_case")]
+pub enum MediaFrom {
+    /// A URL to fetch.
+    Url {
+        /// The URL.
+        url: String,
+    },
+    /// Bytes carried inline.
+    Data {
+        /// The bytes.
+        data: Vec<u8>,
+    },
+}
+
+/// A reference to content that is not carried here: an artifact, a workspace file, or a
+/// truncated tool result's spill.
+///
+/// This is also how truncation is expressed. A result too large to store is spilled; the
+/// text keeps a marker and this part keeps the pointer. That is a policy outcome, not an
+/// error.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilePart {
+    /// Where to find it.
+    pub uri: String,
+    /// What it is.
+    pub media_type: String,
+    /// A human-facing name.
+    pub name: String,
+}
+
+/// Structured output. JSON text rather than bytes, because JSON is UTF-8 by definition and
+/// text is what every toolchain can read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DataPart {
+    /// The media type, usually `application/json`.
+    pub media_type: String,
+    /// The JSON, as text.
+    pub json: String,
+}
+
+/// The model asking for a tool.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolCallPart {
+    /// The call.
+    pub call: ToolCall,
+}
+
+/// A tool's answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolResultPart {
+    /// The result.
+    pub result: ToolResult,
+}
+
+/// One tool invocation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolCall {
+    /// The correlation id.
+    pub id: String,
+    /// The tool name.
+    pub name: String,
+    /// A JSON object, kept as text so that a replay is byte-faithful.
+    pub arguments_json: String,
+    /// Opaque extension, same rule as [`Part::meta`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub meta: BTreeMap<String, String>,
+}
+
+/// How a tool call ended.
+///
+/// **Failure is a flag, not a branch.** A failed call still carries content, because the
+/// error text is something the model must be able to read and reason about; putting the
+/// failure outside the content model would leave the model with a message it cannot see.
+/// The cost is honest: `is_error` is a runtime flag a client can forget to check, where a
+/// `oneof` would have been enforced by the type system.
+///
+/// One rule constrains the recursion `Content → Part → ToolResult → Content` otherwise
+/// allows: a tool result's content may contain any kind **except** [`Part::ToolCall`] or
+/// [`Part::ToolResult`]. Nesting is one level deep, and a validator enforces it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolResult {
+    /// The call this answers.
+    pub call_id: String,
+    /// What came back — on success and on failure alike.
+    pub content: Content,
+    /// Whether the call failed.
+    pub is_error: bool,
+}
+
+/// One provider reasoning trace.
+///
+/// `signature` is why this is not a plain string: some providers sign a reasoning block and
+/// reject the next turn when the signature is not returned verbatim. Dropping it turns a
+/// multi-turn session into a failure on turn two. `id` and `source` exist for the same
+/// reason — they are opaque to the kernel and must round-trip.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReasoningPart {
+    /// The reasoning text. May be empty when the provider withholds it.
+    pub text: String,
+    /// The provider's signature, returned verbatim.
+    pub signature: String,
+    /// The provider's item id, when it uses one.
+    pub id: String,
+    /// The provider's verification scope.
+    pub source: String,
+}
+
+// ---------------------------------------------------------------------------
+// Session state
+// ---------------------------------------------------------------------------
+
+/// Where a session is in its life.
+///
+/// The vocabulary is the session's, not a provider's. `AwaitingHuman` is a state rather
+/// than a callback, so a confirmation that arrives three hours later resumes a session
+/// instead of reviving a stack frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionState {
+    /// Allocated, spec not yet applied.
+    Created,
+    /// Driving a turn.
+    Running,
+    /// A tool call is in flight.
+    AwaitingTool,
+    /// Blocked on a human decision.
+    AwaitingHuman,
+    /// Stopping: finish the current turn, then checkpoint.
+    Cancelling,
+    /// Finished normally.
+    Done,
+    /// Finished with an error.
+    Failed,
+    /// Stopped on request.
+    Cancelled,
+}
+
+impl SessionState {
+    /// Whether no further transition is possible.
+    #[must_use]
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Done | Self::Failed | Self::Cancelled)
+    }
+}
+
+/// Why a session stopped.
+///
+/// Four layers, all present: a provider's `finish_reason`, the step cap, the wall clock,
+/// and the cost ledger. Each alone can be defeated; together they cannot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StopReason {
+    /// The model said it was finished and no stop condition fired first.
+    Completed,
+    /// The step cap was reached.
+    Steps,
+    /// The token budget was spent.
+    Tokens,
+    /// The cost budget was spent.
+    Cost,
+    /// The wall-clock budget was spent.
+    Wall,
+    /// Policy denied a call.
+    Denied,
+    /// A tool or model call failed.
+    Failed,
+    /// Stopped on request.
+    Cancelled,
+}
+
+// ---------------------------------------------------------------------------
+// Accounting
+// ---------------------------------------------------------------------------
+
+/// What a session may consume.
+///
+/// `None` means unbounded for that dimension, which is a decision the host makes, not a
+/// default the kernel assumes.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Budget {
+    /// Turns a session may take.
+    pub max_steps: Option<u64>,
+    /// Tokens across every model call, including failed attempts that streamed.
+    pub max_tokens: Option<u64>,
+    /// Cost in micro-USD. Integer, because money in a float is a rounding argument waiting
+    /// to happen.
+    pub max_micros_usd: Option<u64>,
+    /// Wall clock for the whole session.
+    pub max_wall_millis: Option<u64>,
+}
+
+/// What a model call consumed.
+///
+/// A counter the provider did not report stays `None` rather than becoming zero: a budget
+/// that charges for silence is worse than one that knows it does not know.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Usage {
+    /// Prompt tokens.
+    pub input_tokens: u64,
+    /// Completion tokens.
+    pub output_tokens: u64,
+    /// Cost in micro-USD, when the provider reported one.
+    pub micros_usd: Option<u64>,
+}
+
+impl Usage {
+    /// Fold another report in.
+    ///
+    /// An unreported cost stays unreported. Adding an unknown as zero under-reports the
+    /// bill, which is the one direction nobody forgives.
+    pub fn add(&mut self, other: &Self) {
+        self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
+        self.micros_usd = match (self.micros_usd, other.micros_usd) {
+            (Some(a), Some(b)) => Some(a.saturating_add(b)),
+            _ => None,
+        };
+    }
+
+    /// Tokens billed, however the provider split them.
+    #[must_use]
+    pub fn total_tokens(&self) -> u64 {
+        self.input_tokens.saturating_add(self.output_tokens)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------
+
+/// An append-only record of something that happened.
+///
+/// `seq` is dense and gap-free, which is what makes it usable as a resume cursor without
+/// a separate acknowledgement protocol. `schema_version` is written alongside the event so
+/// a reader can upcast instead of guessing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Event {
+    /// Monotonic within a session, starting at 0.
+    pub seq: u64,
+    /// The session this belongs to.
+    pub session: SessionId,
+    /// Unix milliseconds, from the injected clock so replay is deterministic.
+    pub at_unix_millis: u64,
+    /// The schema this event was written with.
+    pub schema_version: u32,
+    /// What happened.
+    pub kind: EventKind,
+    /// Opaque extension, same rule as [`Part::meta`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub meta: BTreeMap<String, String>,
+}
+
+impl Event {
+    /// The schema version written by this build.
+    pub const SCHEMA_VERSION: u32 = 1;
+}
+
+/// The payload of an [`Event`].
+///
+/// Events carry the content model rather than copies of its fields — [`ToolCall`] here is
+/// the same type a [`ToolCallPart`] holds — so a live stream and a stored history cannot
+/// disagree about the shape of an answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum EventKind {
+    /// A session state transition, with the reason when it is terminal.
+    StateChanged {
+        /// The state entered.
+        state: SessionState,
+        /// Set when the state is terminal.
+        stop: Option<StopReason>,
+    },
+    /// A fragment of assistant text.
+    TextDelta {
+        /// Which part of the message it belongs to.
+        ///
+        /// Without it a client cannot tell a second text block from a continuation of the
+        /// first, so text → tool call → more text is unrepresentable in the stream.
+        part_index: u32,
+        /// The fragment.
+        text: String,
+    },
+    /// A fragment of a reasoning trace.
+    ///
+    /// `signature` usually arrives on its own, in a delta with empty `text`: a provider
+    /// signs the finished block rather than each fragment.
+    ReasoningDelta {
+        /// Which part of the message it belongs to.
+        part_index: u32,
+        /// The fragment.
+        text: String,
+        /// The provider's signature fragment, returned verbatim.
+        signature: String,
+    },
+    /// A tool call was issued.
+    ToolCallStarted {
+        /// The call, as the model emitted it.
+        call: ToolCall,
+        /// Wall-clock deadline for this call.
+        deadline_unix_millis: u64,
+        /// When set, the tool reports progress under this token.
+        progress_token: String,
+    },
+    /// A tool call resolved.
+    ToolFinished {
+        /// How long it took.
+        duration_millis: u64,
+        /// The result — the same value that enters history.
+        result: ToolResult,
+    },
+    /// One model call's consumption, debited whether or not the answer was usable.
+    Usage {
+        /// What it consumed.
+        usage: Usage,
+    },
+    /// A policy verdict of `AskHuman` was reached.
+    AwaitingHuman {
+        /// What the host should ask.
+        question: String,
+        /// The call being gated.
+        tool_call_id: String,
+        /// Typed answers, so a client can render "once" and "always" differently and the
+        /// verdict can say which was chosen.
+        options: Vec<PermissionOption>,
+        /// What the kernel does if nobody answers. A refusal, not a silent approval.
+        default_if_unanswered: PermissionKind,
+    },
+    /// A budget dimension ran out.
+    BudgetExhausted {
+        /// Which one.
+        reason: StopReason,
+    },
+    /// Something failed.
+    Failed {
+        /// A stable code for programs.
+        code: ErrorCode,
+        /// For humans.
+        reason: String,
+    },
+    /// The session moved to a newer tool-source generation.
+    ///
+    /// Recorded rather than inferred, so a replay reproduces which tool set each turn ran
+    /// against.
+    GenerationMigrated {
+        /// Where it came from.
+        from: Generation,
+        /// Where it went.
+        to: Generation,
+    },
+    /// The assembled message a model call produced.
+    ///
+    /// Deltas are a rendering protocol; this is the record. Some content can only be
+    /// assembled — a reasoning signature arrives as its own delta — and a client that joins
+    /// late should render without replaying every fragment.
+    MessageCompleted {
+        /// The message, as it enters history.
+        message: Message,
+        /// Which step of the turn produced it.
+        step_index: u32,
+    },
+    /// Progress from a long-running call. A call whose only feedback is a deadline is
+    /// indistinguishable from a hang.
+    Progress {
+        /// The token from [`EventKind::ToolCallStarted`].
+        token: String,
+        /// Units completed.
+        done: u64,
+        /// Units expected. Zero means unknown, not zero.
+        total: u64,
+        /// For humans.
+        message: String,
+    },
+}
+
+impl EventKind {
+    /// The routable type string, e.g. `nucleos.v1.tool_finished`.
+    ///
+    /// The wire carries this alongside the `oneof` on purpose: a proxy filters on it
+    /// without compiling the schema. Deriving it here rather than storing it means the two
+    /// can never disagree.
+    #[must_use]
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Self::StateChanged { .. } => "nucleos.v1.state_changed",
+            Self::TextDelta { .. } => "nucleos.v1.text_delta",
+            Self::ReasoningDelta { .. } => "nucleos.v1.reasoning_delta",
+            Self::ToolCallStarted { .. } => "nucleos.v1.tool_call_started",
+            Self::ToolFinished { .. } => "nucleos.v1.tool_finished",
+            Self::Usage { .. } => "nucleos.v1.usage",
+            Self::AwaitingHuman { .. } => "nucleos.v1.awaiting_human",
+            Self::BudgetExhausted { .. } => "nucleos.v1.budget_exhausted",
+            Self::Failed { .. } => "nucleos.v1.failed",
+            Self::GenerationMigrated { .. } => "nucleos.v1.generation_migrated",
+            Self::MessageCompleted { .. } => "nucleos.v1.message_completed",
+            Self::Progress { .. } => "nucleos.v1.progress",
+        }
+    }
+}
+
+/// What a human may answer when a call is gated.
+///
+/// The kernel *reports* the choice; it never decides that "always" applies. That is policy,
+/// and it belongs to the host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PermissionOption {
+    /// Caller-chosen, returned verbatim in the verdict.
+    pub id: String,
+    /// What it means.
+    pub kind: PermissionKind,
+    /// For humans.
+    pub label: String,
+}
+
+/// The kinds of answer a permission request offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionKind {
+    /// Allow this call.
+    AllowOnce,
+    /// Allow this call and, if the host agrees, this tool for the session.
+    AllowAlways,
+    /// Refuse this call.
+    Reject,
+}
+
+/// A stable error category.
+///
+/// Codes are enums rather than strings because the first caller who compares a string
+/// freezes it forever.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorCode {
+    /// The request was malformed.
+    Invalid,
+    /// The thing named does not exist.
+    NotFound,
+    /// Policy refused.
+    Denied,
+    /// A budget was exhausted.
+    Budget,
+    /// A deadline passed.
+    Timeout,
+    /// A dependency was not reachable.
+    Unavailable,
+    /// A bug.
+    Internal,
+}
+
+impl ErrorCode {
+    /// Whether retrying the same request could succeed.
+    ///
+    /// A statement about the request, not about the world: `Budget` is retryable only
+    /// after the caller grants more credit.
+    #[must_use]
+    pub fn is_retryable(self) -> bool {
+        matches!(self, Self::Unavailable | Self::Timeout)
+    }
+}

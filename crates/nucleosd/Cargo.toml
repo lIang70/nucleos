@@ -1,0 +1,18 @@
+[package]
+name = "nucleosd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The nucleos daemon: authentication, wire translation, and a listener around the kernel."
+readme = "../../README.md"
+keywords = ["agent", "kernel", "daemon", "grpc"]
+categories = ["development-tools"]
+
+[dependencies]
+nucleos = { workspace = true }
+nucleos-proto = { workspace = true }
+
+[lints]
+workspace = true
