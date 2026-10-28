@@ -1,0 +1,99 @@
+syntax = "proto3";
+
+package nucleos.v1;
+
+// The leaf vocabulary: values that cross a module boundary without depending on anything.
+//
+// Every declaration here is referenced by at least two of session/event/source, so it sits
+// below all of them. `common.proto` imports nothing inside nucleos.v1, which is what keeps
+// the import graph acyclic — protoc rejects a cycle, so the discipline is free.
+
+enum Code {
+  CODE_UNSPECIFIED = 0;
+  CODE_INVALID = 1;
+  CODE_NOT_FOUND = 2;
+  CODE_DENIED = 3;
+  CODE_BUDGET = 4;
+  CODE_TIMEOUT = 5;
+  CODE_UNAVAILABLE = 6;
+  CODE_INTERNAL = 7;
+}
+
+// Every fallible response carries this. `reason` is for humans; `code` is for programs.
+// `retryable` is a statement about the same request, not about the world.
+message Error {
+  Code code = 1;
+  // For humans. Never parsed.
+  string reason = 2;
+  // A statement about this request, not about the world.
+  bool retryable = 3;
+  // When `retryable` and known, how long to wait. Zero means "no hint", not "immediately".
+  uint64 retry_after_millis = 4;
+  // Machine-readable detail the caller acts on, e.g. {"needed_tokens": "40000"} on BUDGET.
+  // Beyond this map there is no second extension point.
+  map<string, string> details = 5;
+}
+
+// One answer a caller may pick when a call is gated on a human.
+//
+// The *options* are typed so a client can render a "don't ask again" affordance; which one
+// was chosen comes back as `option_id`, so the daemon learns what the human actually meant
+// rather than a boolean.
+enum PermissionKind {
+  PERMISSION_KIND_UNSPECIFIED = 0;
+  PERMISSION_KIND_ALLOW_ONCE = 1;
+  PERMISSION_KIND_ALLOW_ALWAYS = 2;
+  PERMISSION_KIND_REJECT = 3;
+}
+
+message PermissionOption {
+  // Caller-chosen, returned verbatim in the verdict.
+  string id = 1;
+  PermissionKind kind = 2;
+  // For humans.
+  string label = 3;
+}
+
+message Usage {
+  uint64 input_tokens = 1;
+  uint64 output_tokens = 2;
+  // Micro-USD, to avoid a float in money. Absent means the provider did not report it;
+  // an absent counter stays absent rather than being counted as zero.
+  optional uint64 micros_usd = 3;
+}
+
+message Budget {
+  optional uint64 max_steps = 1;
+  optional uint64 max_tokens = 2;
+  optional uint64 max_micros_usd = 3;
+  optional uint64 max_wall_millis = 4;
+}
+
+enum SessionState {
+  SESSION_STATE_UNSPECIFIED = 0;
+  SESSION_STATE_CREATED = 1;
+  SESSION_STATE_RUNNING = 2;
+  SESSION_STATE_AWAITING_TOOL = 3;
+  SESSION_STATE_AWAITING_HUMAN = 4;
+  SESSION_STATE_CANCELLING = 5;
+  SESSION_STATE_DONE = 6;
+  SESSION_STATE_FAILED = 7;
+  SESSION_STATE_CANCELLED = 8;
+}
+
+enum StopReason {
+  STOP_REASON_UNSPECIFIED = 0;
+  STOP_REASON_COMPLETED = 1;
+  STOP_REASON_STEPS = 2;
+  STOP_REASON_TOKENS = 3;
+  STOP_REASON_COST = 4;
+  STOP_REASON_WALL = 5;
+  STOP_REASON_DENIED = 6;
+  STOP_REASON_FAILED = 7;
+  STOP_REASON_CANCELLED = 8;
+}
+
+message Failure {
+  Code code = 1;
+  string reason = 2;
+}

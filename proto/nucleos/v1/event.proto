@@ -1,0 +1,127 @@
+syntax = "proto3";
+
+package nucleos.v1;
+
+import "nucleos/v1/common.proto";
+import "nucleos/v1/content.proto";
+import "google/protobuf/timestamp.proto";
+
+// The event stream.
+//
+// This file changes more slowly than any other, and it is the one file where a diff should
+// trigger a compatibility review. An event-only consumer — a log replayer, a UI, an
+// auditor — imports this and nothing else.
+
+message Event {
+  // Monotonic within a session, starts at 0. Dense and gap-free: usable as a cursor
+  // without negotiation.
+  uint64 seq = 1;
+  string session = 2;
+  google.protobuf.Timestamp at = 3;
+  // The event schema this event was written with. Consumers must tolerate unknown
+  // fields; readers upcast old versions.
+  uint32 schema_version = 4;
+  // A routable type, e.g. "nucleos.v1.tool_finished". Redundant with `kind` on purpose: a
+  // proxy or a filter routes on this without compiling the schema. `kind` stays
+  // authoritative; this string is what a consumer with no generated code can read.
+  string type = 5;
+  // Opaque extension, same rule as `Part.meta`.
+  map<string, string> meta = 6;
+
+  oneof kind {
+    StateChanged state = 10;
+    TextDelta text = 11;
+    ReasoningDelta reasoning = 12;
+    ToolCallStarted tool_call = 13;
+    ToolFinished tool_result = 14;
+    Usage usage = 15;
+    AwaitingHuman awaiting_human = 16;
+    BudgetExhausted budget_exhausted = 17;
+    Failure failed = 18;
+    GenerationMigrated generation_migrated = 19;
+    MessageCompleted message_completed = 20;
+    Progress progress = 21;
+  }
+}
+
+message StateChanged {
+  SessionState state = 1;
+  StopReason stop = 2;
+}
+
+message TextDelta {
+  // Which part of the assistant message this fragment belongs to. Without it a client
+  // cannot tell a second text block from a continuation of the first, so a turn that emits
+  // text, then a tool call, then more text is unrepresentable in the stream.
+  uint32 part_index = 1;
+  string text = 2;
+}
+
+// A fragment of a reasoning trace.
+//
+// `signature` arrives separately, usually as its own event with empty `text`, because a
+// provider signs the finished block rather than each fragment. Both fields are part of one
+// delta so that the ordering the provider sent is the ordering the client receives.
+message ReasoningDelta {
+  // Same rule as `TextDelta.part_index`.
+  uint32 part_index = 1;
+  string text = 2;
+  string signature = 3;
+}
+
+// Events carry the content model rather than copies of its fields: `ToolCall` here is the
+// same message a `ToolCallPart` holds, so a stream and a stored history cannot disagree.
+message ToolCallStarted {
+  ToolCall call = 1;
+  int64 deadline_unix_millis = 2;
+  // When set, the tool reports progress under this token.
+  string progress_token = 3;
+}
+
+message ToolFinished {
+  uint64 duration_millis = 1;
+  // The same `ToolResult` that enters history, including `is_error`: a client renders a
+  // stream event and a stored history entry with one function.
+  ToolResult result = 2;
+}
+
+message AwaitingHuman {
+  string question = 1;
+  string tool_call_id = 2;
+  // Typed options, so a client can render "allow once" and "always" differently and the
+  // verdict can say which was chosen.
+  repeated PermissionOption options = 3;
+  // What the kernel does if nobody answers. In practice `PERMISSION_KIND_REJECT`: silence
+  // is never approval, and a default that allows would be a security bug with a clock.
+  PermissionKind default_if_unanswered = 4;
+}
+
+// The assembled message a model call produced.
+//
+// Deltas are a rendering protocol; this is the record. It exists because some content can
+// only be assembled — a reasoning signature arrives as its own delta — and because a client
+// that joins late should be able to render without replaying every fragment.
+message MessageCompleted {
+  Message message = 1;
+  // Which step of the turn produced it.
+  uint32 step_index = 2;
+}
+
+// Progress from a long-running call. A call whose only feedback is a deadline is
+// indistinguishable from a hang.
+message Progress {
+  string token = 1;
+  uint64 done = 2;
+  // Zero means the total is unknown, not that it is zero.
+  uint64 total = 3;
+  string message = 4;
+}
+
+message BudgetExhausted {
+  StopReason reason = 1;
+}
+
+message GenerationMigrated {
+  uint64 from_generation = 1;
+  uint64 to_generation = 2;
+}

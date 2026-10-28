@@ -1,0 +1,147 @@
+syntax = "proto3";
+
+package nucleos.v1;
+
+// The content model: one representation of what a model reads and writes.
+//
+// It sits below both `session` and `event` because both carry it — a request carries the
+// initial messages, an event carries a tool result. Anything referenced from two files
+// belongs below them, which is what keeps the import graph acyclic.
+//
+// Three properties are deliberate:
+//
+// 1. **The union is small.** Seven kinds. Audio and video are `file` with an `audio/*` or
+//    `video/*` media type, because the kernel does nothing different with them — it moves
+//    bytes and never interprets them. A kind is added when the kernel must *act*
+//    differently, not when a provider can emit something new.
+// 2. **Every kind is a named message.** A `oneof` of scalars cannot grow a field without
+//    changing the union's shape; a `oneof` of messages can.
+// 3. **The union is sealed.** Adding a kind is additive on the wire, but it makes every
+//    consumer's exhaustive switch non-exhaustive. SDKs must therefore treat an unknown
+//    kind as content they carry and do not render — never as an error.
+
+// One conversation turn.
+message Message {
+  Role role = 1;
+  Content content = 2;
+}
+
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  ROLE_SYSTEM = 1;
+  ROLE_USER = 2;
+  ROLE_ASSISTANT = 3;
+  ROLE_TOOL = 4;
+}
+
+// An ordered multimodal payload. Present and non-empty on every message the kernel writes:
+// an empty content is a bug in whatever produced it, not something a reader has to tolerate.
+message Content {
+  repeated Part parts = 1;
+}
+
+// One piece of content.
+message Part {
+  // Contextual or vendor-specific data. The kernel never reads it, never interprets it,
+  // and never rejects an unknown key. This is the **only** extension hatch in the schema:
+  // the first vendor field that gets added proper is the reason a second hatch is needed.
+  map<string, string> meta = 9;
+  oneof kind {
+    TextPart text = 1;
+    ImagePart image = 2;
+    FilePart file = 3;
+    DataPart data = 4;
+    ToolCallPart tool_call = 5;
+    ToolResultPart tool_result = 6;
+    ReasoningPart reasoning = 7;
+  }
+}
+
+// Bytes or a reference to them.
+//
+// `url` exists because a large image inlined into an event log is a storage incident: the
+// log is append-only and replayed, so every byte is paid for on every replay. `data` exists
+// because a caller with no reachable store must still be able to send one.
+message MediaSource {
+  oneof from {
+    string url = 1;
+    bytes data = 2;
+  }
+  // The media type, e.g. "image/png". Required: bytes without a type are not renderable,
+  // and guessing from magic bytes is a parser bug waiting to happen.
+  string media_type = 3;
+}
+
+message TextPart {
+  string text = 1;
+}
+
+message ImagePart {
+  MediaSource source = 1;
+}
+
+// A reference to content that is not carried here: an artifact, a workspace file, a
+// truncated tool result's spill.
+//
+// This is also how truncation is expressed. A result too large to store is spilled, and the
+// text carries a marker while a `FilePart` carries the pointer — a policy outcome, not an
+// error.
+message FilePart {
+  string uri = 1;
+  string media_type = 2;
+  string name = 3;
+}
+
+// Structured output. JSON text rather than bytes, because JSON is UTF-8 by definition and
+// a text field is what every toolchain can read.
+message DataPart {
+  string media_type = 1;
+  string json = 2;
+}
+
+message ToolCallPart {
+  ToolCall call = 1;
+}
+
+message ToolResultPart {
+  ToolResult result = 1;
+}
+
+message ToolCall {
+  string id = 1;
+  string name = 2;
+  // A JSON object, kept as text so that a replay is byte-faithful.
+  string arguments_json = 3;
+  // Opaque extension, same rule as `Part.meta`.
+  map<string, string> meta = 4;
+}
+
+// How a tool call ended.
+//
+// **Failure is a flag, not a branch.** A failed call still carries `content`, because the
+// error text is something the model must be able to read and reason about; a `oneof` that
+// put the failure outside the content model would leave the model with a message it cannot
+// see. The cost is honest: `is_error` is a runtime flag a client can forget to check, where
+// a `oneof` would have been enforced by the type system.
+//
+// One rule constrains the recursion that `Content` → `Part` → `ToolResult` → `Content`
+// otherwise allows: a tool result's content may contain any kind **except** `tool_call` or
+// `tool_result`. Nesting is one level deep, and a validator enforces it.
+message ToolResult {
+  string call_id = 1;
+  Content content = 2;
+  bool is_error = 3;
+}
+
+// One provider reasoning trace.
+//
+// `signature` is why this is not a plain string: some providers sign a reasoning block and
+// reject the next turn when the signature is not returned verbatim. Dropping it turns a
+// multi-turn session into a failure on turn two. `id` and `source` exist for the same
+// reason — they are opaque to the kernel and must round-trip.
+message ReasoningPart {
+  string text = 1;
+  string signature = 2;
+  string id = 3;
+  string source = 4;
+}
