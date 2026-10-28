@@ -14,9 +14,7 @@
 //! Nothing here knows about protobuf, sockets, or authentication. The wire contract lives
 //! in `nucleos-proto` and is translated in `nucleosd`; see `docs/abi.md`.
 //!
-//! ```
-//! // Not yet: the engine lands in P1.
-//! ```
+//! The engine lands next; the contracts it will drive are in [`adapter`].
 
 pub mod adapter;
 pub mod contract;

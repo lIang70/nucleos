@@ -1,20 +1,23 @@
-//! The five contracts, exercised through their fakes.
+//! The contracts, exercised through their fakes.
 //!
-//! These are not tests of the fakes; they are tests of the *rules the traits state*, using
-//! the fakes as the cheapest way to state them. When a real adapter disagrees with one of
-//! these, the trait was wrong, not the test.
+//! These are not tests of the fakes; they are tests of the *rules the traits and types state*,
+//! using the fakes as the cheapest way to state them. When a real adapter disagrees with one
+//! of these, the trait was wrong, not the test.
 
 #![allow(clippy::unwrap_used)]
 
 use nucleos::Result;
 use nucleos::adapter::{
-    AllowAll, Clock, DenyAll, FakeModel, FakeTool, FinishReason, FixedClock, MemoryStore, Model,
-    ModelDelta, ModelRequest, Policy, PolicyRequest, Store, Tool, ToolCtx, Verdict,
+    AllowAll, Clock, DenyAll, EchoModel, FakeModel, FakeTool, FinishReason, FixedClock, Gated,
+    MemoryStore, Model, ModelDelta, ModelRegistry, ModelRequest, Policy, PolicyRequest, Store,
+    Tool, ToolChoice, ToolCtx, Verdict, fake::tool_call_deltas,
 };
 use nucleos::contract::{
-    Content, ErrorCode, Event, EventKind, Message, Part, PartKind, Principal, Role, SessionId,
-    SessionState, Snapshot, StopReason, TextPart, Usage,
+    Attempt, AttemptOutcome, AttemptPhase, AttemptTrigger, Content, ErrorCode, Event, EventKind,
+    Ledger, Message, Part, PartKind, Principal, Role, Routing, SessionId, SessionState, Snapshot,
+    StopReason, TextPart, Usage,
 };
+use std::sync::Arc;
 use tokio_stream::StreamExt;
 
 fn event(session: &SessionId, seq: u64) -> Event {
@@ -47,13 +50,41 @@ fn call() -> nucleos::ToolCall {
     }
 }
 
+fn attempt(index: u32, ok: bool) -> Attempt {
+    Attempt {
+        index,
+        model: "primary".to_owned(),
+        phase: AttemptPhase::Execute,
+        trigger: if index == 0 {
+            AttemptTrigger::Selection
+        } else {
+            AttemptTrigger::Retry
+        },
+        outcome: if ok {
+            AttemptOutcome::Ok
+        } else {
+            AttemptOutcome::Failed {
+                code: ErrorCode::Unavailable,
+                reason: "503".to_owned(),
+            }
+        },
+        usage: Usage {
+            input_tokens: 10,
+            output_tokens: 0,
+            micros_usd: Some(5),
+        },
+        duration_millis: 3,
+        degraded: Vec::new(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Model
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn a_model_streams_the_deltas_it_was_scripted_with() -> Result<()> {
-    let model = FakeModel::text(["Hel", "lo"]);
+    let model = FakeModel::text(["He", "llo"]);
     let mut stream = model.invoke(ModelRequest::default()).await?;
 
     let mut text = String::new();
@@ -92,6 +123,137 @@ async fn an_exhausted_script_stops_instead_of_streaming_forever() -> Result<()> 
     assert!(stopped, "an exhausted script must still finish");
     assert_eq!(model.calls(), 2);
     Ok(())
+}
+
+#[tokio::test]
+async fn tool_arguments_stream_as_fragments_addressed_by_index() -> Result<()> {
+    // The shape a provider actually sends: a start, then argument text, then a finish. The
+    // kernel assembles the fragments by index and validates the JSON before anything runs.
+    let model = FakeModel::with_script(vec![tool_call_deltas(
+        "call-1",
+        "read_file",
+        "{\"path\":\"a\"}",
+    )]);
+    let mut stream = model.invoke(ModelRequest::default()).await?;
+
+    let mut started = None;
+    let mut assembled = String::new();
+    let mut finished = None;
+    while let Some(delta) = stream.next().await {
+        match delta? {
+            ModelDelta::ToolCallStarted { index, id, name } => started = Some((index, id, name)),
+            ModelDelta::ToolCallArgs { index, fragment } => {
+                assert_eq!(index, 0);
+                assembled.push_str(&fragment);
+            }
+            ModelDelta::Finished { reason } => finished = Some(reason),
+            other => panic!("unexpected delta: {other:?}"),
+        }
+    }
+
+    assert_eq!(
+        started,
+        Some((0, "call-1".to_owned(), "read_file".to_owned()))
+    );
+    assert_eq!(assembled, "{\"path\":\"a\"}");
+    assert_eq!(finished, Some(FinishReason::ToolCalls));
+    Ok(())
+}
+
+#[test]
+fn token_counting_is_the_adapters_decision_not_the_kernels() -> Result<()> {
+    let request = ModelRequest {
+        system: Some("be brief".to_owned()),
+        messages: vec![Message {
+            role: Role::User,
+            content: Content::new([Part::new(PartKind::Text(TextPart {
+                text: "hello there".to_owned(),
+            }))]),
+        }],
+        ..ModelRequest::default()
+    };
+
+    // `text_len` counts characters across system and every message, once, so that two
+    // adapters cannot disagree about what "the text of a request" means.
+    assert_eq!(request.text_len(), 8 + 11);
+    assert_eq!(
+        EchoModel::new("hi").count_tokens(&request)?,
+        19u64.div_ceil(4)
+    );
+
+    // An adapter with an exact tokenizer says so instead of estimating.
+    let exact = FakeModel::text(["hi"]).with_token_count(4_096);
+    assert_eq!(exact.count_tokens(&request)?, 4_096);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Routing and the ledger
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_route_resolves_in_order_or_fails_loudly() -> Result<()> {
+    let mut registry = ModelRegistry::new();
+    registry.insert("primary", Arc::new(EchoModel::new("a")));
+    registry.insert("secondary", Arc::new(EchoModel::new("b")));
+
+    let resolved = registry.resolve(&Routing {
+        chain: vec!["secondary".to_owned(), "primary".to_owned()],
+        retries: 1,
+    })?;
+    let names: Vec<&str> = resolved.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names, vec!["secondary", "primary"]);
+
+    // A typo in a route is an error, not a skip: skipping it would be discovered as "the model
+    // behaved differently", by which point the session has already run.
+    let error = registry
+        .resolve(&Routing {
+            chain: vec!["primray".to_owned()],
+            retries: 0,
+        })
+        .err()
+        .unwrap();
+    assert_eq!(error.code(), ErrorCode::NotFound);
+
+    let error = registry
+        .resolve(&Routing {
+            chain: Vec::new(),
+            retries: 0,
+        })
+        .err()
+        .unwrap();
+    assert_eq!(error.code(), ErrorCode::Invalid);
+    Ok(())
+}
+
+#[test]
+fn the_ledger_counts_every_attempt_that_spent_money() {
+    let mut ledger = Ledger::default();
+    ledger.record(attempt(0, false));
+    ledger.record(attempt(1, true));
+
+    assert_eq!(ledger.len(), 2);
+    assert_eq!(
+        ledger.total.input_tokens, 20,
+        "a failed attempt that produced tokens still paid for them"
+    );
+    assert_eq!(ledger.total.micros_usd, Some(10));
+}
+
+#[test]
+fn an_unreported_cost_stays_unreported_through_the_ledger() {
+    let mut ledger = Ledger::default();
+    ledger.record(attempt(0, true));
+
+    let mut unreported = attempt(1, true);
+    unreported.usage.micros_usd = None;
+    ledger.record(unreported);
+
+    assert_eq!(
+        ledger.total.micros_usd, None,
+        "adding an unknown as zero under-reports the bill"
+    );
+    assert_eq!(ledger.total.input_tokens, 20, "tokens still add up");
 }
 
 // ---------------------------------------------------------------------------
@@ -161,8 +323,8 @@ async fn events_since_is_inclusive() -> Result<()> {
         )
         .await?;
 
-    // Inclusive, because a client asking `from_seq = 1` wants event 1: anything else makes
-    // the ABI's resume cursor mean "after" while it says "from".
+    // Inclusive, because a client asking `from_seq = 1` wants event 1: anything else makes the
+    // ABI's resume cursor mean "after" while it says "from".
     let tail = store.events_since(&session, 1).await?;
     let seqs: Vec<u64> = tail.iter().map(|event| event.seq).collect();
     assert_eq!(seqs, vec![1, 2]);
@@ -240,30 +402,45 @@ async fn a_valid_snapshot_round_trips() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn policy_answers_all_three_ways() {
+async fn policy_gates_both_tools_and_model_calls() {
     let session = SessionId::new("s1");
     let who = principal();
     let call = call();
-    let request = PolicyRequest {
-        principal: &who,
-        session: &session,
-        call: &call,
-    };
 
-    assert_eq!(AllowAll.check(request).await, Verdict::Allow);
-
-    let request = PolicyRequest {
+    let tool_gate = PolicyRequest {
         principal: &who,
-        session: &session,
-        call: &call,
+        session: Some(&session),
+        subject: Gated::Tool { call: &call },
     };
-    match DenyAll.check(request).await {
+    assert_eq!(AllowAll.check(tool_gate).await, Verdict::Allow);
+
+    // The same trait answers the money question. A runtime that gates tools but not model
+    // calls has a policy with a hole where the spend is.
+    let model_gate = PolicyRequest {
+        principal: &who,
+        session: None,
+        subject: Gated::Model {
+            model: "primary",
+            purpose: nucleos::contract::Purpose::Answer,
+        },
+    };
+    match DenyAll.check(model_gate).await {
         Verdict::Deny { code, reason } => {
             assert_eq!(code, ErrorCode::Denied);
-            assert!(reason.contains("read_file"));
+            assert!(reason.contains("primary"));
         }
         other => panic!("expected Deny, got {other:?}"),
     }
+}
+
+#[test]
+fn the_default_tool_choice_is_the_models_own() {
+    // `Required` exists for the case where the model explains the problem instead of calling a
+    // tool; it must be opt-in, because forcing a tool on a task that needs none is worse.
+    assert_eq!(
+        nucleos::adapter::GenerateParams::default().tool_choice,
+        ToolChoice::Auto
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -311,8 +488,8 @@ fn content_text_joins_every_text_part_and_skips_the_rest() {
         })),
     ]);
 
-    // One definition, because "first text part" for one caller and "all text parts joined"
-    // for another is how two readers of the same value start disagreeing.
+    // One definition, because "first text part" for one caller and "all text parts joined" for
+    // another is how two readers of the same value start disagreeing.
     assert_eq!(content.text(), "ab");
 }
 

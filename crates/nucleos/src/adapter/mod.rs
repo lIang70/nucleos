@@ -29,12 +29,17 @@ pub mod clock;
 pub mod fake;
 pub mod model;
 pub mod policy;
+pub mod registry;
 pub mod store;
 pub mod tool;
 
 pub use clock::{Clock, SystemClock};
 pub use fake::{AllowAll, DenyAll, EchoModel, FakeModel, FakeTool, FixedClock, MemoryStore};
-pub use model::{FinishReason, Model, ModelDelta, ModelRequest, ModelStream};
-pub use policy::{Policy, PolicyRequest, Verdict};
+pub use model::{
+    FinishReason, GenerateParams, Model, ModelDelta, ModelRequest, ModelStream, ReasoningEffort,
+    TextFormat, ToolChoice,
+};
+pub use policy::{Gated, Policy, PolicyRequest, Verdict};
+pub use registry::ModelRegistry;
 pub use store::Store;
 pub use tool::{Tool, ToolCtx, ToolOutput};

@@ -5,6 +5,7 @@ package nucleos.v1;
 import "nucleos/v1/session.proto";
 import "nucleos/v1/source.proto";
 import "nucleos/v1/event.proto";
+import "nucleos/v1/generate.proto";
 
 // The service definition and nothing else — the table of contents for the ABI.
 //
@@ -64,6 +65,14 @@ service Kernel {
 
   // Commit the pending source set as one atomic generation swap.
   rpc Reload(ReloadRequest) returns (ReloadResponse);
+
+  // Invoke a model directly: the same path a session uses, without a session.
+  //
+  // It exists because normalization, routing, retries and cost accounting are the kernel's
+  // job, and a caller that wants one of them wants all of them. Stateless on purpose: no
+  // session is created, nothing is written to the event log, and a one-off call cannot
+  // pollute `List`.
+  rpc Generate(GenerateRequest) returns (stream GenerateEvent);
 }
 
 message DescribeRequest {}

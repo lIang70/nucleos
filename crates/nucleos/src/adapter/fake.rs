@@ -3,14 +3,14 @@
 //! They exist so every kernel test can run without a network, a socket, a process or a
 //! sleeping clock — and so that a host has something to start from before it writes a real
 //! adapter. They are part of the public API on purpose: a fake that only the kernel's own
-//! tests can reach is a fake every adapter re-implements.
+//! tests can reach is a fake every host re-implements.
 
 use crate::adapter::{
-    Clock, FinishReason, Model, ModelDelta, ModelRequest, ModelStream, Policy, PolicyRequest,
-    Store, Tool, ToolCtx, ToolOutput, Verdict,
+    Clock, FinishReason, Gated, Model, ModelDelta, ModelRequest, ModelStream, Policy,
+    PolicyRequest, Store, Tool, ToolCtx, ToolOutput, Verdict,
 };
 use crate::contract::{
-    Capability, Content, Event, Part, PartKind, SessionId, Snapshot, TextPart, ToolSpec,
+    Attempt, Capability, Content, Event, Part, PartKind, SessionId, Snapshot, TextPart, ToolSpec,
 };
 use crate::error::{Error, Result};
 use async_trait::async_trait;
@@ -39,8 +39,8 @@ impl FixedClock {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, u64> {
-        // A poisoned lock means another test thread panicked while holding it. Recovering is
-        // right for a fake: the value is a plain integer and has no invariant to preserve.
+        // A poisoned lock means another thread panicked while holding it. Recovering is right
+        // for a fake: the value is a plain integer with no invariant to preserve.
         self.0
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -57,6 +57,27 @@ impl Clock for FixedClock {
 // Model
 // ---------------------------------------------------------------------------
 
+/// The capability every fake advertises, unless a test overrides it.
+fn fake_capability() -> Capability {
+    Capability {
+        tools: true,
+        tool_choice_required: true,
+        structured_output: true,
+        streaming: true,
+        context_window: 200_000,
+        max_output_tokens: 8_192,
+    }
+}
+
+/// A naive token estimate: four characters per token, rounded up.
+///
+/// Naive on purpose, and only ever used by fakes. A real adapter either has a tokenizer or
+/// returns a conservative bound it is willing to defend; the kernel refuses to guess on the
+/// adapter's behalf.
+fn estimate_tokens(request: &ModelRequest) -> u64 {
+    request.text_len().div_ceil(4).max(1)
+}
+
 /// A model that plays back a script, one entry per call.
 ///
 /// An exhausted script answers with `Stop` and no content, so a runaway loop terminates
@@ -71,6 +92,7 @@ pub struct FakeModel {
 struct Scripted {
     remaining: Vec<Vec<ModelDelta>>,
     calls: usize,
+    token_override: Option<u64>,
 }
 
 impl FakeModel {
@@ -94,17 +116,27 @@ impl FakeModel {
     #[must_use]
     pub fn with_script(script: Vec<Vec<ModelDelta>>) -> Self {
         Self {
-            capability: Capability {
-                tools: true,
-                streaming: true,
-                context_window: 200_000,
-                max_output_tokens: 8_192,
-            },
+            capability: fake_capability(),
             state: Arc::new(Mutex::new(Scripted {
                 remaining: script,
                 calls: 0,
+                token_override: None,
             })),
         }
+    }
+
+    /// Advertise a different capability.
+    #[must_use]
+    pub fn with_capability(mut self, capability: Capability) -> Self {
+        self.capability = capability;
+        self
+    }
+
+    /// Report a fixed prompt-token count instead of estimating.
+    #[must_use]
+    pub fn with_token_count(self, tokens: u64) -> Self {
+        self.lock().token_override = Some(tokens);
+        self
     }
 
     /// How many calls were made. The engine's loop is the thing under test, so counting is
@@ -115,8 +147,6 @@ impl FakeModel {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Scripted> {
-        // A poisoned lock means another thread panicked while holding it; the state is a
-        // plain list and an integer, so recovering loses nothing.
         self.state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -127,6 +157,13 @@ impl FakeModel {
 impl Model for FakeModel {
     fn capability(&self) -> Capability {
         self.capability
+    }
+
+    fn count_tokens(&self, request: &ModelRequest) -> Result<u64> {
+        Ok(self
+            .lock()
+            .token_override
+            .unwrap_or_else(|| estimate_tokens(request)))
     }
 
     async fn invoke(&self, _request: ModelRequest) -> Result<ModelStream> {
@@ -164,12 +201,11 @@ impl EchoModel {
 #[async_trait]
 impl Model for EchoModel {
     fn capability(&self) -> Capability {
-        Capability {
-            tools: true,
-            streaming: true,
-            context_window: 200_000,
-            max_output_tokens: 8_192,
-        }
+        fake_capability()
+    }
+
+    fn count_tokens(&self, request: &ModelRequest) -> Result<u64> {
+        Ok(estimate_tokens(request))
     }
 
     async fn invoke(&self, _request: ModelRequest) -> Result<ModelStream> {
@@ -184,6 +220,28 @@ impl Model for EchoModel {
             }),
         ])))
     }
+}
+
+/// Deltas for one complete tool call: start, one argument chunk, and a stop.
+///
+/// Arguments arrive as text even in the fake, because that is the shape the kernel assembles
+/// and the shape a test needs to exercise.
+#[must_use]
+pub fn tool_call_deltas(id: &str, name: &str, arguments_json: &str) -> Vec<ModelDelta> {
+    vec![
+        ModelDelta::ToolCallStarted {
+            index: 0,
+            id: id.to_owned(),
+            name: name.to_owned(),
+        },
+        ModelDelta::ToolCallArgs {
+            index: 0,
+            fragment: arguments_json.to_owned(),
+        },
+        ModelDelta::Finished {
+            reason: FinishReason::ToolCalls,
+        },
+    ]
 }
 
 // ---------------------------------------------------------------------------
@@ -330,6 +388,17 @@ impl MemoryStore {
             .insert(snapshot.session.as_str().to_owned(), snapshot);
         Ok(())
     }
+
+    /// Every event appended for a session. For assertions, not for the engine.
+    #[must_use]
+    pub fn recorded(&self, session: &SessionId) -> Vec<Event> {
+        let state = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        state
+            .events
+            .get(session.as_str())
+            .cloned()
+            .unwrap_or_default()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -357,9 +426,13 @@ pub struct DenyAll;
 #[async_trait]
 impl Policy for DenyAll {
     async fn check(&self, request: PolicyRequest<'_>) -> Verdict {
+        let what = match request.subject {
+            Gated::Tool { call } => call.name.clone(),
+            Gated::Model { model, .. } => model.to_owned(),
+        };
         Verdict::Deny {
             code: crate::contract::ErrorCode::Denied,
-            reason: format!("{} is not available", request.call.name),
+            reason: format!("{what} is not available"),
         }
     }
 }
@@ -372,4 +445,26 @@ impl Policy for DenyAll {
 #[must_use]
 pub fn text_content(text: impl Into<String>) -> Content {
     Content::new([Part::new(PartKind::Text(TextPart { text: text.into() }))])
+}
+
+/// A ledger holding one successful attempt, for tests.
+#[must_use]
+pub fn one_attempt(model: &str) -> crate::contract::Ledger {
+    use crate::contract::{AttemptOutcome, AttemptPhase, AttemptTrigger, Usage};
+    let mut ledger = crate::contract::Ledger::default();
+    ledger.record(Attempt {
+        index: 0,
+        model: model.to_owned(),
+        phase: AttemptPhase::Execute,
+        trigger: AttemptTrigger::Selection,
+        outcome: AttemptOutcome::Ok,
+        usage: Usage {
+            input_tokens: 10,
+            output_tokens: 20,
+            micros_usd: Some(30),
+        },
+        duration_millis: 5,
+        degraded: Vec::new(),
+    });
+    ledger
 }

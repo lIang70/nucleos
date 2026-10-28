@@ -1,11 +1,11 @@
 //! The model, and the shapes a provider adapter has to speak.
 //!
 //! The kernel knows one request shape and one delta shape. A provider with more concepts than
-//! these lowers them on the way in and loses them on the way out — deliberately, because the
+//! these lowers them on the way in and reports what it could not carry on the way out — the
 //! alternative is a union of every provider's vocabulary, which is the thing this kernel
 //! exists not to be.
 
-use crate::contract::{Capability, Message, ToolCall, ToolSpec, Usage};
+use crate::contract::{Capability, Message, Purpose, ToolSpec, Usage};
 use crate::error::Result;
 use async_trait::async_trait;
 use std::pin::Pin;
@@ -20,8 +20,16 @@ pub type ModelStream = Pin<Box<dyn Stream<Item = Result<ModelDelta>> + Send>>;
 /// One model, behind the only interface the kernel has.
 #[async_trait]
 pub trait Model: Send + Sync {
-    /// What this model can do. Read at `Start`, never discovered by trial.
+    /// What this model can do. Read before the call, never discovered by trial.
     fn capability(&self) -> Capability;
+
+    /// How many prompt tokens this request will consume.
+    ///
+    /// Required, with no default. A context budget the kernel cannot compute is a budget the
+    /// kernel cannot enforce, and a default that estimates by character count is a guess made
+    /// precisely where accuracy matters. An adapter without a tokenizer returns a conservative
+    /// estimate and says so; the kernel does not decide that for it.
+    fn count_tokens(&self, request: &ModelRequest) -> Result<u64>;
 
     /// Start a call.
     ///
@@ -32,7 +40,9 @@ pub trait Model: Send + Sync {
 }
 
 /// Everything the kernel sends.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// `PartialEq` but not `Eq`: sampling parameters are floats, and a float has no total order.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ModelRequest {
     /// Standing instructions, if the session has any.
     pub system: Option<String>,
@@ -40,9 +50,109 @@ pub struct ModelRequest {
     pub messages: Vec<Message>,
     /// The tools this turn may use.
     pub tools: Vec<ToolSpec>,
-    /// The completion ceiling for this turn, already clamped against the session budget.
-    pub max_output_tokens: Option<u32>,
+    /// How to shape the answer.
+    pub params: GenerateParams,
+    /// Why this call is happening.
+    pub purpose: Purpose,
 }
+
+impl ModelRequest {
+    /// Total characters of text across every message.
+    ///
+    /// Here, once, so that an adapter's token estimate does not mean "the first text part" to
+    /// one implementor and "all of them joined" to another.
+    #[must_use]
+    pub fn text_len(&self) -> u64 {
+        let system = self.system.as_deref().map_or(0, |text| {
+            u64::try_from(text.chars().count()).unwrap_or(u64::MAX)
+        });
+        let messages = self
+            .messages
+            .iter()
+            .map(|message| {
+                u64::try_from(message.content.text().chars().count()).unwrap_or(u64::MAX)
+            })
+            .fold(0u64, |total, len| total.saturating_add(len));
+        system.saturating_add(messages)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Generation parameters
+// ---------------------------------------------------------------------------
+
+/// How the model should choose among the tools it was given.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ToolChoice {
+    /// It decides.
+    #[default]
+    Auto,
+    /// It must call one.
+    ///
+    /// This variant exists for one reason: "the model explained the problem instead of
+    /// calling the tool" is the most common way an agent fails, and this is the only fix for
+    /// it that does not involve asking the prompt more nicely.
+    Required,
+    /// It must not call one.
+    None,
+}
+
+/// How hard a reasoning model should think.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasoningEffort {
+    /// Barely.
+    Minimal,
+    /// A little.
+    Low,
+    /// Normal.
+    Medium,
+    /// As much as it costs.
+    High,
+}
+
+/// The shape the answer must have.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum TextFormat {
+    /// Prose.
+    #[default]
+    Text,
+    /// A JSON object, schema unchecked.
+    JsonObject,
+    /// A JSON object that must match a schema.
+    JsonSchema {
+        /// The name the provider files it under.
+        name: String,
+        /// The schema, serialized.
+        schema_json: String,
+    },
+}
+
+/// What the caller wants from this call.
+///
+/// Every field is carried, not decided: the kernel has no opinion about sampling. They live
+/// here rather than as a bag of extras because a bag is a second extension hatch, and the
+/// five parameters below are the ones every provider has.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GenerateParams {
+    /// The completion ceiling.
+    pub max_output_tokens: Option<u32>,
+    /// Sampling temperature.
+    pub temperature: Option<f32>,
+    /// Nucleus sampling.
+    pub top_p: Option<f32>,
+    /// Sequences that end the completion.
+    pub stop: Vec<String>,
+    /// Reasoning effort, for models that expose one.
+    pub reasoning_effort: Option<ReasoningEffort>,
+    /// How to choose among tools.
+    pub tool_choice: ToolChoice,
+    /// The shape the answer must have.
+    pub format: TextFormat,
+}
+
+// ---------------------------------------------------------------------------
+// Deltas
+// ---------------------------------------------------------------------------
 
 /// One fragment of a model's answer.
 ///
@@ -69,10 +179,38 @@ pub enum ModelDelta {
         /// The provider's signature fragment, returned verbatim.
         signature: String,
     },
-    /// The model asking for a tool.
-    ToolCall(ToolCall),
+    /// A tool call began. Its arguments follow as [`ModelDelta::ToolCallArgs`].
+    ToolCallStarted {
+        /// Position in this turn's tool-call list.
+        index: u32,
+        /// The correlation id the result will be filed under.
+        id: String,
+        /// The tool name.
+        name: String,
+    },
+    /// A fragment of one tool call's arguments.
+    ///
+    /// Arguments stream as text because that is what providers send, and because a partial
+    /// object cannot be handed to a tool. The kernel assembles them by index and validates the
+    /// JSON before anything runs.
+    ToolCallArgs {
+        /// Which call this fragment belongs to.
+        index: u32,
+        /// The fragment.
+        fragment: String,
+    },
     /// What the call has consumed so far. A provider may report it more than once.
     Usage(Usage),
+    /// A field the provider could not honour.
+    ///
+    /// Reported, never swallowed: a `tool_choice = Required` that quietly became `Auto` is a
+    /// session behaving differently than it was configured to.
+    Dropped {
+        /// The request field, e.g. `tool_choice`.
+        field: &'static str,
+        /// Why, in the provider's terms.
+        reason: String,
+    },
     /// The provider's own reason for stopping.
     Finished {
         /// What it said.

@@ -1,6 +1,6 @@
 //! Whether a call may happen.
 
-use crate::contract::{ErrorCode, PermissionOption, Principal, SessionId, ToolCall};
+use crate::contract::{ErrorCode, PermissionOption, Principal, Purpose, SessionId, ToolCall};
 use async_trait::async_trait;
 
 /// The kernel's only policy question.
@@ -15,18 +15,38 @@ pub trait Policy: Send + Sync {
     async fn check(&self, request: PolicyRequest<'_>) -> Verdict;
 }
 
+/// What is being gated.
+///
+/// One trait, two questions. A model call is a spend, and a runtime that gates tools but not
+/// models has a policy with a hole where the money is.
+#[derive(Debug, Clone, Copy)]
+pub enum Gated<'a> {
+    /// A tool is about to run.
+    Tool {
+        /// The call.
+        call: &'a ToolCall,
+    },
+    /// A model is about to be called.
+    Model {
+        /// Which model.
+        model: &'a str,
+        /// Why.
+        purpose: Purpose,
+    },
+}
+
 /// What policy is given.
 ///
-/// No session state, no token counts, no model name: a policy that can see the budget will
-/// eventually start making budget decisions, and that is the kernel's job.
+/// No session state, no token counts: a policy that can see the budget will eventually start
+/// making budget decisions, and that is the kernel's job.
 #[derive(Debug)]
 pub struct PolicyRequest<'a> {
     /// Who is asking.
     pub principal: &'a Principal,
-    /// Which session.
-    pub session: &'a SessionId,
-    /// The call being gated.
-    pub call: &'a ToolCall,
+    /// Which session, when there is one. `Generate` has none.
+    pub session: Option<&'a SessionId>,
+    /// The thing being gated.
+    pub subject: Gated<'a>,
 }
 
 /// What policy decided.

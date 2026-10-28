@@ -6,7 +6,7 @@ convenient.
 
 ## 1. Shape
 
-One service, twelve methods, one event stream. The contract lives at the repository root,
+One service, thirteen methods, two streams. The contract lives at the repository root,
 `proto/nucleos/v1/`, because it belongs to every SDK rather than to the Rust crate that
 happens to serve it. The version is in the path, so a breaking change adds
 `proto/nucleos/v2/` and both are served — no schema is ever edited in place.
@@ -54,6 +54,8 @@ Register   add or update a tool source, producing a new generation
 Deregister remove a tool source
 Sources    list sources, generations, and health
 Reload     apply pending source changes as one generation swap
+
+Generate   invoke a model directly, without a session (see §11)
 ```
 
 Session control and source management are separate groups on purpose: one is per-session
@@ -81,7 +83,8 @@ fork of the build.
 
 ```text
 StartRequest {
-  spec:      model selection, system prompt, initial input, tool allow-list
+  spec:      route (model chain + retries), generation params, system prompt,
+             initial input, tool allow-list
   budget:    tokens / cost / steps / wall clock
   metadata:  caller-defined labels, opaque to the kernel
   resume:    optional session id — restore and continue instead of creating
@@ -130,9 +133,12 @@ Event {
     state               StateChanged        // created/running/awaiting_*/…
     text_delta          TextDelta           // part_index + text
     reasoning_delta     ReasoningDelta      // part_index + text and/or signature
-    tool_call           ToolCallStarted     // ToolCall + deadline + progress_token
+    tool_call           ToolCallStarted     // index + id + name + deadline
+    tool_call_args      ToolCallArgs        // index + argument fragment
+    degraded            CapabilityDegraded  // a field the provider could not honour
+    attempt_failed      AttemptFailed       // one attempt, with what it cost
     tool_result         ToolFinished
-    usage               Usage               // tokens + cost, one per model call
+    usage               UsageReport         // tokens + cost + purpose + model + attempt
     awaiting_human      AwaitingHuman       // typed PermissionOptions
     budget_exhausted    BudgetExhausted
     failed              Failure
@@ -162,6 +168,16 @@ Rules:
   more text cannot be rendered — a second block is indistinguishable from a continuation.
 - `message_completed` carries the **assembled** message. Deltas are a rendering protocol;
   this is the record, and some content (a reasoning signature) exists only after assembly.
+- `tool_call` is followed by zero or more `tool_call_args`, addressed by `index`. Arguments
+  stream as text because that is what providers send and because a partial object cannot be
+  handed to a tool; the kernel assembles and validates before anything runs. Malformed
+  arguments become a tool result with `is_error`, which the model can read and repair — not a
+  failed turn.
+- `degraded` is emitted when a provider cannot honour a request field. A `tool_choice =
+  REQUIRED` that quietly became `AUTO` is a session behaving differently than it was
+  configured to, and the difference is undiscoverable afterwards unless it is recorded.
+- `attempt_failed` appears inside the stream for the same reason: a retry does not erase the
+  attempt that failed, or the money it spent.
 - A tool result carries content **and** an `is_error` flag. A failure is not a separate
   branch: the error text is content the model reads, and refusing it a place in the content
   model would leave the model with a message it cannot see.
@@ -286,6 +302,9 @@ alternative gets chosen accidentally by the first implementation.
 | A `PermissionOption` id the kernel did not offer | `INVALID`. The verdict names an option that was presented, or it is a client bug. |
 | Nobody answers an `AwaitingHuman` | Apply `default_if_unanswered`, which is a refusal. Silence is never approval. |
 | `List` with a `page_token` from an older page set | The token stays valid; it is a key, not an index. `INVALID` only if it cannot be decoded at all. |
+| `Generate` naming a model `Describe` never listed | `NOT_FOUND`, with the known names in `details`. |
+| `Generate` without a ceiling and the daemon has no default | `INVALID`. Silence is not a budget. |
+| `Generate` whose tool arguments never assemble into JSON | The stream finishes with a `tool_call` whose arguments failed to parse, and the caller runs nothing. The kernel does not invent a call. |
 | `Run` before `Start` | `NOT_FOUND`. A stream is a view of a session, and there is nothing to view yet. |
 | `Describe` on an empty daemon | Succeeds with `generation = 0` and no models. A health check must not need a session. |
 | `Deregister` a source a pinned session still uses | Allowed. The source stays alive until the last session on its generation ends; new sessions simply never see it. |
@@ -310,7 +329,30 @@ A stream that can be wrong about order is a stream nobody can build a UI on, so:
   after it. No event ever follows a terminal state.
 - Two concurrent `Run` streams never disagree about the order of events they both see.
 
-## 11. Deferred
+## 11. The gateway
+
+`Generate` exposes the kernel's model call path without a session. Stateless on purpose: no
+session is created, nothing enters the event log, and a one-off call cannot pollute `List`.
+
+It exists because normalization, routing, retries and cost accounting are one package. A
+caller who wants any of them wants all of them — and the alternative is every host writing its
+own client against its own provider's quirks.
+
+Three rules:
+
+- **A per-call ceiling travels with the request.** A gateway with no per-call limit is a cost
+  leak with an API, and the caller who forgets is exactly the caller who needed it.
+- **Policy gates it.** The same trait answers a second question — is this *model call* allowed
+  — with the principal, an absent session, and the purpose. A runtime that gates tools but not
+  model calls has a policy with a hole where the spend is.
+- **The stream speaks the session's vocabulary.** `TextDelta`, `ToolCallStarted`,
+  `CapabilityDegraded`, `UsageReport` are the same messages the event stream carries, so one
+  renderer serves both surfaces and they cannot drift.
+
+`GenerateFinished` carries the whole `Ledger`, so a caller learns what it spent even when the
+call failed.
+
+## 12. Deferred
 
 | Deferred | Why it is safe to defer |
 | --- | --- |

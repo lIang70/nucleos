@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package nucleos.v1;
+
+import "nucleos/v1/content.proto";
+import "nucleos/v1/generation.proto";
+
+// The stateless half of the gateway: one model call, streamed back.
+//
+// It shares its vocabulary with the session event stream — `TextDelta`, `ToolCallStarted`,
+// `UsageReport`, `CapabilityDegraded` are the same messages there. A caller can therefore
+// write one renderer for both, and the two surfaces cannot drift.
+
+message GenerateRequest {
+  // A name from `Describe`. Empty asks for the daemon's default.
+  string model = 1;
+  // Standing instructions, if any.
+  string system = 2;
+  // The conversation, oldest first.
+  repeated Message messages = 3;
+  // Tools the model may call. Definitions, not names: this call has no generation to resolve
+  // them against.
+  repeated ToolSpec tools = 4;
+  GenerateParams params = 5;
+  Purpose purpose = 6;
+  // A hard ceiling for this call, enforced by the daemon.
+  //
+  // Required in spirit: a gateway with no per-call limit is a cost leak with an API, and the
+  // caller who forgets is exactly the caller who needed it. Zero means "refuse if the daemon
+  // has no default".
+  uint64 max_micros_usd = 7;
+}
+
+message GenerateEvent {
+  oneof kind {
+    TextDelta text = 1;
+    ReasoningDelta reasoning = 2;
+    ToolCallStarted tool_call = 3;
+    ToolCallArgs tool_call_args = 4;
+    // Emitted once per attempt, so a caller sees what a retry cost as it happens.
+    UsageReport usage = 5;
+    CapabilityDegraded degraded = 6;
+    // An attempt ended badly. The stream continues if a retry or a fallback follows.
+    Attempt attempt = 7;
+    GenerateFinished finished = 8;
+  }
+}
+
+message GenerateFinished {
+  FinishReason reason = 1;
+  // Every attempt, in order, with the sum. Present even when the call failed.
+  Ledger ledger = 2;
+}

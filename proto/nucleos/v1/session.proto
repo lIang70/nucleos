@@ -4,14 +4,22 @@ package nucleos.v1;
 
 import "nucleos/v1/common.proto";
 import "nucleos/v1/content.proto";
+import "nucleos/v1/generation.proto";
 
 message SessionSpec {
-  string model = 1;
-  string system = 2;
-  repeated Message initial = 3;
+  // The route, in order: the first name that answers wins. Empty means the daemon default.
+  //
+  // A route rather than a single name because the kernel owns retries and fallback: a gateway
+  // that gives up on the first 503 is a gateway whose availability is its provider's.
+  repeated string model_chain = 1;
+  // Extra attempts against the same target before falling through to the next one.
+  uint32 retries = 2;
+  string system = 3;
+  repeated Message initial = 4;
   // Tool names exposed to this session. Empty means "everything the generation allows".
-  repeated string tools = 4;
-  map<string, string> metadata = 5;
+  repeated string tools = 5;
+  GenerateParams params = 6;
+  map<string, string> metadata = 7;
 }
 
 // What the *caller* can handle. The daemon downgrades rather than fails: a client that

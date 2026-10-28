@@ -4,6 +4,7 @@ package nucleos.v1;
 
 import "nucleos/v1/common.proto";
 import "nucleos/v1/content.proto";
+import "nucleos/v1/generation.proto";
 import "google/protobuf/timestamp.proto";
 
 // The event stream.
@@ -34,48 +35,22 @@ message Event {
     ReasoningDelta reasoning = 12;
     ToolCallStarted tool_call = 13;
     ToolFinished tool_result = 14;
-    Usage usage = 15;
+    UsageReport usage = 15;
     AwaitingHuman awaiting_human = 16;
     BudgetExhausted budget_exhausted = 17;
     Failure failed = 18;
     GenerationMigrated generation_migrated = 19;
     MessageCompleted message_completed = 20;
     Progress progress = 21;
+    CapabilityDegraded degraded = 22;
+    AttemptFailed attempt_failed = 23;
+    ToolCallArgs tool_call_args = 24;
   }
 }
 
 message StateChanged {
   SessionState state = 1;
   StopReason stop = 2;
-}
-
-message TextDelta {
-  // Which part of the assistant message this fragment belongs to. Without it a client
-  // cannot tell a second text block from a continuation of the first, so a turn that emits
-  // text, then a tool call, then more text is unrepresentable in the stream.
-  uint32 part_index = 1;
-  string text = 2;
-}
-
-// A fragment of a reasoning trace.
-//
-// `signature` arrives separately, usually as its own event with empty `text`, because a
-// provider signs the finished block rather than each fragment. Both fields are part of one
-// delta so that the ordering the provider sent is the ordering the client receives.
-message ReasoningDelta {
-  // Same rule as `TextDelta.part_index`.
-  uint32 part_index = 1;
-  string text = 2;
-  string signature = 3;
-}
-
-// Events carry the content model rather than copies of its fields: `ToolCall` here is the
-// same message a `ToolCallPart` holds, so a stream and a stored history cannot disagree.
-message ToolCallStarted {
-  ToolCall call = 1;
-  int64 deadline_unix_millis = 2;
-  // When set, the tool reports progress under this token.
-  string progress_token = 3;
 }
 
 message ToolFinished {
@@ -124,4 +99,10 @@ message BudgetExhausted {
 message GenerationMigrated {
   uint64 from_generation = 1;
   uint64 to_generation = 2;
+}
+
+// One attempt failed. Follows the same rule as everything else here: a failed attempt that
+// produced tokens still paid for them, so it is recorded rather than retried silently.
+message AttemptFailed {
+  Attempt attempt = 1;
 }

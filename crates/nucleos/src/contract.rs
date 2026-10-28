@@ -120,7 +120,7 @@ impl Content {
 
 /// One piece of content.
 ///
-/// The union is small on purpose: seven kinds. Audio and video are [`Part::File`] with an
+/// The union is small on purpose: seven kinds. Audio and video are [`PartKind::File`] with an
 /// `audio/*` or `video/*` media type, because the kernel moves those bytes and never
 /// interprets them. A kind is added when the kernel must act differently — not when a
 /// provider can emit something new.
@@ -275,8 +275,8 @@ pub struct ToolCall {
 /// `oneof` would have been enforced by the type system.
 ///
 /// One rule constrains the recursion `Content → Part → ToolResult → Content` otherwise
-/// allows: a tool result's content may contain any kind **except** [`Part::ToolCall`] or
-/// [`Part::ToolResult`]. Nesting is one level deep, and a validator enforces it.
+/// allows: a tool result's content may contain any kind **except** [`PartKind::ToolCall`] or
+/// [`PartKind::ToolResult`]. Nesting is one level deep, and a validator enforces it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolResult {
     /// The call this answers.
@@ -692,6 +692,11 @@ pub struct ToolSpec {
 pub struct Capability {
     /// Whether it accepts tool definitions and emits tool calls.
     pub tools: bool,
+    /// Whether it can be *made* to call one. A provider that accepts tools but ignores
+    /// `tool_choice = required` turns a configured guarantee into a suggestion.
+    pub tool_choice_required: bool,
+    /// Whether it can be held to a JSON Schema.
+    pub structured_output: bool,
     /// Whether [`crate::adapter::Model::invoke`] streams, or returns one final delta.
     pub streaming: bool,
     /// Total context, prompt plus completion.
@@ -735,4 +740,152 @@ pub struct Snapshot {
     pub usage: Usage,
     /// Turns taken.
     pub steps: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Route and ledger
+// ---------------------------------------------------------------------------
+
+/// Why a model call is happening.
+///
+/// The kernel makes calls of its own — a compaction summary is one — so the purpose has to be
+/// first-class: a budget whose summarisation spend is indistinguishable from answer spend is a
+/// budget nobody can explain after the fact.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Purpose {
+    /// The answer the caller is waiting for.
+    #[default]
+    Answer,
+    /// The kernel's own bookkeeping.
+    Summary,
+    /// Another try at a turn that produced something unusable.
+    Repair,
+}
+
+/// The route a call takes, in order.
+///
+/// A chain rather than a name because the kernel owns retries and fallback: a runtime that
+/// gives up on the first 503 has the availability of its least reliable provider.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Routing {
+    /// Candidate models, first that answers wins.
+    pub chain: Vec<String>,
+    /// Extra attempts against the same target before moving to the next.
+    pub retries: u32,
+}
+
+/// Where in a call an attempt happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttemptPhase {
+    /// Compiling and checking, before anything was sent.
+    Preflight,
+    /// The provider call itself.
+    Execute,
+    /// Refused before it happened.
+    CircuitOpen,
+}
+
+/// What caused an attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttemptTrigger {
+    /// The first attempt for the chosen target.
+    Selection,
+    /// Another try at the same target.
+    Retry,
+    /// A hop to the next target.
+    Fallback,
+}
+
+/// How an attempt ended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum AttemptOutcome {
+    /// It answered.
+    Ok,
+    /// It did not. Present even when a partial answer was streamed, because that one still
+    /// cost money.
+    Failed {
+        /// A stable category.
+        code: ErrorCode,
+        /// For humans.
+        reason: String,
+    },
+}
+
+/// A field the provider could not honour.
+///
+/// Recorded rather than swallowed: a `tool_choice = Required` that quietly became `Auto` is a
+/// session behaving differently than it was configured to, and the difference is
+/// undiscoverable afterwards.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Degraded {
+    /// The request field, e.g. `tool_choice`.
+    pub field: String,
+    /// Why, in the provider's terms.
+    pub reason: String,
+}
+
+/// One attempt, recorded whether or not it produced anything.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attempt {
+    /// Position in the ledger.
+    pub index: u32,
+    /// The target. Empty for a preflight refusal, which never had one.
+    pub model: String,
+    /// Where it happened.
+    pub phase: AttemptPhase,
+    /// What caused it.
+    pub trigger: AttemptTrigger,
+    /// How it ended.
+    pub outcome: AttemptOutcome,
+    /// What it consumed, if anything.
+    pub usage: Usage,
+    /// How long it took.
+    pub duration_millis: u64,
+    /// Fields this attempt could not honour.
+    pub degraded: Vec<Degraded>,
+}
+
+/// Every attempt a call made, and the sum.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ledger {
+    /// In order.
+    pub attempts: Vec<Attempt>,
+    /// The sum across every attempt that produced tokens.
+    pub total: Usage,
+}
+
+impl Ledger {
+    /// Record an attempt and fold its usage into the total.
+    ///
+    /// Folding happens here rather than at the call site so that a failed attempt that still
+    /// streamed cannot be quietly left out of the bill.
+    ///
+    /// The first attempt *defines* the accumulator instead of being added to it: a fresh total
+    /// is zeros-and-unknown, and "nothing recorded yet" is not the same as "a report was
+    /// missing". Adding the first report to an empty total would otherwise make every cost
+    /// unknown — which is what an empty total looks like, not what the attempt said.
+    pub fn record(&mut self, attempt: Attempt) {
+        if self.attempts.is_empty() {
+            self.total = attempt.usage.clone();
+        } else {
+            self.total.add(&attempt.usage);
+        }
+        self.attempts.push(attempt);
+    }
+
+    /// How many attempts were made.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.attempts.len()
+    }
+
+    /// Whether nothing was attempted.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.attempts.is_empty()
+    }
 }

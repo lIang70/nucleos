@@ -120,7 +120,8 @@ Every extension point is a trait. There are five; a sixth needs an argument.
 
 ```rust
 pub trait Model: Send + Sync {
-    fn capability(&self) -> Capability;                    // tools? stream? context window?
+    fn capability(&self) -> Capability;                    // tools? required? schema? window?
+    fn count_tokens(&self, request: &ModelRequest) -> Result<u64>;
     async fn invoke(&self, request: ModelRequest) -> Result<ModelStream>;
 }
 
@@ -154,11 +155,14 @@ Three shapes are deliberate and easy to get wrong:
 - **`Model::invoke` does return `Result`.** An error there means the call never started; an
   error *inside* the stream means it started and then failed — which still costs money and
   still has to be recorded.
+- **`count_tokens` is required, with no default.** A context budget the kernel cannot compute
+  is a budget it cannot enforce, and a built-in "characters divided by four" would be the
+  kernel guessing in exactly the place accuracy matters.
 - **`Clock` reports unix milliseconds, not `Instant`.** Events carry unix milliseconds and
   `Instant` can neither be serialised nor reconstructed, so a replay could not reproduce one.
   Time is an input, not an ambient fact.
 
-`Tool`'s only production implementation wraps an MCP tool source (§7). The trait stays
+`Tool`'s only production implementation wraps an MCP tool source (§8). The trait stays
 separate so the engine can be tested with a two-line fake, and `adapter::fake` ships those
 fakes because a fake only the kernel's tests can reach is a fake every host writes again.
 
@@ -201,30 +205,57 @@ because the error text is what the model must read to recover. The only restrict
 a tool result's content may not contain another tool call — `Content` and `Part` are
 mutually recursive, so that rule is what keeps the nesting one level deep.
 
-### 6.1 Model selection
+### 6.1 Selection, retries and the ledger
 
-One model per session, chosen by name at `Start` from a table the daemon configures. That
-is the whole of v1's routing.
+A session carries a **route**, not a model name: an ordered chain plus a retry count. The
+kernel walks it — first target, retries against it, then the next — and records every attempt.
 
-Explicitly **not** in v1: fallback chains, per-call model choice, cost-based routing,
-retry-with-a-different-model. Each of them is a policy engine, and a policy engine inside
-the kernel is exactly the thing §1 forbids. The trait has room for a router — a `Model`
-implementation may itself be a router — but the kernel does not grow one.
+```text
+Attempt { index, model, phase, trigger, outcome, usage, duration, degraded[] }
+Ledger  { attempts[], total }
+```
 
-The table is reloadable with the generation set: it is configuration, not state, and a
-session keeps the model it started with.
+Three properties make the ledger usable:
 
-Two properties worth naming, because both are easy to leave implicit and both bite:
+- **A failed attempt that streamed still pays.** Its usage is folded into the total, because
+  dropping it under-reports the bill.
+- **An unreported counter stays unreported.** Adding an unknown as zero is the same lie told
+  more quietly.
+- **The first attempt defines the total, later ones add to it.** A fresh total is
+  zeros-and-unknown, and "nothing recorded yet" is not the same as "a report was missing".
 
-- **A model entry is pinned exactly like a generation.** Reloading the table affects new
-  sessions; a running session keeps the model it started with, and its entry cannot be
-  removed while a session still references it.
-- **Capability is checked at `Start`, not at the first call.** A session that declares
-  tools against a model advertising no tool support is refused at `Start` with `INVALID`.
-  Degrading silently — dropping the tools and hoping the prompt still works — converts a
-  configuration error into a wrong answer nobody can trace.
+Routing lives in the kernel because the alternative is a runtime whose availability is its
+provider's, and because the ledger has to be produced by whoever chose the target. Model
+lookup is a plain registry, not a sixth trait: routing needs lookup, and lookup does not need
+polymorphism.
 
-## 7. Tool sources and generations
+`ToolChoice::Required` belongs to the same story. "The model explained the problem instead of
+calling the tool" is the most common way an agent fails, and forcing a call is the only fix
+that does not involve asking the prompt more nicely.
+
+## 7. The gateway
+
+`Generate` is the same call path as a session's model call, exposed without a session:
+stateless, nothing written to the event log, a one-off call that cannot pollute `List`.
+
+It exists because normalization, routing, retries and cost accounting are one package. A
+caller who wants any of them wants all of them, and the alternative is every host writing its
+own model client against its own provider's quirks.
+
+Two rules keep it from becoming a free tier:
+
+- **A per-call ceiling is required in spirit.** `max_micros_usd` travels with the request. A
+  gateway with no per-call limit is a cost leak with an API, and the caller who forgets is
+  exactly the caller who needed it.
+- **Policy gates it like anything else.** The gate has a second question — `Model { model,
+  purpose }` — for the same trait. A runtime that gates tools but not model calls has a policy
+  with a hole where the spend is.
+
+The stream carries the same vocabulary as the event log — `TextDelta`, `ToolCallStarted`,
+`UsageReport`, `CapabilityDegraded` are the same messages — so one renderer serves both and
+the two surfaces cannot drift.
+
+## 8. Tool sources and generations
 
 Tools are declared as **sources**, not as definitions pushed through the ABI. A source is
 an MCP endpoint:
@@ -257,7 +288,7 @@ Compatibility is decided by schema structure, not by a version number somebody t
 A mid-turn swap is never allowed. A tool call that has been issued must resolve against
 the generation that issued it.
 
-## 8. Budget is credit
+## 9. Budget is credit
 
 Budget is enforced as flow control, not as a post-hoc check: the caller grants credit,
 each `usage` event spends it, exhaustion drains the session and writes a checkpoint.
@@ -272,7 +303,7 @@ each `usage` event spends it, exhaustion drains the session and writes a checkpo
 The ledger records every attempt — including attempts that failed after streaming a
 partial answer. Under-reporting cost is the one direction nobody forgives.
 
-## 9. Persistence
+## 10. Persistence
 
 ```text
 Store:  events[sid] = [(seq, at, Event)]        append-only
@@ -287,7 +318,7 @@ is evidence), and **resumption** (`Run(from_seq)` needs no extra machinery).
 The cost is event-schema evolution, paid up front: every event carries `schema_version`
 and there is an upcaster table from day one.
 
-## 10. Context management
+## 11. Context management
 
 A session will outlive its model's context window. Three mechanisms, in order of who owns
 them:
@@ -353,7 +384,7 @@ Three properties follow, and none of them survive in-place editing of history:
 The event kind lands with P3 as a **purely additive** change to `nucleos.v1` — a new member
 of the `Event.kind` oneof, no version bump, no field renumbered.
 
-## 11. Telemetry
+## 12. Telemetry
 
 Names are not ours to invent. Attribute names follow the OpenTelemetry GenAI conventions
 (`gen_ai.usage.input_tokens`, `gen_ai.request.model`, `gen_ai.operation.name`), and trace
@@ -367,7 +398,7 @@ The kernel emits rather than exports: it produces events, and the daemon turns t
 spans, metrics and logs. The kernel has no OTLP dependency, and adding one would put network
 I/O on the hot path of every turn.
 
-## 12. Non-goals
+## 13. Non-goals
 
 | Not building | Why |
 | --- | --- |
@@ -375,11 +406,12 @@ I/O on the hot path of every turn.
 | A wire protocol to our own tools | MCP exists; we are a client |
 | Identity, signing, certificates | The daemon's job; the kernel takes `Principal` as data |
 | Cluster placement, supervision, self-healing | A platform concern; the kernel does not know how many nodes exist |
+| A provider-specific parameter bag | One extension hatch is enough; the five parameters every provider has are carried explicitly |
 | Multiple ABI bearers (in-process / child / remote as one abstraction) | The most expensive kind of debt: every interface is forced to the most conservative shape |
 | Live tool swapping inside a turn | Replaced only at turn boundaries |
 | Auto-triggered reload (file watch) | Deferred; reload is explicitly requested |
 
-## 13. Stages
+## 14. Stages
 
 | Stage | Content | Passes when |
 | --- | --- | --- |

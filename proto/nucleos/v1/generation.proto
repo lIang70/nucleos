@@ -1,0 +1,210 @@
+syntax = "proto3";
+
+package nucleos.v1;
+
+import "nucleos/v1/common.proto";
+
+// The vocabulary of one model call.
+//
+// This file sits below both `event` and `generate` because a generation is described the
+// same way whether a session drives it or a caller invokes it directly. One vocabulary, two
+// carriers — that is what makes it impossible for the streamed answer and the recorded event
+// to describe the same call differently.
+
+// A tool, as declared to the model.
+message ToolSpec {
+  string name = 1;
+  string description = 2;
+  // A JSON Schema object, kept as text: the kernel never interprets it, but it *does* compare
+  // it structurally when deciding whether two generations are compatible.
+  string input_schema_json = 3;
+}
+
+// How the model should choose among the tools it was given.
+enum ToolChoice {
+  TOOL_CHOICE_UNSPECIFIED = 0;
+  // It decides.
+  TOOL_CHOICE_AUTO = 1;
+  // It must call one. The reason this exists: "the model explained the problem instead of
+  // calling the tool" is the most common agent failure, and this is the only fix for it.
+  TOOL_CHOICE_REQUIRED = 2;
+  // It must not call one.
+  TOOL_CHOICE_NONE = 3;
+}
+
+// How hard a reasoning model should think.
+enum ReasoningEffort {
+  REASONING_EFFORT_UNSPECIFIED = 0;
+  REASONING_EFFORT_MINIMAL = 1;
+  REASONING_EFFORT_LOW = 2;
+  REASONING_EFFORT_MEDIUM = 3;
+  REASONING_EFFORT_HIGH = 4;
+}
+
+// The shape the answer must have.
+enum TextFormatKind {
+  TEXT_FORMAT_KIND_UNSPECIFIED = 0;
+  // Prose.
+  TEXT_FORMAT_KIND_TEXT = 1;
+  // A JSON object, schema unchecked.
+  TEXT_FORMAT_KIND_JSON_OBJECT = 2;
+  // A JSON object that must match `schema_json`.
+  TEXT_FORMAT_KIND_JSON_SCHEMA = 3;
+}
+
+message TextFormat {
+  TextFormatKind kind = 1;
+  // The name the provider files the schema under. Only for `JSON_SCHEMA`.
+  string schema_name = 2;
+  // The JSON Schema itself. Only for `JSON_SCHEMA`.
+  string schema_json = 3;
+}
+
+// Why this call is happening.
+//
+// In the kernel rather than in the host, because the kernel makes model calls of its own:
+// compaction (§11.2) is a model call, and its cost has to be attributable. A budget whose
+// summary spend is indistinguishable from answer spend is a budget nobody can explain.
+enum Purpose {
+  PURPOSE_UNSPECIFIED = 0;
+  // The answer the user is waiting for.
+  PURPOSE_ANSWER = 1;
+  // The kernel's own bookkeeping: a compaction summary.
+  PURPOSE_SUMMARY = 2;
+  // A second attempt at a turn that produced something unusable, e.g. malformed tool
+  // arguments.
+  PURPOSE_REPAIR = 3;
+}
+
+// What the caller wants from this call.
+message GenerateParams {
+  optional uint32 max_output_tokens = 1;
+  optional float temperature = 2;
+  optional float top_p = 3;
+  repeated string stop = 4;
+  ReasoningEffort reasoning_effort = 5;
+  ToolChoice tool_choice = 6;
+  TextFormat format = 7;
+}
+
+// ---------------------------------------------------------------------------
+// Streaming
+// ---------------------------------------------------------------------------
+
+message TextDelta {
+  // Which part of the assistant message this fragment belongs to. Without it a client cannot
+  // tell a second text block from a continuation of the first.
+  uint32 part_index = 1;
+  string text = 2;
+}
+
+message ReasoningDelta {
+  // Same rule as `TextDelta.part_index`.
+  uint32 part_index = 1;
+  string text = 2;
+  // The provider's signature fragment, returned verbatim. It usually arrives on its own, in a
+  // delta with empty `text`: providers sign the finished block, not each fragment.
+  string signature = 3;
+}
+
+// A tool call began. Arguments follow as `ToolCallArgs`, by index.
+message ToolCallStarted {
+  // Position in this turn's tool-call list.
+  uint32 index = 1;
+  string tool_call_id = 2;
+  string name = 3;
+  int64 deadline_unix_millis = 4;
+  // When set, the tool reports progress under this token.
+  string progress_token = 5;
+}
+
+// A fragment of one tool call's arguments.
+//
+// Arguments stream as text because that is what providers send, and because a partial object
+// cannot be handed to a tool. The kernel assembles them by index and validates the JSON before
+// anything runs — malformed arguments become a result the model can read, not a failed turn.
+message ToolCallArgs {
+  uint32 index = 1;
+  string fragment = 2;
+}
+
+// What one model call consumed, and who should pay for it.
+message UsageReport {
+  Usage usage = 1;
+  Purpose purpose = 2;
+  // The model that actually served it, after any routing.
+  string model = 3;
+  // Which attempt in the ledger this belongs to.
+  uint32 attempt_index = 4;
+}
+
+// A field the provider could not honour.
+//
+// Recorded rather than swallowed: a `tool_choice = REQUIRED` that quietly became `AUTO` is a
+// session that silently behaves differently than it was configured to, and the difference is
+// undiscoverable after the fact.
+message CapabilityDegraded {
+  // The request field, e.g. "tool_choice".
+  string field = 1;
+  // Why, in the provider's terms.
+  string reason = 2;
+}
+
+// Why the provider says it stopped. The least trustworthy of the four stop conditions.
+enum FinishReason {
+  FINISH_REASON_UNSPECIFIED = 0;
+  FINISH_REASON_STOP = 1;
+  FINISH_REASON_TOOL_CALLS = 2;
+  FINISH_REASON_LENGTH = 3;
+  FINISH_REASON_FILTERED = 4;
+  FINISH_REASON_OTHER = 5;
+}
+
+// ---------------------------------------------------------------------------
+// The ledger
+// ---------------------------------------------------------------------------
+
+enum AttemptPhase {
+  ATTEMPT_PHASE_UNSPECIFIED = 0;
+  // Compiling and checking, before anything was sent.
+  ATTEMPT_PHASE_PREFLIGHT = 1;
+  // The provider call itself.
+  ATTEMPT_PHASE_EXECUTE = 2;
+  // Refused before it happened.
+  ATTEMPT_PHASE_CIRCUIT_OPEN = 3;
+}
+
+enum AttemptTrigger {
+  ATTEMPT_TRIGGER_UNSPECIFIED = 0;
+  // The first attempt for the chosen target.
+  ATTEMPT_TRIGGER_SELECTION = 1;
+  // Another try at the same target.
+  ATTEMPT_TRIGGER_RETRY = 2;
+  // A hop to the next target, after this one failed.
+  ATTEMPT_TRIGGER_FALLBACK = 3;
+}
+
+// One attempt, recorded whether or not it produced anything.
+message Attempt {
+  uint32 index = 1;
+  // Empty for a preflight refusal, which never had a target.
+  string model = 2;
+  AttemptPhase phase = 3;
+  AttemptTrigger trigger = 4;
+  // Absent when the attempt succeeded. Present when it did not, including the case that
+  // streamed a partial answer before failing — that one still cost money.
+  Error error = 5;
+  Usage usage = 6;
+  uint64 duration_millis = 7;
+  // Fields the provider could not honour during this attempt.
+  repeated CapabilityDegraded degraded = 8;
+}
+
+// Every attempt a call made, and the sum.
+//
+// The sum accumulates across every attempt that produced tokens. Dropping a failed attempt
+// from the total under-reports the bill, which is the one direction nobody forgives.
+message Ledger {
+  repeated Attempt attempts = 1;
+  Usage total = 2;
+}

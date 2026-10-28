@@ -217,3 +217,38 @@ and an oversight gets quietly adopted.
 **Where the reason for an adopted shape lives.** In the `.proto` comment beside the field —
 that is where a reader is standing when the question occurs to them. Not in a separate
 document, and not in a list of precedents.
+
+## 20. A gateway needs a per-call ceiling
+
+**Decision.** `Generate` carries `max_micros_usd`; a call without one is refused unless the
+daemon configured a default.
+
+**Why.** Exposing model invocation over an ABI turns the daemon into a gateway, and a gateway
+with no per-call limit is a cost leak with an API. The caller who forgets the limit is exactly
+the caller who needed it — that is not an argument for trusting them.
+
+**Failure it prevents.** A loop in somebody's script, a weekend, and a number nobody can
+explain on Monday.
+
+## 21. A field the provider cannot honour must be reported
+
+**Decision.** `CapabilityDegraded` is emitted whenever a request field could not be carried,
+and the attempt records it too.
+
+**Why.** A `tool_choice = REQUIRED` that quietly became `AUTO` does not fail — it behaves
+differently. The session then looks like a model that will not call tools, and the actual
+cause is two layers below, in a capability nobody checked.
+
+**Failure it prevents.** Debugging a prompt for an hour when the answer was in the adapter.
+
+## 22. Retries belong to whoever keeps the ledger
+
+**Decision.** Routing — chain, retries, fallback — lives in the kernel, and every attempt is
+recorded with its usage.
+
+**Why.** Split the two and one of them lies. A host that retries but does not record makes the
+kernel's total wrong; a kernel that records but does not retry makes the total right and the
+availability poor. One owner, one ledger.
+
+**Failure it prevents.** A bill that does not match the attempts, and a "flaky" provider that
+was never actually retried.
