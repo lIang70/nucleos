@@ -1,6 +1,6 @@
 //! Tools, and the shape a tool source has to speak.
 
-use crate::contract::{Content, Isolation, Part, PartKind, SessionId, TextPart, ToolSpec, Usage};
+use crate::contract::{Content, Part, PartKind, SessionId, TextPart, ToolSpec, Usage};
 use async_trait::async_trait;
 
 /// One tool, behind the only interface the kernel has.
@@ -11,14 +11,6 @@ use async_trait::async_trait;
 pub trait Tool: Send + Sync {
     /// The declaration the model sees.
     fn spec(&self) -> ToolSpec;
-
-    /// How strongly execution is separated from the kernel.
-    ///
-    /// Declared, never verified here: whoever launches the tool enforces it, and the kernel's
-    /// only use for it is refusing to migrate a session into a generation where it changed.
-    fn isolation(&self) -> Isolation {
-        Isolation::None
-    }
 
     /// Run one call.
     ///

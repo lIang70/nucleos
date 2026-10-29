@@ -7,7 +7,7 @@
 #![allow(clippy::unwrap_used)]
 
 use nucleos::adapter::{Tool, ToolCtx};
-use nucleos::contract::{Isolation, SessionId};
+use nucleos::contract::SessionId;
 use nucleos_mcp::McpSource;
 use std::time::Duration;
 
@@ -39,7 +39,6 @@ async fn a_source_discovers_and_runs_a_tool() {
     // never reads inside.
     assert!(tool.spec().input_schema_json.contains("\"text\""));
     // A stdio source runs in another process by construction.
-    assert_eq!(tool.isolation(), Isolation::Process);
 
     let session = SessionId::new("s1");
     let output = tool

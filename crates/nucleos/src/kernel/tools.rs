@@ -6,7 +6,7 @@
 use super::{Kernel, session};
 use crate::adapter::Tool;
 use crate::adapter::ToolOutput;
-use crate::contract::{Content, Message, Part, PartKind};
+use crate::contract::{Content, Exposure, Message, Part, PartKind};
 use crate::contract::{EventKind, ToolResultPart};
 use crate::error::{Error, Result};
 use std::sync::Arc;
@@ -161,6 +161,11 @@ impl Kernel {
         output: ToolOutput,
         duration_millis: u64,
     ) -> Result<()> {
+        // Using a tool is the strongest evidence it belongs in the pool: the model reached for it
+        // without searching first, which is what "recently used" is for.
+        if self.allowable(session, &call.name) {
+            session.discovered.insert(call.name.clone(), session.round);
+        }
         // A tool that reported a cost is charged for it; one that said nothing is not assumed
         // free. The ledger's rule is the same one model usage follows.
         if let Some(usage) = &output.usage {
@@ -194,35 +199,98 @@ impl Kernel {
     /// should not turn the whole call into an error, and showing a tool that may never run would
     /// provoke a call whose refusal the model cannot explain.
     async fn expose(&self, session: &mut session::Session, names: &[String]) -> Result<()> {
-        if names.is_empty() {
-            return Ok(());
-        }
-        if matches!(session.exposed, crate::contract::Exposure::All) {
-            // Everything the ceiling allows is already visible; there is nothing to widen.
-            return Ok(());
-        }
-
-        let ceiling = session.tools.clone();
         let mut added = Vec::new();
         for name in names {
-            // The ceiling decides, not the tool: this is the whole reason exposure is safe.
-            if !ceiling.is_empty() && !ceiling.contains(name) {
+            let before = self.visible(session, name);
+            // The ceiling decides, not the tool: this is the whole reason exposure is safe. A tool
+            // that ranked something forbidden is not an error — it has no session and cannot know.
+            if !self.allowable(session, name) || self.level(session, name) == Exposure::Hidden {
                 continue;
             }
-            if session.exposed.shows(name, &ceiling) {
-                continue;
-            }
-            if let crate::contract::Exposure::Only { names: shown } = &mut session.exposed {
-                shown.push(name.clone());
+            session.discovered.insert(name.clone(), session.round);
+            if !before && self.visible(session, name) {
                 added.push(name.clone());
             }
         }
+        self.trim_pool(session);
 
         if !added.is_empty() {
             self.emit(session, EventKind::ToolsExposed { names: added })
                 .await?;
         }
         Ok(())
+    }
+
+    /// Whether the ceiling allows a tool at all.
+    #[must_use]
+    pub(crate) fn allowable(&self, session: &session::Session, name: &str) -> bool {
+        self.tools.contains_key(name)
+            && (session.tools.is_empty() || session.tools.contains(&name.to_owned()))
+    }
+
+    /// How visible a tool is under the session's policy.
+    #[must_use]
+    pub(crate) fn level(&self, session: &session::Session, name: &str) -> Exposure {
+        if self.discoverable() {
+            session.tool_policy.exposure_of(name)
+        } else {
+            Exposure::Always
+        }
+    }
+
+    /// Whether a tool is in the prompt right now, ignoring the per-turn budget.
+    #[must_use]
+    pub(crate) fn visible(&self, session: &session::Session, name: &str) -> bool {
+        if !self.allowable(session, name) {
+            return false;
+        }
+        match self.level(session, name) {
+            Exposure::Always => true,
+            Exposure::Direct | Exposure::Deferred => session.discovered.contains_key(name),
+            Exposure::Hidden => false,
+        }
+    }
+
+    /// Forget what has not been reached recently, and what no longer fits.
+    ///
+    /// Expiry is what keeps the pool from growing into "everything, eventually": a tool found on
+    /// turn 3 and never used again should not still be displacing a baseline on turn 40.
+    pub(crate) fn trim_pool(&self, session: &mut session::Session) {
+        let policy = session.tool_policy.discovery.clone();
+        let round = session.round;
+        // Expiry only: what the ceiling allows is settled when a name enters the pool, and
+        // re-checking it here would need the ceiling while the pool is borrowed.
+        session
+            .discovered
+            .retain(|_name, last| round.saturating_sub(*last) < policy.idle_rounds);
+
+        if session.discovered.len() <= policy.max_tools {
+            return;
+        }
+        // Evict by rank first, then by staleness: a baseline is never evicted, and among equals the
+        // one that has gone longest without use goes first.
+        let mut entries: Vec<(String, u64)> = session
+            .discovered
+            .iter()
+            .map(|(name, last)| (name.clone(), *last))
+            .collect();
+        entries.sort_by(|left, right| {
+            let left_rank = session.tool_policy.exposure_of(&left.0).rank();
+            let right_rank = session.tool_policy.exposure_of(&right.0).rank();
+            right_rank.cmp(&left_rank).then(left.1.cmp(&right.1))
+        });
+        for (name, _) in entries {
+            if session.discovered.len() <= policy.max_tools {
+                break;
+            }
+            session.discovered.remove(&name);
+        }
+    }
+
+    /// Advance the turn counter and expire what has gone quiet.
+    pub(crate) fn begin_round(&self, session: &mut session::Session) {
+        session.round = session.round.saturating_add(1);
+        self.trim_pool(session);
     }
 
     /// One tool by name.
@@ -232,14 +300,74 @@ impl Kernel {
     }
 
     /// The declarations this session may use, in name order so a prompt is reproducible.
+    ///
+    /// The ceiling decides what may ever be used; the policy and the pool decide what is in the
+    /// prompt now; the budget decides how much of that fits. All three, in that order.
     #[must_use]
     pub fn tool_specs(&self, session: &session::Session) -> Vec<crate::contract::ToolSpec> {
-        self.tools
+        let mut candidates: Vec<(crate::contract::Exposure, u64, crate::contract::ToolSpec)> = self
+            .tools
             .iter()
-            // Two filters and the order matters: the ceiling decides what may ever be used, the
-            // exposure decides what the model sees right now.
-            .filter(|(name, _)| session.exposed.shows(name, &session.tools))
-            .map(|(_, tool)| tool.spec())
-            .collect()
+            .filter(|(name, _)| session.tools.is_empty() || session.tools.contains(name))
+            .filter_map(|(name, tool)| {
+                // With no search tool registered the catalog is small enough that hiding any of it
+                // only costs a round trip, so the policy is not consulted at all.
+                let exposure = if self.discoverable() {
+                    session.tool_policy.exposure_of(name)
+                } else {
+                    crate::contract::Exposure::Always
+                };
+                let last_used = session.discovered.get(name).copied();
+                let shown = match exposure {
+                    crate::contract::Exposure::Always => true,
+                    crate::contract::Exposure::Direct | crate::contract::Exposure::Deferred => {
+                        last_used.is_some()
+                    }
+                    crate::contract::Exposure::Hidden => false,
+                };
+                shown.then(|| (exposure, last_used.unwrap_or(0), tool.spec()))
+            })
+            .collect();
+
+        // Stable order before pruning: baseline first, then the most recently reached, then name —
+        // so two sessions with the same history show the same prompt.
+        candidates.sort_by(|left, right| {
+            left.0
+                .rank()
+                .cmp(&right.0.rank())
+                .then(right.1.cmp(&left.1))
+                .then(left.2.name.cmp(&right.2.name))
+        });
+
+        let budget = &session.tool_policy.budget;
+        let mut bytes = 0u64;
+        let mut specs = Vec::new();
+        for (_, _, spec) in candidates {
+            // Always-tools are admitted even over budget: a prompt with no `tool_search` has no way
+            // back, and a baseline that can be evicted by its own discoveries is not a baseline.
+            let weight = definition_bytes(&spec);
+            if specs.len() >= budget.max_definitions || bytes + weight > budget.max_bytes {
+                break;
+            }
+            bytes += weight;
+            specs.push(spec);
+        }
+        // Name order for the prompt itself, which is what a replay compares against.
+        specs.sort_by(|left, right| left.name.cmp(&right.name));
+        specs
     }
+
+    /// Whether discovery is on: a catalog small enough to show in full does not need it.
+    #[must_use]
+    pub fn discoverable(&self) -> bool {
+        self.tools.contains_key(super::tool_search::NAME)
+    }
+}
+
+/// What one definition costs, approximated without serializing it.
+///
+/// The constant stands in for the punctuation and the field names around the three strings; it
+/// exists so pruning does not allocate a JSON document per tool per turn.
+fn definition_bytes(spec: &crate::contract::ToolSpec) -> u64 {
+    (spec.name.len() + spec.description.len() + spec.input_schema_json.len() + 32) as u64
 }

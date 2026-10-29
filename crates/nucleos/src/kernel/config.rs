@@ -80,38 +80,79 @@ impl Kernel {
             session.retries = routing.retries;
             changed.push("routing");
         }
-        if let Some(exposed) = &patch.exposed {
-            within_ceiling(exposed, &session.tools)?;
-            session.exposed = exposed.clone();
-            changed.push("exposed");
-        }
         if let Some(tools) = &patch.tools {
             narrow_only(&session.tools, tools)?;
             session.tools = tools.clone();
             changed.push("tools");
+            // Pruning against the previous policy would be pruning against the wrong one.
+            self.trim_pool(session);
+        }
+        if let Some(policy) = &patch.tool_policy {
+            // Checked against the ceiling that is now in force, so a patch that both narrows the
+            // ceiling and names an exposure is judged the way it will actually run.
+            self.validate_policy(session, policy)?;
+            session.tool_policy = policy.clone();
+            self.seed_search_policy(session);
+            changed.push("tool_policy");
         }
 
         Ok(changed)
     }
 }
 
-/// Refuse an exposure that names a tool outside the ceiling.
-///
-/// Exposure is not permission, but it is still bounded by permission: showing the model a tool it
-/// may never execute would produce a call that is refused for a reason the model cannot see.
-fn within_ceiling(exposed: &crate::contract::Exposure, ceiling: &[String]) -> Result<()> {
-    let crate::contract::Exposure::Only { names } = exposed else {
-        return Ok(());
-    };
-    if ceiling.is_empty() {
-        return Ok(());
+impl Kernel {
+    /// Make the search tool visible unless the caller said otherwise.
+    ///
+    /// There is one tool the model must never lose sight of: the one that finds the others. A
+    /// policy that does not mention it gets it as `Always`, so the default discovers; a policy that
+    /// hides it is refused by [`ToolPolicy::validate`], because a catalog with no door is worse than
+    /// a catalog that is too loud.
+    pub(crate) fn seed_search_policy(&self, session: &mut session::Session) {
+        if self.discoverable() {
+            session
+                .tool_policy
+                .exposures
+                .entry(super::tool_search::NAME.to_owned())
+                .or_insert(crate::contract::Exposure::Always);
+        }
     }
-    if let Some(outside) = names.iter().find(|name| !ceiling.contains(name)) {
-        return Err(Error::denied(format!(
-            "exposure names {outside:?}, which is outside the session's tool ceiling"
-        )));
+
+    /// Refuse a policy that names a tool outside the ceiling, or that hides discovery's own tool.
+    ///
+    /// Exposure is not permission, but it is still bounded by permission: showing the model a tool
+    /// it may never execute would produce a call the gate refuses, for a reason the model cannot
+    /// see from where it sits.
+    fn validate_policy(
+        &self,
+        session: &session::Session,
+        policy: &crate::contract::ToolPolicy,
+    ) -> Result<()> {
+        if self.discoverable() {
+            policy.validate(super::tool_search::NAME)?;
+        }
+        let ceiling = if session.tools.is_empty() {
+            self.tools.keys().cloned().collect()
+        } else {
+            session.tools.clone()
+        };
+        // Only an `always` entry can appear in a prompt unconditionally, so it is the only level
+        // that has to be inside the ceiling. Deferred entries are filtered by the pool anyway.
+        if let Some(outside) = policy
+            .exposures
+            .iter()
+            .filter(|(_, exposure)| **exposure == crate::contract::Exposure::Always)
+            .map(|(name, _)| name)
+            .find(|name| !ceiling.contains(name))
+        {
+            return Err(Error::denied(format!(
+                "always exposure names {outside:?}, which is outside the session's tool ceiling"
+            )));
+        }
+        if policy.budget.max_definitions == 0 {
+            return Err(Error::invalid("max_definitions must be at least 1"));
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 /// Refuse to widen the tool allow-list.

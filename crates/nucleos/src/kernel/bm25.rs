@@ -393,7 +393,10 @@ mod tests {
     fn ties_keep_the_order_the_documents_arrived_in() {
         let index = Index::new(vec![doc("b", "same", ""), doc("a", "same", "")]);
         let hits = index.search("same", 2);
-        assert_eq!(hits[0].id, "b", "the caller sorts if it wants another order");
+        assert_eq!(
+            hits[0].id, "b",
+            "the caller sorts if it wants another order"
+        );
     }
 
     #[test]
@@ -410,13 +413,16 @@ mod tests {
             .map(|position| doc(&format!("t{position}"), "read_file", "reads a file"))
             .collect();
         assert_eq!(Index::new(docs).search("read", 0).len(), 5);
-        assert_eq!(Index::new(
-            (0..5)
-                .map(|position| doc(&format!("t{position}"), "read_file", "reads a file"))
-                .collect()
-        )
-        .search("read", 2)
-        .len(), 2);
+        assert_eq!(
+            Index::new(
+                (0..5)
+                    .map(|position| doc(&format!("t{position}"), "read_file", "reads a file"))
+                    .collect()
+            )
+            .search("read", 2)
+            .len(),
+            2
+        );
     }
 
     #[test]

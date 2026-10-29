@@ -26,7 +26,7 @@ pub mod kernel;
 pub mod wire;
 
 pub use contract::{
-    Budget, Capability, Content, Event, EventKind, Generation, Isolation, Message, Part, PartKind,
+    Budget, Capability, Content, Event, EventKind, Generation, Message, Part, PartKind,
     PermissionKind, PermissionOption, Principal, Role, SessionId, SessionState, Snapshot,
     StopReason, ToolCall, ToolResult, ToolSpec, Usage,
 };

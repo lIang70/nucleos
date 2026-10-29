@@ -42,8 +42,13 @@ pub struct Session {
     pub(crate) sandbox: crate::contract::SandboxPolicy,
     /// The adapter hints in force.
     pub(crate) hints: crate::contract::Hints,
-    /// Which tools the model can see, as opposed to which it may use.
-    pub(crate) exposed: crate::contract::Exposure,
+    /// How visible each tool is, and what a prompt and the pool may hold.
+    pub(crate) tool_policy: crate::contract::ToolPolicy,
+    /// Tools discovered or used, and the turn each was last reached — the pool that outlives a
+    /// single prompt.
+    pub(crate) discovered: std::collections::BTreeMap<String, u64>,
+    /// Turns taken. The clock the pool expires against.
+    pub(crate) round: u64,
     /// What this session is for.
     pub(crate) kind: crate::contract::SessionKind,
     /// The process, when this is a process session.
@@ -121,10 +126,16 @@ impl Session {
         &self.tools
     }
 
-    /// Which tools the model can see.
+    /// The exposure policy in force.
     #[must_use]
-    pub fn exposed(&self) -> &crate::contract::Exposure {
-        &self.exposed
+    pub fn tool_policy(&self) -> &crate::contract::ToolPolicy {
+        &self.tool_policy
+    }
+
+    /// Tools this session has discovered or used, and the turn each was last reached.
+    #[must_use]
+    pub fn discovered(&self) -> &std::collections::BTreeMap<String, u64> {
+        &self.discovered
     }
 
     /// The adapter hints in force.
@@ -201,7 +212,9 @@ impl Session {
             workspace: None,
             sandbox: crate::contract::SandboxPolicy::default(),
             hints: crate::contract::Hints::default(),
-            exposed: crate::contract::Exposure::default(),
+            tool_policy: crate::contract::ToolPolicy::default(),
+            discovered: std::collections::BTreeMap::new(),
+            round: 0,
             kind: crate::contract::SessionKind::Agent,
             process: None,
             routing: crate::contract::Routing::default(),
@@ -282,7 +295,9 @@ impl Session {
             workspace: self.workspace.clone(),
             sandbox: self.sandbox.clone(),
             hints: self.hints.clone(),
-            exposed: self.exposed.clone(),
+            tool_policy: self.tool_policy.clone(),
+            discovered: self.discovered.clone(),
+            round: self.round,
             kind: self.kind,
             process: self.process.clone(),
             data: self.data.clone(),
@@ -321,7 +336,9 @@ impl Session {
             workspace: snapshot.workspace,
             sandbox: snapshot.sandbox,
             hints: snapshot.hints,
-            exposed: snapshot.exposed,
+            tool_policy: snapshot.tool_policy,
+            discovered: snapshot.discovered,
+            round: snapshot.round,
             kind: snapshot.kind,
             process: snapshot.process,
             system: snapshot.system,

@@ -11,7 +11,7 @@
 use crate::content;
 use async_trait::async_trait;
 use nucleos::adapter::{Tool, ToolCtx, ToolOutput};
-use nucleos::contract::{Isolation, ToolSpec};
+use nucleos::contract::ToolSpec;
 use nucleos::error::{Error, Result};
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, Tool as McpDeclaration};
@@ -160,13 +160,6 @@ impl std::fmt::Debug for McpTool {
 impl Tool for McpTool {
     fn spec(&self) -> ToolSpec {
         self.spec.clone()
-    }
-
-    /// A tool served over stdio runs in another process by construction — which is the isolation
-    /// story this whole design prefers: a crashing tool is an unhealthy source, not a crashed
-    /// kernel.
-    fn isolation(&self) -> Isolation {
-        Isolation::Process
     }
 
     async fn invoke(&self, args_json: &str, cx: &ToolCtx<'_>) -> ToolOutput {

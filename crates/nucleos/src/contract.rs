@@ -802,19 +802,6 @@ pub struct Capability {
 
 /// How strongly a tool's execution is separated from the kernel.
 ///
-/// Declared per tool source and enforced by whoever launches it. The kernel only refuses to
-/// migrate a session into a generation where it changed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum Isolation {
-    /// Trusted in-process code; nothing to enforce.
-    None,
-    /// A child process, confined by the OS.
-    Process,
-    /// A virtual machine or a wasm instance.
-    Vm,
-}
-
 /// A call waiting on a human.
 ///
 /// Part of the snapshot because the wait outlives any process: a session parked on a
@@ -876,9 +863,15 @@ pub struct Snapshot {
     /// The adapter hints in force.
     #[serde(default)]
     pub hints: Hints,
-    /// Which tools the model can see. See [`Exposure`].
+    /// The exposure policy in force.
     #[serde(default)]
-    pub exposed: Exposure,
+    pub tool_policy: ToolPolicy,
+    /// Tools discovered or used, and the turn each was last reached.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub discovered: BTreeMap<String, u64>,
+    /// Turns taken, which the pool expires against.
+    #[serde(default)]
+    pub round: u64,
     /// The application's own state.
     ///
     /// Opaque: the kernel stores it, updates it atomically and restores it, and never reads a
@@ -1480,35 +1473,138 @@ pub enum Truncation {
     Disabled,
 }
 
-/// Which tools the model can see, as opposed to which it may ever use.
+/// How visible a tool is, as distinct from whether it may be used.
 ///
-/// The ceiling (`tools`) is the application's to narrow and only ever narrows. Exposure is what is
-/// in the prompt right now, and it may grow up to the ceiling — by configuration, or by a search
+/// The ceiling (`config.tools`) is the application's to narrow and only ever narrows. Exposure is
+/// what is in the prompt right now: it may grow up to the ceiling, by configuration or by a search
 /// tool asking. Keeping the two apart is what makes dynamic tool loading safe.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum Exposure {
-    /// Everything the ceiling allows. The default, and the right answer for a small tool set.
+    /// In the prompt every turn. Keep this set small: it is the stable baseline.
+    Always,
+    /// In the prompt once it has been found or used, and while it stays in the pool.
+    Direct,
+    /// Invisible until a search surfaces it. The default, and the reason discovery exists.
     #[default]
-    All,
-    /// Exactly these, a subset of the ceiling.
-    Only {
-        /// The tool names in the prompt.
-        names: Vec<String>,
-    },
+    Deferred,
+    /// Never in the prompt, not even via search. Still callable by name — hiding a tool is not
+    /// forbidding it.
+    Hidden,
 }
 
 impl Exposure {
-    /// Whether a tool is visible under this exposure and a ceiling.
+    /// Which of two visible tools to keep when the budget cannot hold both. Lower wins.
+    ///
+    /// `Always` outranks `Direct`, which outranks `Deferred`: a baseline that disappears because
+    /// the model searched too much is worse than a found tool that expires.
     #[must_use]
-    pub fn shows(&self, name: &str, ceiling: &[String]) -> bool {
-        if !ceiling.is_empty() && !ceiling.iter().any(|allowed| allowed == name) {
-            return false;
-        }
+    pub fn rank(self) -> u8 {
         match self {
-            Self::All => true,
-            Self::Only { names } => names.iter().any(|shown| shown == name),
+            Self::Always => 0,
+            Self::Direct => 1,
+            Self::Deferred => 2,
+            Self::Hidden => 3,
         }
+    }
+
+    /// Whether a search may surface it.
+    #[must_use]
+    pub fn searchable(self) -> bool {
+        matches!(self, Self::Direct | Self::Deferred)
+    }
+}
+
+/// How many tool definitions may reach the model per turn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DefinitionBudget {
+    /// How many definitions, counted before the prompt is built.
+    pub max_definitions: usize,
+    /// What they may weigh together, in bytes of name, description and schema.
+    pub max_bytes: u64,
+}
+
+impl Default for DefinitionBudget {
+    /// Thirty-two definitions or 16 KiB, whichever comes first.
+    ///
+    /// Both caps, because the two failures are different: forty one-line tools are cheap and
+    /// confusing, four tools with enormous schemas are expensive and clear.
+    fn default() -> Self {
+        Self {
+            max_definitions: 32,
+            max_bytes: 16 * 1024,
+        }
+    }
+}
+
+/// What a session remembers having found.
+///
+/// Separate from the per-turn budget on purpose: the budget caps what a prompt shows, the pool caps
+/// what the session remembers. A session that can only show eight tools may still have discovered
+/// thirty, and re-searching for one it used two turns ago is the waste this prevents.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DiscoveryPolicy {
+    /// How many discovered tools stay remembered.
+    pub max_tools: usize,
+    /// What they may weigh together.
+    pub max_bytes: u64,
+    /// How many turns without a use before a tool is forgotten.
+    pub idle_rounds: u64,
+}
+
+impl Default for DiscoveryPolicy {
+    fn default() -> Self {
+        Self {
+            max_tools: 32,
+            max_bytes: 16 * 1024,
+            idle_rounds: 10,
+        }
+    }
+}
+
+/// The host's exposure policy for one session.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ToolPolicy {
+    /// The exposure of every tool without an entry in `exposures`. Defaults to `Deferred`.
+    #[serde(default)]
+    pub default: Exposure,
+    /// Per-tool overrides.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub exposures: BTreeMap<String, Exposure>,
+    /// What a prompt may carry this turn.
+    #[serde(default)]
+    pub budget: DefinitionBudget,
+    /// What the session remembers.
+    #[serde(default)]
+    pub discovery: DiscoveryPolicy,
+}
+
+impl ToolPolicy {
+    /// The exposure of one tool.
+    #[must_use]
+    pub fn exposure_of(&self, name: &str) -> Exposure {
+        self.exposures
+            .get(name)
+            .copied()
+            .unwrap_or(self.default)
+    }
+
+    /// Refuse a policy that would make discovery impossible.
+    ///
+    /// A hidden or deferred `tool_search` is a catalog nobody can reach: the model is told to search
+    /// with a tool it cannot see. Absence is not a refusal — an unconfigured search tool is seeded
+    /// to `Always` by the kernel, so the default policy discovers rather than hides.
+    pub fn validate(&self, search_tool: &str) -> crate::error::Result<()> {
+        if self
+            .exposures
+            .get(search_tool)
+            .is_some_and(|exposure| *exposure != Exposure::Always)
+        {
+            return Err(crate::error::Error::invalid(format!(
+                "{search_tool} must be exposed as always; any other exposure disables discovery"
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -1532,9 +1628,9 @@ pub struct ConfigPatch {
     /// The tool allow-list. Empty means every registered tool.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<String>>,
-    /// Which of them the model can see. Absent leaves it unchanged.
+    /// The exposure policy. Absent leaves it unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub exposed: Option<Exposure>,
+    pub tool_policy: Option<ToolPolicy>,
     /// The route this session takes. Absent means unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routing: Option<Routing>,

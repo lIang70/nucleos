@@ -293,10 +293,10 @@ and died on "two different schemas share the name ToolResult".
 as a body collides with the definition already collected. One pass has one version of each type by
 construction, and neither problem exists.
 
-## 25. An exposure outside the ceiling is refused at the door
+## 25. An `always` outside the ceiling is refused at the door
 
-**Decision.** `configure` rejects `exposed` naming a tool that `tools` does not allow; a *tool's*
-request for such a name is silently dropped instead.
+**Decision.** `configure` rejects an `always` entry naming a tool that `tools` does not allow; a
+*tool's* request for such a name is silently dropped instead.
 
 **Why.** The two are different acts. An application asking for a contradictory configuration has
 made a mistake, and the error is the useful answer. A search tool asking is just a ranker doing its
@@ -332,4 +332,32 @@ built from, so it is kept.
 
 **Guarded by.** `tool_search` returns "query had no searchable words" rather than a ranking, so
 the misfire is visible instead of looking like a bad index.
+
+## 28. Everything is deferred, and the search tool is always
+
+**Decision.** `ToolPolicy::default()` is `deferred`, and the kernel seeds `tool_search` to
+`always` unless the caller configured it explicitly.
+
+**Why.** The obvious default — show every tool — is the behaviour discovery exists to replace: the
+twenty-ninth tool is as visible as the first, and the prompt pays for all of them on every call.
+Deferring by default makes the catalog's size stop mattering.
+
+**The trap in the other direction.** With everything deferred, the *only* way in is `tool_search`,
+so hiding it silently turns the session into one that can see nothing and has no way to ask. A
+policy that names it as anything but `always` is refused rather than obeyed.
+
+## 29. A field nothing reads is a field that can lie
+
+**Decision.** `Tool::isolation()` and `contract::Isolation` are deleted.
+
+**Why.** They were a declaration with no consumer: nothing in the kernel read the value, and it
+never reached the wire. The doc comment on the method described refusing to migrate a session into
+a generation where isolation changed — a check that did not exist, because generations do not
+exist yet.
+
+**What it cost to keep.** Every tool implementor had to claim a level (the MCP source claimed
+`Process`), and nothing verified the claim. A self-declaration that nobody reads is worse than
+absent: it reads as a checked invariant. When generation migration is built, isolation returns as
+something the *kernel* derives from how it spawned a source, not something a tool asserts about
+itself.
 

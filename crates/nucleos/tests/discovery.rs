@@ -8,7 +8,9 @@
 #![allow(clippy::unwrap_used)]
 
 use nucleos::adapter::{AllowAll, FakeModel, FixedClock, MemoryStore, Store, Tool, ToolCtx, ToolOutput};
-use nucleos::contract::{ConfigPatch, Exposure, Principal, Routing, SessionId, ToolSpec};
+use nucleos::contract::{
+    ConfigPatch, DiscoveryPolicy, Exposure, Principal, Routing, SessionId, ToolPolicy, ToolSpec,
+};
 use nucleos::kernel::{Kernel, SessionSpec};
 use std::sync::Arc;
 
@@ -77,6 +79,17 @@ fn spec(names: &[&str]) -> SessionSpec {
     }
 }
 
+fn policy(overrides: &[(&str, Exposure)]) -> ToolPolicy {
+    ToolPolicy {
+        default: Exposure::Deferred,
+        exposures: overrides
+            .iter()
+            .map(|(name, exposure)| ((*name).to_owned(), *exposure))
+            .collect(),
+        ..ToolPolicy::default()
+    }
+}
+
 fn call(name: &str, arguments_json: &str) -> nucleos::contract::ToolCall {
     nucleos::contract::ToolCall {
         id: "call-1".to_owned(),
@@ -84,6 +97,83 @@ fn call(name: &str, arguments_json: &str) -> nucleos::contract::ToolCall {
         arguments_json: arguments_json.to_owned(),
         meta: std::collections::BTreeMap::new(),
     }
+}
+
+#[tokio::test]
+async fn everything_starts_deferred_so_the_prompt_carries_only_the_door() {
+    let (kernel, _store) = kernel(20);
+    let session = kernel
+        .open(&principal(), SessionId::new("s1"), spec(&[]))
+        .await
+        .unwrap();
+
+    // Twenty-one tools and the model sees one: the one that finds the others. Showing everything
+    // is the behaviour discovery exists to replace, so it is not the default.
+    let names: Vec<String> = kernel
+        .tool_specs(&session)
+        .into_iter()
+        .map(|spec| spec.name)
+        .collect();
+    assert_eq!(names, ["tool_search"]);
+}
+
+#[tokio::test]
+async fn an_always_exposure_is_the_configured_baseline() {
+    let (kernel, _store) = kernel(20);
+    let session = kernel
+        .open(
+            &principal(),
+            SessionId::new("s1"),
+            SessionSpec {
+                config: ConfigPatch {
+                    tool_policy: Some(policy(&[("read_file", Exposure::Always)])),
+                    ..ConfigPatch::default()
+                },
+                ..SessionSpec::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let names: Vec<String> = kernel
+        .tool_specs(&session)
+        .into_iter()
+        .map(|spec| spec.name)
+        .collect();
+    assert_eq!(names, ["read_file", "tool_search"]);
+}
+
+#[tokio::test]
+async fn a_hidden_tool_is_never_in_the_prompt_but_is_still_callable() {
+    let (kernel, _store) = kernel(20);
+    let mut session = kernel
+        .open(
+            &principal(),
+            SessionId::new("s1"),
+            SessionSpec {
+                config: ConfigPatch {
+                    tool_policy: Some(policy(&[("read_file", Exposure::Hidden)])),
+                    ..ConfigPatch::default()
+                },
+                ..SessionSpec::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let names: Vec<String> = kernel
+        .tool_specs(&session)
+        .into_iter()
+        .map(|spec| spec.name)
+        .collect();
+    assert!(!names.contains(&"read_file".to_owned()), "{names:?}");
+
+    // Hiding is a display decision. The gate is unmoved, so the call still runs.
+    let output = kernel
+        .invoke_tool(&mut session, &call("read_file", "{}"))
+        .await
+        .unwrap();
+    assert!(!output.is_error);
 }
 
 #[tokio::test]
@@ -122,30 +212,14 @@ async fn a_large_catalog_gets_one_search_tool() {
 
 #[tokio::test]
 async fn a_search_widens_exposure_and_records_it() {
-    let (kernel, _store) = kernel(20);
+    let (kernel, store) = kernel(20);
     let session = kernel.open(&principal(), SessionId::new("s1"), spec(&[])).await.unwrap();
-    assert_eq!(*session.exposed(), Exposure::All, "the default is everything");
-
-    // Narrowing first gives discovery somewhere to grow into.
+    assert_eq!(
+        session.tool_policy().default,
+        Exposure::Deferred,
+        "not configured means not shown"
+    );
     let mut session = session;
-    kernel
-        .configure(
-            &mut session,
-            ConfigPatch {
-                exposed: Some(Exposure::Only {
-                    names: vec!["tool_search".to_owned()],
-                }),
-                ..ConfigPatch::default()
-            },
-        )
-        .await
-        .unwrap();
-    let visible: Vec<String> = kernel
-        .tool_specs(&session)
-        .into_iter()
-        .map(|spec| spec.name)
-        .collect();
-    assert_eq!(visible, ["tool_search"]);
 
     let output = kernel
         .invoke_tool(
@@ -156,6 +230,22 @@ async fn a_search_widens_exposure_and_records_it() {
         .unwrap();
     assert!(!output.is_error, "{output:?}");
     assert_eq!(output.expose, ["read_file"]);
+
+    // Found, therefore shown: from the next prompt on, without asking again.
+    let visible: Vec<String> = kernel
+        .tool_specs(&session)
+        .into_iter()
+        .map(|spec| spec.name)
+        .collect();
+    assert!(visible.contains(&"read_file".to_owned()), "{visible:?}");
+
+    // And the pool is in the record, because a replay has to know what turn 42 could see.
+    let kinds: Vec<&str> = store
+        .recorded(&session.id().clone())
+        .iter()
+        .map(|event| event.kind.type_name())
+        .collect();
+    assert!(kinds.contains(&"nucleos.v1.tools_exposed"), "{kinds:?}");
 }
 
 #[tokio::test]
@@ -165,9 +255,7 @@ async fn the_ceiling_still_wins_over_a_search() {
     let session = kernel.open(&principal(), SessionId::new("s1"), SessionSpec {
                 config: ConfigPatch {
                     tools: Some(vec!["tool_search".to_owned(), "read_file".to_owned()]),
-                    exposed: Some(Exposure::Only {
-                        names: vec!["tool_search".to_owned()],
-                    }),
+                    tool_policy: Some(policy(&[("read_file", Exposure::Always)])),
                     ..ConfigPatch::default()
                 },
                 ..SessionSpec::default()
@@ -225,16 +313,15 @@ async fn an_exposure_outside_the_ceiling_is_refused() {
         .configure(
             &mut session,
             ConfigPatch {
-                exposed: Some(Exposure::Only {
-                    names: vec!["inert_03".to_owned()],
-                }),
+                tool_policy: Some(policy(&[("inert_03", Exposure::Always)])),
                 ..ConfigPatch::default()
             },
         )
         .await;
 
-    // Showing the model a tool it may never run produces a call refused for a reason it cannot
-    // see, so the exposure is refused at the door instead.
+    // An `always` outside the ceiling would put a tool in the prompt that may never run: the model
+    // would call it, the gate would refuse, and the refusal would be unexplainable from where the
+    // model sits. So it is refused at the door instead.
     assert!(refused.is_err(), "{refused:?}");
 }
 
@@ -249,9 +336,7 @@ async fn exposure_does_not_change_what_policy_approves() {
         .configure(
             &mut session,
             ConfigPatch {
-                exposed: Some(Exposure::Only {
-                    names: Vec::new(),
-                }),
+                tool_policy: Some(policy(&[("read_file", Exposure::Hidden)])),
                 ..ConfigPatch::default()
             },
         )
@@ -276,23 +361,91 @@ async fn a_widened_exposure_survives_being_loaded_back() {
         .configure(
             &mut session,
             ConfigPatch {
-                exposed: Some(Exposure::Only {
-                    names: vec!["tool_search".to_owned()],
-                }),
+                tool_policy: Some(policy(&[("read_file", Exposure::Always)])),
                 ..ConfigPatch::default()
             },
         )
+        .await
+        .unwrap();
+    kernel
+        .invoke_tool(&mut session, &call("tool_search", r#"{"query":"inert tool 4"}"#))
         .await
         .unwrap();
 
     let id = session.id().clone();
     let loaded = kernel.load(&principal(), &id).await.unwrap();
     assert_eq!(
-        *loaded.exposed(),
-        Exposure::Only {
-            names: vec!["tool_search".to_owned()]
-        },
-        "a replay has to know what the model could see"
+        loaded.tool_policy().exposure_of("read_file"),
+        Exposure::Always,
+        "a replay has to know the policy that shaped turn 42"
+    );
+    assert!(
+        loaded.discovered().contains_key("inert_04"),
+        "and what had been found by then: {:?}",
+        loaded.discovered()
     );
     let _ = store;
+}
+
+#[tokio::test]
+async fn a_search_tool_cannot_be_configured_away() {
+    let (kernel, _store) = kernel(20);
+    let mut session = kernel
+        .open(&principal(), SessionId::new("s1"), spec(&[]))
+        .await
+        .unwrap();
+
+    // A catalog whose only door is hidden is a catalog the model can never enter.
+    let refused = kernel
+        .configure(
+            &mut session,
+            ConfigPatch {
+                tool_policy: Some(policy(&[("tool_search", Exposure::Deferred)])),
+                ..ConfigPatch::default()
+            },
+        )
+        .await;
+    assert!(refused.is_err(), "{refused:?}");
+}
+
+#[tokio::test]
+async fn the_pool_forgets_what_has_gone_quiet() {
+    let (kernel, _store) = kernel(20);
+    let mut session = kernel
+        .open(
+            &principal(),
+            SessionId::new("s1"),
+            SessionSpec {
+                config: ConfigPatch {
+                    tool_policy: Some(ToolPolicy {
+                        discovery: DiscoveryPolicy {
+                            idle_rounds: 2,
+                            ..DiscoveryPolicy::default()
+                        },
+                        ..policy(&[])
+                    }),
+                    ..ConfigPatch::default()
+                },
+                ..SessionSpec::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    kernel
+        .invoke_tool(&mut session, &call("tool_search", r#"{"query":"inert tool 4"}"#))
+        .await
+        .unwrap();
+    assert!(session.discovered().contains_key("inert_04"));
+
+    // Three turns with no use of it: the pool is not a second registry that only grows. A turn,
+    // not a test hook, is what expires an entry — that is the clock the policy names.
+    for _ in 0..3 {
+        kernel.inference(&mut session, &[]).await.unwrap();
+    }
+    assert!(
+        !session.discovered().contains_key("inert_04"),
+        "{:?}",
+        session.discovered()
+    );
 }

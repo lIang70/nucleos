@@ -324,7 +324,28 @@ So a session has **two** tool sets, and they mean different things:
 | | Who sets it | Rule |
 | --- | --- | --- |
 | **ceiling** (`config.tools`) | the application, at `open` or `configure` | may only narrow |
-| **exposure** (`config.exposed`) | the application, or a search tool asking | always a subset of the ceiling |
+| **exposure** (`config.tool_policy`) | the application, or a search tool asking | always within the ceiling |
+
+Everything is `deferred` by default. A session that has configured nothing sees exactly one tool —
+`tool_search` — and reaches the rest through it. The alternative, showing everything unless told
+otherwise, is the behaviour discovery exists to replace, so it is not the default: it would make
+the twenty-ninth tool as visible as the first, which is the failure this whole mechanism is for.
+`always` is the opt-in baseline, and it should stay short.
+
+Two budgets, and the distinction is the design:
+
+- **`policy.budget`** (32 definitions / 16 KiB) caps one prompt.
+- **`policy.discovery`** (32 tools / 16 KiB / 10 idle turns) caps the session's **pool**: what it
+  remembers having found. A round can show eight tools and the session may still remember thirty;
+  forgetting one it used two turns ago would make it search twice for the same thing.
+
+The pool expires. A tool found on turn 3 and never used again should not still be displacing a
+baseline on turn 40, so every turn ages every entry and `idle_rounds` retires them. Eviction order
+is by exposure rank first, then by staleness: `always` outranks `direct` outranks `deferred`,
+because a baseline that can be evicted by its own discoveries is not a baseline.
+
+`hidden` exists so that "do not advertise this" and "do not allow this" stay separable. A hidden
+tool is still callable by name and still gated; only the prompt forgets it.
 
 Exposure is a *display* concern. A tool that is not exposed can still be called by name, and
 execution goes through the same gate either way — narrowing exposure therefore cannot grant a
@@ -355,14 +376,9 @@ The corpus is a few hundred short documents, so the index is ~300 lines of inver
 search engine: `tantivy` here would be a deployment dependency for a table of contents.
 
 Below twelve registered tools the whole catalog fits in a prompt and `tool_search` is not added at
-all. A search tool that costs one more schema to find the three beside it is pure overhead.
-
-#### Not yet built
-
-The session-level **discovery pool** — what a session remembers finding, with idle expiry and its
-own budget — is designed and not implemented. Today exposure is an explicit list the application or
-a search call grows, and it does not expire. The pool matters once a session discovers more tools
-than one prompt can show.
+all; with no search tool there is no policy either, and every allowed tool is shown. A search tool
+that costs one more schema to find the three beside it is pure overhead, and so is a policy that
+hides tools nothing can find.
 
 ## 9. Budget is credit
 

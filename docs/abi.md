@@ -200,17 +200,34 @@ Rules:
 ## 4.1 The ceiling and the exposure
 
 A session has two tool sets. `config.tools` is the **ceiling**: what the session may ever use,
-settable only narrower. `config.exposed` is the **exposure**: what is in the prompt right now,
-either `{"kind":"all"}` or `{"kind":"only","names":[...]}`, always a subset of the ceiling.
+settable only narrower. `config.tool_policy` is the **exposure policy**: how visible each tool is,
+always within the ceiling.
+
+`Exposure` has four levels, and all tools are `deferred` unless the policy says otherwise:
+
+| level | in the prompt |
+| --- | --- |
+| `always` | every turn — the configured baseline |
+| `direct` | once found or used, while it stays in the pool |
+| `deferred` | only after a search surfaces it; the default |
+| `hidden` | never, not even via search — still callable by name |
+
+Two budgets, and they are deliberately different: `policy.budget` (default 32 definitions or
+16 KiB) caps what one prompt carries; `policy.discovery` (default 32 tools, 16 KiB, 10 idle turns)
+caps what a session remembers having found. A session that can show eight tools may have
+discovered thirty, and re-searching for one it used two turns ago is the waste the second cap
+prevents.
+
+`tool_search` is registered by the kernel itself when the catalog exceeds twelve tools, and the
+kernel seeds it to `always`: a catalog whose only door is hidden is a catalog the model can never
+enter, so configuring it away is refused rather than silently obeyed. It ranks the catalog and
+returns names and one-line summaries — never full schemas, which would spend the tokens the search
+exists to save.
 
 Exposure is a display concern, not a permission: a tool that is not exposed is still callable by
-name, and execution is gated identically either way. `configure` refuses an exposure that names a
-tool outside the ceiling; a tool whose result asks for one has that name dropped, because the tool
+name, and execution is gated identically either way. `configure` refuses an `always` entry outside
+the ceiling; a tool whose result asks for a name outside it has that name dropped, because the tool
 has no session and the kernel is the only place that decides.
-
-`tool_search` is registered by the kernel itself when the catalog exceeds twelve tools. It ranks
-the catalog and returns names and one-line summaries — never full schemas, which would spend the
-tokens the search exists to save.
 
 ## 5. Credit
 

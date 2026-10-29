@@ -283,13 +283,6 @@ async fn a_failed_tool_answers_with_content_not_an_error() {
     );
 }
 
-#[tokio::test]
-async fn a_tool_reports_the_isolation_it_was_built_with() {
-    let tool = FakeTool::new("read_file", "ok");
-    assert_eq!(tool.isolation(), nucleos::Isolation::None);
-    assert_eq!(tool.spec().name, "read_file");
-}
-
 // ---------------------------------------------------------------------------
 // Store
 // ---------------------------------------------------------------------------
@@ -366,7 +359,9 @@ async fn a_snapshot_cannot_claim_more_than_the_log_holds() -> Result<()> {
         workspace: None,
         sandbox: Default::default(),
         hints: Default::default(),
-        exposed: Default::default(),
+        tool_policy: Default::default(),
+        discovered: Default::default(),
+        round: 0,
         kind: Default::default(),
         process: None,
     };
@@ -411,7 +406,9 @@ async fn a_valid_snapshot_round_trips() -> Result<()> {
             workspace: None,
             sandbox: Default::default(),
             hints: Default::default(),
-            exposed: Default::default(),
+            tool_policy: Default::default(),
+        discovered: Default::default(),
+        round: 0,
             kind: Default::default(),
             process: None,
         })

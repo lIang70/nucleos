@@ -49,6 +49,7 @@ impl Kernel {
         // changed into. A process session has no route — validating one it will never use would
         // make it refuse to start over a model.
         self.apply_patch(&mut session, &spec.config)?;
+        self.seed_search_policy(&mut session);
         if session.kind == crate::contract::SessionKind::Agent {
             self.models.resolve(&session.routing)?;
         }

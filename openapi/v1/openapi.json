@@ -200,17 +200,6 @@
       "ConfigPatch": {
         "description": "A partial update to a session's mutable configuration.\n\nThe wiring — kind, sandbox, workspace — is not here, because it is decided when the session\nopens and is not the application's to change while it runs. Everything in this struct is\ncontent or strategy, and every field is optional: absent means unchanged, `null` (where the\nfield is doubly optional) means cleared.",
         "properties": {
-          "exposed": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/Exposure"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Which of them the model can see. Absent leaves it unchanged."
-          },
           "hints": {
             "anyOf": [
               {
@@ -250,6 +239,17 @@
               "string",
               "null"
             ]
+          },
+          "tool_policy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ToolPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The exposure policy. Absent leaves it unchanged."
           },
           "tools": {
             "description": "The tool allow-list. Empty means every registered tool.",
@@ -314,6 +314,28 @@
         ],
         "type": "object"
       },
+      "DefinitionBudget": {
+        "description": "How many tool definitions may reach the model per turn.",
+        "properties": {
+          "max_bytes": {
+            "description": "What they may weigh together, in bytes of name, description and schema.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_definitions": {
+            "description": "How many definitions, counted before the prompt is built.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "max_definitions",
+          "max_bytes"
+        ],
+        "type": "object"
+      },
       "Degraded": {
         "description": "A field the provider could not honour.\n\nRecorded rather than swallowed: a `tool_choice = Required` that quietly became `Auto` is a\nsession behaving differently than it was configured to, and the difference is\nundiscoverable afterwards.",
         "properties": {
@@ -363,6 +385,35 @@
           "version",
           "abi_version",
           "models"
+        ],
+        "type": "object"
+      },
+      "DiscoveryPolicy": {
+        "description": "What a session remembers having found.\n\nSeparate from the per-turn budget on purpose: the budget caps what a prompt shows, the pool caps\nwhat the session remembers. A session that can only show eight tools may still have discovered\nthirty, and re-searching for one it used two turns ago is the waste this prevents.",
+        "properties": {
+          "idle_rounds": {
+            "description": "How many turns without a use before a tool is forgotten.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_bytes": {
+            "description": "What they may weigh together.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_tools": {
+            "description": "How many discovered tools stay remembered.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "max_tools",
+          "max_bytes",
+          "idle_rounds"
         ],
         "type": "object"
       },
@@ -1141,41 +1192,27 @@
         ]
       },
       "Exposure": {
-        "description": "Which tools the model can see, as opposed to which it may ever use.\n\nThe ceiling (`tools`) is the application's to narrow and only ever narrows. Exposure is what is\nin the prompt right now, and it may grow up to the ceiling — by configuration, or by a search\ntool asking. Keeping the two apart is what makes dynamic tool loading safe.",
+        "description": "How visible a tool is, as distinct from whether it may be used.\n\nThe ceiling (`config.tools`) is the application's to narrow and only ever narrows. Exposure is\nwhat is in the prompt right now: it may grow up to the ceiling, by configuration or by a search\ntool asking. Keeping the two apart is what makes dynamic tool loading safe.",
         "oneOf": [
           {
-            "description": "Everything the ceiling allows. The default, and the right answer for a small tool set.",
-            "properties": {
-              "kind": {
-                "const": "all",
-                "type": "string"
-              }
-            },
-            "required": [
-              "kind"
-            ],
-            "type": "object"
+            "const": "always",
+            "description": "In the prompt every turn. Keep this set small: it is the stable baseline.",
+            "type": "string"
           },
           {
-            "description": "Exactly these, a subset of the ceiling.",
-            "properties": {
-              "kind": {
-                "const": "only",
-                "type": "string"
-              },
-              "names": {
-                "description": "The tool names in the prompt.",
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              }
-            },
-            "required": [
-              "kind",
-              "names"
-            ],
-            "type": "object"
+            "const": "direct",
+            "description": "In the prompt once it has been found or used, and while it stays in the pool.",
+            "type": "string"
+          },
+          {
+            "const": "deferred",
+            "description": "Invisible until a search surfaces it. The default, and the reason discovery exists.",
+            "type": "string"
+          },
+          {
+            "const": "hidden",
+            "description": "Never in the prompt, not even via search. Still callable by name — hiding a tool is not\nforbidding it.",
+            "type": "string"
           }
         ]
       },
@@ -1632,7 +1669,7 @@
         "type": "object"
       },
       "PendingCall": {
-        "description": "A call waiting on a human.\n\nPart of the snapshot because the wait outlives any process: a session parked on a\nconfirmation must be resumable tomorrow, and the call it is holding has to come back with\nit.",
+        "description": "How strongly a tool's execution is separated from the kernel.\n\nA call waiting on a human.\n\nPart of the snapshot because the wait outlives any process: a session parked on a\nconfirmation must be resumable tomorrow, and the call it is holding has to come back with\nit.",
         "properties": {
           "call": {
             "$ref": "#/components/schemas/ToolCall",
@@ -2697,6 +2734,41 @@
             "type": "string"
           }
         ]
+      },
+      "ToolPolicy": {
+        "description": "The host's exposure policy for one session.",
+        "properties": {
+          "budget": {
+            "$ref": "#/components/schemas/DefinitionBudget",
+            "default": {
+              "max_bytes": 16384,
+              "max_definitions": 32
+            },
+            "description": "What a prompt may carry this turn."
+          },
+          "default": {
+            "$ref": "#/components/schemas/Exposure",
+            "default": "deferred",
+            "description": "The exposure of every tool without an entry in `exposures`. Defaults to `Deferred`."
+          },
+          "discovery": {
+            "$ref": "#/components/schemas/DiscoveryPolicy",
+            "default": {
+              "idle_rounds": 10,
+              "max_bytes": 16384,
+              "max_tools": 32
+            },
+            "description": "What the session remembers."
+          },
+          "exposures": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Exposure"
+            },
+            "description": "Per-tool overrides.",
+            "type": "object"
+          }
+        },
+        "type": "object"
       },
       "ToolResult": {
         "description": "How a tool call ended.\n\n**Failure is a flag, not a branch.** A failed call still carries content, because the\nerror text is something the model must be able to read and reason about; putting the\nfailure outside the content model would leave the model with a message it cannot see.\nThe cost is honest: `is_error` is a runtime flag a client can forget to check, where a\n`oneof` would have been enforced by the type system.\n\nOne rule constrains the recursion `Content → Part → ToolResult → Content` otherwise\nallows: a tool result's content may contain any kind **except** [`PartKind::ToolCall`] or\n[`PartKind::ToolResult`]. Nesting is one level deep, and a validator enforces it.",
