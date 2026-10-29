@@ -8,6 +8,7 @@
 //! retries and its ledger (`route.rs`), the session's state and its checkpoint (`session.rs`),
 //! policy, and the tool set a generation pinned.
 
+pub(crate) mod bm25;
 pub(crate) mod config;
 pub(crate) mod inference;
 pub(crate) mod lifecycle;
@@ -15,6 +16,7 @@ pub(crate) mod process;
 pub(crate) mod route;
 pub(crate) mod session;
 pub(crate) mod state;
+pub(crate) mod tool_search;
 pub(crate) mod tools;
 
 pub use session::Session;
@@ -236,7 +238,7 @@ impl Builder {
     pub fn build(self) -> Result<Kernel> {
         Ok(Kernel {
             models: self.models,
-            tools: self.tools,
+            tools: with_discovery(self.tools),
             store: self
                 .store
                 .ok_or_else(|| Error::internal("kernel needs a store"))?,
@@ -271,4 +273,25 @@ impl Kernel {
             None => u64::MAX,
         }
     }
+}
+
+/// Add the built-in discovery tool, if the catalog is big enough for it to pay.
+///
+/// Built here rather than registered by a caller, because it has to see the registry: a search
+/// tool that was told about tools by hand would go stale the moment one was added.
+fn with_discovery(
+    mut tools: BTreeMap<String, Arc<dyn Tool>>,
+) -> BTreeMap<String, Arc<dyn Tool>> {
+    if tools.contains_key(tool_search::NAME) {
+        return tools;
+    }
+    let specs: Vec<crate::contract::ToolSpec> = tools.values().map(|tool| tool.spec()).collect();
+    let search = tool_search::Search::new(&specs);
+    // Below a handful of tools, the whole catalog fits in the prompt and search is pure overhead:
+    // one more schema in exchange for a lookup the model does not need.
+    if search.len() > tool_search::SEARCH_THRESHOLD {
+        let tool: Arc<dyn Tool> = Arc::new(search);
+        tools.insert(tool_search::NAME.to_owned(), tool);
+    }
+    tools
 }

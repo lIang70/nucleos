@@ -189,9 +189,28 @@ Rules:
 - A tool result carries content **and** an `is_error` flag. A failure is not a separate
   branch: the error text is content the model reads, and refusing it a place in the content
   model would leave the model with a message it cannot see.
+- `tools_exposed` records that the model can see tools it could not see before. Same reason
+  as the `configure` event: a replay must be able to say which tools were in the prompt at
+  turn 42, and "whatever the session had at the time" is not answerable from the record
+  otherwise.
 - Events carry no back-references; a consumer can render from the stream alone. A client
   that needs the prompt must reconstruct it from the events, not ask the server for
   hidden state.
+
+## 4.1 The ceiling and the exposure
+
+A session has two tool sets. `config.tools` is the **ceiling**: what the session may ever use,
+settable only narrower. `config.exposed` is the **exposure**: what is in the prompt right now,
+either `{"kind":"all"}` or `{"kind":"only","names":[...]}`, always a subset of the ceiling.
+
+Exposure is a display concern, not a permission: a tool that is not exposed is still callable by
+name, and execution is gated identically either way. `configure` refuses an exposure that names a
+tool outside the ceiling; a tool whose result asks for one has that name dropped, because the tool
+has no session and the kernel is the only place that decides.
+
+`tool_search` is registered by the kernel itself when the catalog exceeds twelve tools. It ranks
+the catalog and returns names and one-line summaries — never full schemas, which would spend the
+tokens the search exists to save.
 
 ## 5. Credit
 

@@ -42,6 +42,8 @@ pub struct Session {
     pub(crate) sandbox: crate::contract::SandboxPolicy,
     /// The adapter hints in force.
     pub(crate) hints: crate::contract::Hints,
+    /// Which tools the model can see, as opposed to which it may use.
+    pub(crate) exposed: crate::contract::Exposure,
     /// What this session is for.
     pub(crate) kind: crate::contract::SessionKind,
     /// The process, when this is a process session.
@@ -119,6 +121,12 @@ impl Session {
         &self.tools
     }
 
+    /// Which tools the model can see.
+    #[must_use]
+    pub fn exposed(&self) -> &crate::contract::Exposure {
+        &self.exposed
+    }
+
     /// The adapter hints in force.
     #[must_use]
     pub fn hints(&self) -> &crate::contract::Hints {
@@ -193,6 +201,7 @@ impl Session {
             workspace: None,
             sandbox: crate::contract::SandboxPolicy::default(),
             hints: crate::contract::Hints::default(),
+            exposed: crate::contract::Exposure::default(),
             kind: crate::contract::SessionKind::Agent,
             process: None,
             routing: crate::contract::Routing::default(),
@@ -273,6 +282,7 @@ impl Session {
             workspace: self.workspace.clone(),
             sandbox: self.sandbox.clone(),
             hints: self.hints.clone(),
+            exposed: self.exposed.clone(),
             kind: self.kind,
             process: self.process.clone(),
             data: self.data.clone(),
@@ -311,6 +321,7 @@ impl Session {
             workspace: snapshot.workspace,
             sandbox: snapshot.sandbox,
             hints: snapshot.hints,
+            exposed: snapshot.exposed,
             kind: snapshot.kind,
             process: snapshot.process,
             system: snapshot.system,

@@ -134,6 +134,7 @@ impl Kernel {
         for (call, output) in calls.iter().zip(outputs.iter()) {
             self.record_call(session, call, output.clone(), duration)
                 .await?;
+            self.expose(session, &output.expose).await?;
         }
         self.write_checkpoint(session).await?;
         Ok(outputs)
@@ -186,6 +187,44 @@ impl Kernel {
         });
         Ok(())
     }
+    /// Widen what the model can see, as far as the ceiling allows.
+    ///
+    /// A tool may *ask* — it has no handle on the session — and the kernel answers. Names outside
+    /// the ceiling are dropped rather than refused: a search tool that ranked a forbidden tool
+    /// should not turn the whole call into an error, and showing a tool that may never run would
+    /// provoke a call whose refusal the model cannot explain.
+    async fn expose(&self, session: &mut session::Session, names: &[String]) -> Result<()> {
+        if names.is_empty() {
+            return Ok(());
+        }
+        if matches!(session.exposed, crate::contract::Exposure::All) {
+            // Everything the ceiling allows is already visible; there is nothing to widen.
+            return Ok(());
+        }
+
+        let ceiling = session.tools.clone();
+        let mut added = Vec::new();
+        for name in names {
+            // The ceiling decides, not the tool: this is the whole reason exposure is safe.
+            if !ceiling.is_empty() && !ceiling.contains(name) {
+                continue;
+            }
+            if session.exposed.shows(name, &ceiling) {
+                continue;
+            }
+            if let crate::contract::Exposure::Only { names: shown } = &mut session.exposed {
+                shown.push(name.clone());
+                added.push(name.clone());
+            }
+        }
+
+        if !added.is_empty() {
+            self.emit(session, EventKind::ToolsExposed { names: added })
+                .await?;
+        }
+        Ok(())
+    }
+
     /// One tool by name.
     #[must_use]
     pub fn tool(&self, name: &str) -> Option<Arc<dyn Tool>> {
@@ -197,7 +236,9 @@ impl Kernel {
     pub fn tool_specs(&self, session: &session::Session) -> Vec<crate::contract::ToolSpec> {
         self.tools
             .iter()
-            .filter(|(name, _)| session.tools.is_empty() || session.tools.contains(name))
+            // Two filters and the order matters: the ceiling decides what may ever be used, the
+            // exposure decides what the model sees right now.
+            .filter(|(name, _)| session.exposed.shows(name, &session.tools))
             .map(|(_, tool)| tool.spec())
             .collect()
     }

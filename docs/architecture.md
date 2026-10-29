@@ -279,7 +279,7 @@ Cost attribution is the one thing a gateway endpoint would have bought that a to
 tools a way to report is the smaller, more honest fix: the kernel attributes what it is told and
 says so when it is told nothing.
 
-## 8. Tool sources and generations## 8. Tool sources and generations
+## 8. Tool sources and generations
 
 Tools are declared as **sources**, not as definitions pushed through the ABI. A source is
 an MCP endpoint:
@@ -311,6 +311,58 @@ Compatibility is decided by schema structure, not by a version number somebody t
 
 A mid-turn swap is never allowed. A tool call that has been issued must resolve against
 the generation that issued it.
+
+### 8.1 Discovery: exposure is not permission
+
+A prompt cannot carry every tool's schema. Each one costs 100–300 tokens, so thirty tools is
+3–9k tokens of fixed overhead on every call — and a model choosing between sixty tools chooses
+worse than one choosing between eight. The failure is silent: nothing errors, the answers just get
+slower and duller.
+
+So a session has **two** tool sets, and they mean different things:
+
+| | Who sets it | Rule |
+| --- | --- | --- |
+| **ceiling** (`config.tools`) | the application, at `open` or `configure` | may only narrow |
+| **exposure** (`config.exposed`) | the application, or a search tool asking | always a subset of the ceiling |
+
+Exposure is a *display* concern. A tool that is not exposed can still be called by name, and
+execution goes through the same gate either way — narrowing exposure therefore cannot grant a
+permission, and widening it cannot bypass one. Conflating the two would make "hide the tool" and
+"forbid the tool" the same act, and then the only way to forbid would be to hide, which the model
+would experience as a tool that exists one turn and not the next.
+
+A tool cannot widen its own exposure: it has no handle on the session. `ToolOutput.expose` is a
+**request**, and the kernel answers it — intersecting with the ceiling, recording a
+`tools_exposed` event, and applying the result from the next prompt on. The event is not
+bookkeeping: a replay has to know which tools the model could see at turn 42, for the same reason
+it has to know which system prompt was in force.
+
+#### Ranking
+
+Discovery ranks with BM25 over each tool's name and description. Four rules, each for a reason:
+
+- **A name hit outscores a description hit** (3 against 1). `webfetch` in a name is a stronger
+  signal than the word "fetch" in a paragraph.
+- **A query term matches by prefix, at half weight.** `webf` still finds `webfetch`.
+- **Per field, a query term contributes its best match, never the sum of its prefix matches.**
+  Otherwise a document that merely prefixes four expansions of one term outranks the one that
+  contains it — the exact misfire that makes naive prefix search feel broken.
+- **CJK is indexed as single characters plus adjacent bigrams.** Han, Kana and Hangul have no
+  whitespace boundaries; bigrams match fragments without a segmentation dictionary.
+
+The corpus is a few hundred short documents, so the index is ~300 lines of inverted lists, not a
+search engine: `tantivy` here would be a deployment dependency for a table of contents.
+
+Below twelve registered tools the whole catalog fits in a prompt and `tool_search` is not added at
+all. A search tool that costs one more schema to find the three beside it is pure overhead.
+
+#### Not yet built
+
+The session-level **discovery pool** — what a session remembers finding, with idle expiry and its
+own budget — is designed and not implemented. Today exposure is an explicit list the application or
+a search call grows, and it does not expire. The pool matters once a session discovers more tools
+than one prompt can show.
 
 ## 9. Budget is credit
 
@@ -357,7 +409,7 @@ The split is the point. The kernel only does what must be exact — counting and
 history in a way that replays. Retrieval is a tool, because a tool is where an embedding
 model, an index and a ranking function belong.
 
-### 10.1 What must fit
+### 11.1 What must fit
 
 ```text
 prompt_tokens + max_output_tokens <= context_window
@@ -370,7 +422,7 @@ that silently truncates is a provider that silently changes the answer.
 A session whose *first* turn cannot fit even with empty history fails at `Start`. Failing
 on every turn forever is not a policy, it is a bug with a schedule.
 
-### 10.2 Compaction
+### 11.2 Compaction
 
 Trigger: the next prompt would not fit, and there is history to drop.
 
@@ -385,7 +437,7 @@ The summary is a model call: it consumes budget, it is charged, and it can fail.
 compaction stops the session with `StopReason::Tokens`. Pretending a smaller prompt is
 equivalent is how a session starts being confidently wrong about its own past.
 
-### 10.3 Page-in
+### 11.3 Page-in
 
 The summary carries **artifact handles**, not text: markers naming the spans it replaced. A
 `recall` tool resolves a handle back to the original text.
@@ -394,7 +446,7 @@ That is the whole mechanism. The result arrives as an ordinary tool result, so i
 history on the normal path — no kernel special case, no hidden state, and a model that is
 wrong about needing it has simply made a recoverable mistake.
 
-### 10.4 Why the log is never edited
+### 11.4 Why the log is never edited
 
 Compaction **adds** an event; it never rewrites or deletes one. The event says, in effect:
 "when constructing a prompt, treat the events in `[a, b)` as this summary".

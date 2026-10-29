@@ -200,6 +200,17 @@
       "ConfigPatch": {
         "description": "A partial update to a session's mutable configuration.\n\nThe wiring — kind, sandbox, workspace — is not here, because it is decided when the session\nopens and is not the application's to change while it runs. Everything in this struct is\ncontent or strategy, and every field is optional: absent means unchanged, `null` (where the\nfield is doubly optional) means cleared.",
         "properties": {
+          "exposed": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Exposure"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Which of them the model can see. Absent leaves it unchanged."
+          },
           "hints": {
             "anyOf": [
               {
@@ -706,6 +717,27 @@
             "type": "object"
           },
           {
+            "description": "Tools became visible to the model.\n\nRecorded because a replay has to know which tools the model could see at turn 42 — the same\nreason `session_configured` exists, and the same failure if it did not.",
+            "properties": {
+              "kind": {
+                "const": "tools_exposed",
+                "type": "string"
+              },
+              "names": {
+                "description": "The names that were added.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "kind",
+              "names"
+            ],
+            "type": "object"
+          },
+          {
             "description": "The session's mutable configuration changed.\n\nRecorded because a replay has to know which system prompt was in force at turn 42; without\nit, the log would rebuild a conversation that never happened.",
             "properties": {
               "kind": {
@@ -1105,6 +1137,45 @@
             "const": "stderr",
             "description": "Standard error.",
             "type": "string"
+          }
+        ]
+      },
+      "Exposure": {
+        "description": "Which tools the model can see, as opposed to which it may ever use.\n\nThe ceiling (`tools`) is the application's to narrow and only ever narrows. Exposure is what is\nin the prompt right now, and it may grow up to the ceiling — by configuration, or by a search\ntool asking. Keeping the two apart is what makes dynamic tool loading safe.",
+        "oneOf": [
+          {
+            "description": "Everything the ceiling allows. The default, and the right answer for a small tool set.",
+            "properties": {
+              "kind": {
+                "const": "all",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Exactly these, a subset of the ceiling.",
+            "properties": {
+              "kind": {
+                "const": "only",
+                "type": "string"
+              },
+              "names": {
+                "description": "The tool names in the prompt.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "kind",
+              "names"
+            ],
+            "type": "object"
           }
         ]
       },

@@ -206,6 +206,7 @@ impl Tool for McpTool {
                     content,
                     is_error,
                     usage: None,
+                    expose: Vec::new(),
                 }
             }
             // A protocol error is a failure of the *source*, and the model is told in the only

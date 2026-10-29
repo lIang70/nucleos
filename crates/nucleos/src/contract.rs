@@ -543,6 +543,14 @@ pub enum EventKind {
         /// Which attempt in the ledger it belongs to.
         attempt_index: u32,
     },
+    /// Tools became visible to the model.
+    ///
+    /// Recorded because a replay has to know which tools the model could see at turn 42 — the same
+    /// reason `session_configured` exists, and the same failure if it did not.
+    ToolsExposed {
+        /// The names that were added.
+        names: Vec<String>,
+    },
     /// The session's mutable configuration changed.
     ///
     /// Recorded because a replay has to know which system prompt was in force at turn 42; without
@@ -670,6 +678,7 @@ impl EventKind {
             Self::ExecOutput { .. } => "nucleos.v1.exec_output",
             Self::ExecStdin { .. } => "nucleos.v1.exec_stdin",
             Self::ExecExited { .. } => "nucleos.v1.exec_exited",
+            Self::ToolsExposed { .. } => "nucleos.v1.tools_exposed",
             Self::SessionConfigured { .. } => "nucleos.v1.session_configured",
             Self::CapabilityDegraded(_) => "nucleos.v1.capability_degraded",
             Self::AttemptFailed { .. } => "nucleos.v1.attempt_failed",
@@ -867,6 +876,9 @@ pub struct Snapshot {
     /// The adapter hints in force.
     #[serde(default)]
     pub hints: Hints,
+    /// Which tools the model can see. See [`Exposure`].
+    #[serde(default)]
+    pub exposed: Exposure,
     /// The application's own state.
     ///
     /// Opaque: the kernel stores it, updates it atomically and restores it, and never reads a
@@ -1468,6 +1480,38 @@ pub enum Truncation {
     Disabled,
 }
 
+/// Which tools the model can see, as opposed to which it may ever use.
+///
+/// The ceiling (`tools`) is the application's to narrow and only ever narrows. Exposure is what is
+/// in the prompt right now, and it may grow up to the ceiling — by configuration, or by a search
+/// tool asking. Keeping the two apart is what makes dynamic tool loading safe.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Exposure {
+    /// Everything the ceiling allows. The default, and the right answer for a small tool set.
+    #[default]
+    All,
+    /// Exactly these, a subset of the ceiling.
+    Only {
+        /// The tool names in the prompt.
+        names: Vec<String>,
+    },
+}
+
+impl Exposure {
+    /// Whether a tool is visible under this exposure and a ceiling.
+    #[must_use]
+    pub fn shows(&self, name: &str, ceiling: &[String]) -> bool {
+        if !ceiling.is_empty() && !ceiling.iter().any(|allowed| allowed == name) {
+            return false;
+        }
+        match self {
+            Self::All => true,
+            Self::Only { names } => names.iter().any(|shown| shown == name),
+        }
+    }
+}
+
 /// A partial update to a session's mutable configuration.
 ///
 /// The wiring — kind, sandbox, workspace — is not here, because it is decided when the session
@@ -1488,6 +1532,9 @@ pub struct ConfigPatch {
     /// The tool allow-list. Empty means every registered tool.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<String>>,
+    /// Which of them the model can see. Absent leaves it unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exposed: Option<Exposure>,
     /// The route this session takes. Absent means unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routing: Option<Routing>,

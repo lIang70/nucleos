@@ -366,6 +366,7 @@ async fn a_snapshot_cannot_claim_more_than_the_log_holds() -> Result<()> {
         workspace: None,
         sandbox: Default::default(),
         hints: Default::default(),
+        exposed: Default::default(),
         kind: Default::default(),
         process: None,
     };
@@ -410,12 +411,15 @@ async fn a_valid_snapshot_round_trips() -> Result<()> {
             workspace: None,
             sandbox: Default::default(),
             hints: Default::default(),
+            exposed: Default::default(),
             kind: Default::default(),
             process: None,
         })
         .await?;
 
-    let loaded = store.snapshot(&session).await?.unwrap();
+    let Some(loaded) = store.snapshot(&session).await? else {
+        return Err(nucleos::Error::internal("the snapshot just written is missing"));
+    };
     assert_eq!(loaded.seq, 0, "seq is the last event included");
     assert_eq!(loaded.generation, nucleos::Generation(7));
     assert_eq!(loaded.messages, vec![message]);

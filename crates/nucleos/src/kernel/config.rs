@@ -80,6 +80,11 @@ impl Kernel {
             session.retries = routing.retries;
             changed.push("routing");
         }
+        if let Some(exposed) = &patch.exposed {
+            within_ceiling(exposed, &session.tools)?;
+            session.exposed = exposed.clone();
+            changed.push("exposed");
+        }
         if let Some(tools) = &patch.tools {
             narrow_only(&session.tools, tools)?;
             session.tools = tools.clone();
@@ -88,6 +93,25 @@ impl Kernel {
 
         Ok(changed)
     }
+}
+
+/// Refuse an exposure that names a tool outside the ceiling.
+///
+/// Exposure is not permission, but it is still bounded by permission: showing the model a tool it
+/// may never execute would produce a call that is refused for a reason the model cannot see.
+fn within_ceiling(exposed: &crate::contract::Exposure, ceiling: &[String]) -> Result<()> {
+    let crate::contract::Exposure::Only { names } = exposed else {
+        return Ok(());
+    };
+    if ceiling.is_empty() {
+        return Ok(());
+    }
+    if let Some(outside) = names.iter().find(|name| !ceiling.contains(name)) {
+        return Err(Error::denied(format!(
+            "exposure names {outside:?}, which is outside the session's tool ceiling"
+        )));
+    }
+    Ok(())
 }
 
 /// Refuse to widen the tool allow-list.

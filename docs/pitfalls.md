@@ -292,3 +292,44 @@ and died on "two different schemas share the name ToolResult".
 **What it also fixed.** A recursive type's root is a `$ref` to its own definition, so inserting it
 as a body collides with the definition already collected. One pass has one version of each type by
 construction, and neither problem exists.
+
+## 25. An exposure outside the ceiling is refused at the door
+
+**Decision.** `configure` rejects `exposed` naming a tool that `tools` does not allow; a *tool's*
+request for such a name is silently dropped instead.
+
+**Why.** The two are different acts. An application asking for a contradictory configuration has
+made a mistake, and the error is the useful answer. A search tool asking is just a ranker doing its
+job — it has no session, so it cannot know the ceiling — and turning one over-eager hit into a
+failed call would punish the caller for the implementation's ignorance.
+
+**What it prevents.** Showing the model a tool it may never execute. The model would call it, the
+gate would refuse, and the refusal would be unexplainable from where the model sits: it was told
+this tool exists.
+
+## 26. A search tool never sees the session
+
+**Decision.** `ToolOutput.expose` is a request the kernel answers; there is no `&mut Session` in
+`ToolCtx`.
+
+**Why.** A tool that could mutate its own visibility is a tool that can widen its own permissions,
+and the ceiling becomes decoration. Keeping the widening at the kernel means there is exactly one
+place that decides, and that place already knows the ceiling and writes the event.
+
+**What it also buys.** The request is *data*, so it survives a batch: eight calls run, eight
+requests come back, the kernel applies them once and records one event.
+
+## 27. A single-character ASCII term is not a search term
+
+**Decision.** Catalog queries drop one-character ASCII tokens after tokenizing; single CJK
+characters stay.
+
+**Why.** `a` and `1` appear in nearly every description, so a document frequency near the corpus
+size makes them useless — and with prefix matching, every term starting with that letter is a
+match too. One filler word in a query ("a tool that reads a file") would drag unrelated
+definitions into the pool. A single CJK character is a whole word and is what the bigrams are
+built from, so it is kept.
+
+**Guarded by.** `tool_search` returns "query had no searchable words" rather than a ranking, so
+the misfire is visible instead of looking like a bad index.
+

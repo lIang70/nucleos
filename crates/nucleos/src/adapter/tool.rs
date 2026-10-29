@@ -43,7 +43,7 @@ pub struct ToolCtx<'a> {
 }
 
 /// What a tool answered.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ToolOutput {
     /// The content, on success and on failure alike.
     pub content: Content,
@@ -59,6 +59,13 @@ pub struct ToolOutput {
     /// limitation of the design, not an oversight: the alternative was a gateway endpoint, which
     /// would have been a second product.
     pub usage: Option<Usage>,
+    /// Tools this call says the model should be able to see.
+    ///
+    /// A search tool cannot expose what it finds by itself — it has no handle on the session — so
+    /// it *asks*. The kernel answers: it intersects with the session's ceiling, records a
+    /// `tools_exposed` event, and applies the widening to the next prompt. Exposure is not
+    /// permission: execution still goes through the gate, and the ceiling is still the ceiling.
+    pub expose: Vec<String>,
 }
 
 impl ToolOutput {
@@ -69,6 +76,7 @@ impl ToolOutput {
             content,
             is_error: false,
             usage: None,
+            expose: Vec::new(),
         }
     }
 
@@ -89,6 +97,7 @@ impl ToolOutput {
             content: Content::new([Part::new(PartKind::Text(TextPart { text: text.into() }))]),
             is_error: true,
             usage: None,
+            expose: Vec::new(),
         }
     }
 
@@ -96,6 +105,13 @@ impl ToolOutput {
     #[must_use]
     pub fn reporting_usage(mut self, usage: Usage) -> Self {
         self.usage = Some(usage);
+        self
+    }
+
+    /// Ask for tools to be exposed to the model from the next turn.
+    #[must_use]
+    pub fn exposing(mut self, tools: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.expose = tools.into_iter().map(Into::into).collect();
         self
     }
 }
