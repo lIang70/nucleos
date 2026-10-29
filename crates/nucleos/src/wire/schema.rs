@@ -54,6 +54,8 @@ pub struct Abi {
     pub process_start_request: api::ProcessStartRequest,
     /// What that answers with.
     pub process_start_response: api::ProcessStartResponse,
+    /// `GET /v1/processes`.
+    pub process_list_response: api::ProcessListResponse,
     /// `POST /v1/sessions/{id}/stdin`.
     pub stdin_request: api::StdinRequest,
     /// `POST /v1/sessions/{id}/configure`.

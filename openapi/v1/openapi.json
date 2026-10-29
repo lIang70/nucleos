@@ -1621,6 +1621,40 @@
         ],
         "type": "object"
       },
+      "ProcessInfo": {
+        "description": "One running process, as a listing sees it.",
+        "properties": {
+          "process": {
+            "$ref": "#/components/schemas/ProcessState",
+            "description": "The command, and where it is."
+          },
+          "session": {
+            "description": "The session that owns it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "process"
+        ],
+        "type": "object"
+      },
+      "ProcessListResponse": {
+        "description": "The processes this node is running.",
+        "properties": {
+          "processes": {
+            "description": "In session order.",
+            "items": {
+              "$ref": "#/components/schemas/ProcessInfo"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "processes"
+        ],
+        "type": "object"
+      },
       "ProcessSpec": {
         "description": "How to start a process session.",
         "properties": {
@@ -2874,6 +2908,82 @@
       }
     },
     "/v1/processes": {
+      "get": {
+        "operationId": "listProcesses",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessListResponse"
+                }
+              }
+            },
+            "description": "The result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "The processes this node is running. Not durable: memory, not the log."
+      },
       "post": {
         "operationId": "startProcess",
         "requestBody": {

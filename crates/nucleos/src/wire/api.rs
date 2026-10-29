@@ -286,6 +286,22 @@ pub struct ProcessStartRequest {
     pub timeout_millis: Option<u64>,
 }
 
+/// One running process, as a listing sees it.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ProcessInfo {
+    /// The session that owns it.
+    pub session: String,
+    /// The command, and where it is.
+    pub process: crate::contract::ProcessState,
+}
+
+/// The processes this node is running.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ProcessListResponse {
+    /// In session order.
+    pub processes: Vec<ProcessInfo>,
+}
+
 /// What starting a process answered with.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ProcessStartResponse {

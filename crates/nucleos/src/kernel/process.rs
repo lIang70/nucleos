@@ -81,6 +81,8 @@ struct Captured {
 /// One running process: a mailbox, and the exit it will eventually report.
 struct Running {
     control: mpsc::Sender<Control>,
+    /// The pid, kept so a listing can report it without touching the child.
+    pid: Option<u32>,
     exited: oneshot::Receiver<ExecOutput>,
 }
 
@@ -191,6 +193,7 @@ impl Supervisor {
             session.as_str().to_owned(),
             Running {
                 control: control_tx,
+                pid,
                 exited: exited_rx,
             },
         );
@@ -242,6 +245,19 @@ impl Supervisor {
             .exited
             .await
             .map_err(|_| Error::internal("the process ended without reporting an exit"))
+    }
+
+    /// The processes this supervisor is holding, in session order.
+    ///
+    /// What it answers is "what is running on this node right now". A process session that outlived
+    /// a restart is *not* here — its own view says `Lost` — because this map is in memory and a
+    /// process is not durable state.
+    pub(crate) async fn list(&self) -> Vec<(SessionId, Option<u32>)> {
+        let processes = self.processes.lock().await;
+        processes
+            .iter()
+            .map(|(session, running)| (SessionId::new(session.clone()), running.pid))
+            .collect()
     }
 
     /// Whether the supervisor still holds this session, and where that leaves it.
@@ -380,6 +396,36 @@ async fn reader(
 }
 
 impl Kernel {
+    /// The process sessions this node is running, and where each one is.
+    ///
+    /// Not a durable list: it is the supervisor's memory, so it answers "what is running now". A
+    /// session that outlived a restart is absent here and says `Lost` in its own view — which is
+    /// the honest pair of answers, and the reason this is not called a list of sessions.
+    pub async fn processes(&self) -> Result<Vec<(SessionId, crate::contract::ProcessState)>> {
+        let mut listed = Vec::new();
+        for (session, pid) in self.supervisor.list().await {
+            let Some(snapshot) = self.store.snapshot(&session).await? else {
+                continue;
+            };
+            let Some(process) = snapshot.process else {
+                continue;
+            };
+            let status = match pid {
+                Some(pid) => crate::contract::ProcessStatus::Running { pid },
+                // Held by the supervisor with no pid yet: between `spawn` and the child.
+                None => crate::contract::ProcessStatus::Pending,
+            };
+            listed.push((
+                session,
+                crate::contract::ProcessState {
+                    spec: process.spec,
+                    status,
+                },
+            ));
+        }
+        Ok(listed)
+    }
+
     /// Start a process session and the command it runs.
     ///
     /// The supervisor becomes this session's only writer: everything the process produces is

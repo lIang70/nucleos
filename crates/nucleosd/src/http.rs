@@ -17,9 +17,9 @@ use axum::{Json, Router};
 use nucleos::contract::{ErrorCode, Principal, SessionId, SessionState};
 use nucleos::kernel::{HitlVerdict, Kernel, SessionSpec, StateWrite};
 use nucleos::wire::api::{
-    DescribeResponse, ErrorBody, InferenceRequest, InferenceResponse, ProcessStartRequest,
-    ProcessStartResponse, SessionView, StartRequest, StartResponse, StateRequest, StdinRequest,
-    ToolBatchRequest, ToolBatchResponse, VerdictRequest,
+    DescribeResponse, ErrorBody, InferenceRequest, InferenceResponse, ProcessInfo,
+    ProcessListResponse, ProcessStartRequest, ProcessStartResponse, SessionView, StartRequest,
+    StartResponse, StateRequest, StdinRequest, ToolBatchRequest, ToolBatchResponse, VerdictRequest,
 };
 use nucleos::wire::openapi;
 use nucleos_agent as agent;
@@ -244,6 +244,17 @@ pub const ROUTES: &[Route] = &[
             reply: openapi::Reply::Json("ProcessStartResponse"),
         },
         build: || post(start_process),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "get",
+            path: "/v1/processes",
+            operation: "listProcesses",
+            summary: "The processes this node is running. Not durable: memory, not the log.",
+            request: None,
+            reply: openapi::Reply::Json("ProcessListResponse"),
+        },
+        build: || get(list_processes),
     },
     Route {
         meta: openapi::Route {
@@ -522,6 +533,28 @@ async fn start_process(
         state: process.status,
         next_seq: session.next_seq(),
     }))
+}
+
+/// What is running on this node right now.
+///
+/// The supervisor's memory, not the store: a session that outlived a restart is absent here and
+/// reports `Lost` in its own view. A durable list needs the store to enumerate sessions, which it
+/// cannot do yet.
+async fn list_processes(
+    State(app): State<Arc<App>>,
+) -> Result<Json<ProcessListResponse>, ApiError> {
+    let kernel = app.kernel()?.clone();
+    let processes = kernel
+        .processes()
+        .await
+        .map_err(|error| ApiError::from_error(&error))?
+        .into_iter()
+        .map(|(session, process)| ProcessInfo {
+            session: session.as_str().to_owned(),
+            process,
+        })
+        .collect();
+    Ok(Json(ProcessListResponse { processes }))
 }
 
 async fn write_stdin(

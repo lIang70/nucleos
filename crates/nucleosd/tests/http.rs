@@ -227,3 +227,83 @@ async fn a_policy_without_a_mechanism_is_refused_over_the_abi() {
             .contains("danger_full_access")
     );
 }
+
+#[tokio::test]
+async fn the_list_shows_what_is_running_and_forgets_what_ended() {
+    let app = router(running());
+
+    // Empty to begin with: an empty list is an answer, not an error.
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/processes")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let listed = body_json(response).await;
+    assert!(listed["processes"].as_array().unwrap().is_empty());
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/processes")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"argv":["sleep","30"],"sandbox":{"policy":{"kind":"danger_full_access"}}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let session = body_json(response).await["session"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/processes")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let listed = body_json(response).await;
+    let processes = listed["processes"].as_array().unwrap();
+    assert_eq!(processes.len(), 1);
+    assert_eq!(processes[0]["session"], session.as_str());
+    //  is a tagged union, so the tag is the field to read.
+    assert_eq!(processes[0]["process"]["status"]["status"], "running");
+    assert!(processes[0]["process"]["status"]["pid"].as_u64().is_some());
+
+    // Ending it removes it from the list: this is memory, not the log.
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/sessions/{session}/signal"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let _ = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/sessions/{session}/wait"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+}
