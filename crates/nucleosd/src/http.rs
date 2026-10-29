@@ -40,6 +40,8 @@ pub struct App {
     /// daemon can honestly claim; deriving a principal from them is the next slice.
     principal: Principal,
     models: Vec<String>,
+    /// The tools every source advertises, for `Describe`.
+    tools: Vec<String>,
 }
 
 impl App {
@@ -50,7 +52,15 @@ impl App {
             kernel: Some(kernel),
             principal,
             models,
+            tools: Vec::new(),
         }
+    }
+
+    /// Advertise the tools that were discovered, so a caller can see what it may ask for.
+    #[must_use]
+    pub fn with_tools(mut self, tools: Vec<String>) -> Self {
+        self.tools = tools;
+        self
     }
 
     /// Serve what the environment describes.
@@ -63,10 +73,11 @@ impl App {
     /// NUCLEOS_MODEL_NAME   the model to ask for
     /// NUCLEOS_MODEL_KEY    bearer token, when the endpoint wants one
     /// NUCLEOS_CONTEXT      context window, default 128000
+    /// NUCLEOS_MCP          one tool source: `name=command args…`
     /// ```
     ///
     /// Unset means unconfigured: up, describing itself, refusing to pretend it has models.
-    pub fn from_env() -> Result<Self, nucleos::Error> {
+    pub async fn from_env() -> Result<Self, nucleos::Error> {
         let Ok(url) = std::env::var("NUCLEOS_MODEL_URL") else {
             return Ok(Self::unconfigured());
         };
@@ -102,22 +113,46 @@ impl App {
             timeout: Some(std::time::Duration::from_secs(120)),
         })?;
 
+        // One source, from one variable: a deployment file is the next slice, and a daemon that
+        // cannot run a real tool is a daemon nobody can test against.
+        let mut tools: Vec<Arc<dyn nucleos::adapter::Tool>> = Vec::new();
+        let mut discovered: Vec<String> = Vec::new();
+        if let Ok(spec) = std::env::var("NUCLEOS_MCP") {
+            let (name, command) = spec.split_once('=').ok_or_else(|| {
+                nucleos::Error::invalid("NUCLEOS_MCP must be `name=command args…`")
+            })?;
+            let mut parts = command.split_whitespace();
+            let command = parts
+                .next()
+                .ok_or_else(|| nucleos::Error::invalid("NUCLEOS_MCP names no command"))?;
+            let source = nucleos_mcp::McpSource::new(name.trim(), command).with_args(parts);
+            use nucleos::adapter::Tool as _;
+            for tool in source.connect().await? {
+                discovered.push(tool.spec().name);
+                tools.push(Arc::new(tool));
+            }
+        }
+
         let routing = nucleos::contract::Routing {
             chain: vec![model.clone()],
             retries: 1,
         };
-        let kernel = Kernel::builder()
+        let mut builder = Kernel::builder()
             .model(&model, Arc::new(adapter))
             .store(Arc::new(nucleos::adapter::MemoryStore::new()))
             .policy(Arc::new(nucleos::adapter::AllowAll))
-            .routing(routing)
-            .build()?;
+            .routing(routing);
+        for tool in tools {
+            builder = builder.tool(tool);
+        }
+        let kernel = builder.build()?;
 
         Ok(Self::new(
             Arc::new(kernel),
             Self::unconfigured().principal,
             vec![model],
-        ))
+        )
+        .with_tools(discovered))
     }
 
     /// Serve nothing but `describe`: the daemon is up, no deployment is configured.
@@ -130,6 +165,7 @@ impl App {
                 subject: "local".to_owned(),
             },
             models: Vec::new(),
+            tools: Vec::new(),
         }
     }
 
@@ -356,6 +392,7 @@ async fn describe(State(app): State<Arc<App>>) -> Json<DescribeResponse> {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         abi_version: ABI_VERSION.to_owned(),
         models: app.models.clone(),
+        tools: app.tools.clone(),
     })
 }
 

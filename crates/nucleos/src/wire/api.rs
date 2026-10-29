@@ -192,6 +192,9 @@ pub struct DescribeResponse {
     pub abi_version: String,
     /// The models a route may name.
     pub models: Vec<String>,
+    /// The tools a session may be given.
+    #[serde(default)]
+    pub tools: Vec<String>,
 }
 
 /// One inference: the messages to send.

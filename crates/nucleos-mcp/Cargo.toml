@@ -1,0 +1,25 @@
+[package]
+name = "nucleos-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MCP tool sources for the nucleos kernel."
+readme = "../../README.md"
+keywords = ["agent", "kernel", "mcp", "tools"]
+categories = ["development-tools"]
+
+[dependencies]
+async-trait = { workspace = true }
+base64 = "0.22"
+nucleos = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true

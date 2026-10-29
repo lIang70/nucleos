@@ -1,6 +1,12 @@
 [workspace]
 resolver = "3"
-members = ["crates/nucleos", "crates/nucleos-agent", "crates/nucleos-openai", "crates/nucleosd"]
+members = [
+    "crates/nucleos",
+    "crates/nucleos-agent",
+    "crates/nucleos-mcp",
+    "crates/nucleos-openai",
+    "crates/nucleosd",
+]
 
 [workspace.package]
 version = "0.0.1-preview"
@@ -13,6 +19,7 @@ repository = "https://github.com/lIang70/nucleos"
 [workspace.dependencies]
 nucleos = { path = "crates/nucleos", version = "0.0.1-preview" }
 nucleos-agent = { path = "crates/nucleos-agent", version = "0.0.1-preview" }
+nucleos-mcp = { path = "crates/nucleos-mcp", version = "0.0.1-preview" }
 nucleos-openai = { path = "crates/nucleos-openai", version = "0.0.1-preview" }
 
 serde = { version = "1", features = ["derive"] }

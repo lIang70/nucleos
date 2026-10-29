@@ -581,6 +581,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleos-mcp"
+version = "0.0.1-preview"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "nucleos",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "nucleos-openai"
 version = "0.0.1-preview"
 dependencies = [
@@ -602,6 +614,7 @@ dependencies = [
  "axum",
  "nucleos",
  "nucleos-agent",
+ "nucleos-mcp",
  "nucleos-openai",
  "serde",
  "serde_json",

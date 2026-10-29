@@ -40,7 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // A deployment file is the next slice; until then the environment is the configuration, so a
     // real model can be served without one.
-    let app = App::from_env()?;
+    let app = App::from_env().await?;
 
     eprintln!("nucleosd listening on unix:{socket}");
     axum::serve(listener, router(Arc::new(app)))
