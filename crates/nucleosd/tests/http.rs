@@ -84,3 +84,42 @@ async fn an_unknown_route_is_a_404_without_a_body_contract() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn every_row_of_the_table_is_a_route_the_router_serves() {
+    // The table says what the document says; this proves the router agrees with it. A `Router`
+    // cannot be asked what it serves, so the only way to check is to send the request: a wrong
+    // verb answers 405, a missing path answers 404, and everything else means the row is real.
+    for row in nucleosd::http::ROUTES {
+        let path = row.meta.path.replace("{id}", "session-1");
+        let mut request = Request::builder()
+            .method(row.meta.method.to_uppercase().as_str())
+            .uri(&path);
+        let body = if row.meta.method == "get" {
+            Body::empty()
+        } else {
+            request = request.header("content-type", "application/json");
+            Body::from("{}")
+        };
+
+        let response = router(Arc::new(App::unconfigured()))
+            .oneshot(request.body(body).unwrap())
+            .await
+            .unwrap();
+
+        assert_ne!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "{} {} is in the table but not in the router",
+            row.meta.method.to_uppercase(),
+            path
+        );
+        assert_ne!(
+            response.status(),
+            StatusCode::METHOD_NOT_ALLOWED,
+            "{} {} documents a verb the router does not serve",
+            row.meta.method.to_uppercase(),
+            path
+        );
+    }
+}

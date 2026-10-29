@@ -18,8 +18,8 @@ brought back a file handle that no longer exists".
 
 ## 2. Checkpoints only at turn boundaries
 
-**Decision.** Nothing mid-turn is persisted. The engine never exposes a partially folded
-state.
+**Decision.** Nothing mid-turn is persisted. A driver only writes state at a boundary it
+chose.
 
 **Why.** A checkpoint is a promise: "replay from here is equivalent". That promise is only
 keepable at a boundary where no call is in flight and no result is half-applied.

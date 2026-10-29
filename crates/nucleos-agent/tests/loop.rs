@@ -15,7 +15,7 @@ use nucleos::contract::{
     AttemptOutcome, Budget, ErrorCode, EventKind, PermissionKind, PermissionOption, Principal,
     Routing, SessionId, SessionState, StopReason,
 };
-use nucleos::engine::{HitlVerdict, Kernel, SessionSpec};
+use nucleos::kernel::{HitlVerdict, Kernel, SessionSpec};
 use nucleos::{Error, Result};
 use nucleos_agent as agent;
 use std::sync::Arc;
@@ -606,6 +606,7 @@ impl Policy for DenyToolsOnly {
                 reason: format!("{} is not available", call.name),
             },
             Gated::Model { .. } => Verdict::Allow,
+            Gated::Exec { .. } => Verdict::Allow,
         }
     }
 }
@@ -633,6 +634,7 @@ impl Policy for AskFirst {
                 ],
             },
             Gated::Model { .. } => Verdict::Allow,
+            Gated::Exec { .. } => Verdict::Allow,
         }
     }
 }

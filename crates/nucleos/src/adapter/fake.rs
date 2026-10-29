@@ -139,7 +139,7 @@ impl FakeModel {
         self
     }
 
-    /// How many calls were made. The engine's loop is the thing under test, so counting is
+    /// How many calls were made. A driver's loop is the thing under test, so counting is
     /// usually the assertion.
     #[must_use]
     pub fn calls(&self) -> usize {
@@ -381,7 +381,7 @@ impl Store for MemoryStore {
 }
 
 impl MemoryStore {
-    /// Every event appended for a session. For assertions, not for the engine.
+    /// Every event appended for a session. For assertions, not for the kernel.
     #[must_use]
     pub fn recorded(&self, session: &SessionId) -> Vec<Event> {
         let state = self.inner.lock().unwrap_or_else(|p| p.into_inner());
@@ -439,6 +439,7 @@ impl Policy for DenyAll {
         let what = match request.subject {
             Gated::Tool { call } => call.name.clone(),
             Gated::Model { model, .. } => model.to_owned(),
+            Gated::Exec { argv, .. } => argv.join(" "),
         };
         Verdict::Deny {
             code: crate::contract::ErrorCode::Denied,

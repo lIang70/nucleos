@@ -7,10 +7,15 @@
 //!
 //! It is a module rather than a crate because a crate would imply a boundary that no longer
 //! exists: the "contract" is not a layer below the kernel, it is the kernel's own types plus a
-//! handful of envelopes. `schema/v1/schema.json` is the artefact an SDK consumes; regenerate it
-//! with `NUCLEOS_SCHEMA=1 cargo test -p nucleos --test schema`.
+//! handful of envelopes.
+//!
+//! The published artefact is `openapi/v1/openapi.json`: the message definitions under
+//! `components.schemas`, and the routes beside them. Regenerate it with
+//! `NUCLEOS_OPENAPI=1 cargo test -p nucleos --test openapi`.
 
 pub mod api;
+pub mod openapi;
 pub mod schema;
 
-pub use schema::{document, regenerate};
+pub use openapi::regenerate;
+pub use schema::definitions;

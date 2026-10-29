@@ -30,7 +30,7 @@ as the goals.
 
 ```text
 crates/
-  nucleos/    the kernel library — contracts, engine, adapters, the wire envelopes
+  nucleos/    the kernel library — contracts, kernel (syscalls), adapters, wire
   nucleosd/   the daemon — router, error mapping, listener
 schema/       the published JSON Schema, committed
 docs/         design documents

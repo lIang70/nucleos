@@ -1,8 +1,8 @@
-//! The session: one state machine, one writer, one checkpoint at a time.
+//! The session: one writer, one checkpoint at a time.
 //!
-//! The state machine is the reason the engine can be simple. Transitions are checked, terminal
-//! states are terminal, and a checkpoint is only ever written when the machine is at a
-//! boundary — so "resume" never has to reason about a half-applied turn.
+//! The session is the reason the kernel can be simple. It is one object with two states, and a
+//! checkpoint is only ever written at a boundary the caller chose — so "resume" never has to
+//! reason about a half-applied call.
 
 use crate::contract::{
     Budget, Generation, Ledger, Message, PendingCall, Principal, SessionId, SessionState, Snapshot,
@@ -36,6 +36,14 @@ pub struct Session {
     pub(crate) pending: Vec<PendingCall>,
     /// The application's own state, opaque to the kernel.
     pub(crate) data: std::collections::BTreeMap<String, serde_json::Value>,
+    /// Where commands run, and the default writable root.
+    pub(crate) workspace: Option<String>,
+    /// What commands may touch.
+    pub(crate) sandbox: crate::contract::SandboxPolicy,
+    /// What this session is for.
+    pub(crate) kind: crate::contract::SessionKind,
+    /// The process, when this is a process session.
+    pub(crate) process: Option<crate::contract::ProcessState>,
     /// The route this session was started with.
     pub(crate) routing: crate::contract::Routing,
     /// Extra attempts per route target, resolved when the session started.
@@ -77,6 +85,30 @@ impl Session {
     #[must_use]
     pub fn data(&self) -> &std::collections::BTreeMap<String, serde_json::Value> {
         &self.data
+    }
+
+    /// What this session is for.
+    #[must_use]
+    pub fn kind(&self) -> crate::contract::SessionKind {
+        self.kind
+    }
+
+    /// The process, when this is a process session.
+    #[must_use]
+    pub fn process(&self) -> Option<&crate::contract::ProcessState> {
+        self.process.as_ref()
+    }
+
+    /// What this session's commands may touch.
+    #[must_use]
+    pub fn sandbox(&self) -> &crate::contract::SandboxPolicy {
+        &self.sandbox
+    }
+
+    /// Where they run.
+    #[must_use]
+    pub fn workspace(&self) -> Option<&String> {
+        self.workspace.as_ref()
     }
 
     /// The route in force.
@@ -132,6 +164,10 @@ impl Session {
             seq: 0,
             pending: Vec::new(),
             data: std::collections::BTreeMap::new(),
+            workspace: None,
+            sandbox: crate::contract::SandboxPolicy::default(),
+            kind: crate::contract::SessionKind::Agent,
+            process: None,
             routing: crate::contract::Routing::default(),
             retries: 0,
             params: crate::adapter::GenerateParams::default(),
@@ -207,6 +243,10 @@ impl Session {
             system: self.system.clone(),
             tools: self.tools.clone(),
             params: self.params.clone(),
+            workspace: self.workspace.clone(),
+            sandbox: self.sandbox.clone(),
+            kind: self.kind,
+            process: self.process.clone(),
             data: self.data.clone(),
         })
     }
@@ -240,6 +280,10 @@ impl Session {
             routing: snapshot.routing,
             retries: 0,
             params: snapshot.params,
+            workspace: snapshot.workspace,
+            sandbox: snapshot.sandbox,
+            kind: snapshot.kind,
+            process: snapshot.process,
             system: snapshot.system,
             tools: snapshot.tools,
         }

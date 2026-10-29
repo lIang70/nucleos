@@ -110,7 +110,7 @@ async fn an_exhausted_script_stops_instead_of_streaming_forever() -> Result<()> 
     while first.next().await.transpose()?.is_some() {}
 
     // The script is spent: the second call must terminate, not hang. A fake that streams
-    // forever turns a bug in the engine's stopping logic into a timeout.
+    // forever turns a bug in a driver's stopping logic into a timeout.
     let mut second = model.invoke(ModelRequest::default()).await?;
     let mut stopped = false;
     while let Some(delta) = second.next().await {
@@ -363,6 +363,10 @@ async fn a_snapshot_cannot_claim_more_than_the_log_holds() -> Result<()> {
         tools: Vec::new(),
         params: Default::default(),
         data: Default::default(),
+        workspace: None,
+        sandbox: Default::default(),
+        kind: Default::default(),
+        process: None,
     };
 
     let error = store.write_snapshot(snapshot).await.unwrap_err();
@@ -402,6 +406,10 @@ async fn a_valid_snapshot_round_trips() -> Result<()> {
             tools: Vec::new(),
             params: Default::default(),
             data: Default::default(),
+            workspace: None,
+            sandbox: Default::default(),
+            kind: Default::default(),
+            process: None,
         })
         .await?;
 

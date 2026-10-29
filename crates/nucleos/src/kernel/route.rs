@@ -11,9 +11,9 @@ use crate::contract::{
     Attempt, AttemptOutcome, AttemptPhase, AttemptTrigger, Content, Degraded, EventKind, Message,
     Part, PartKind, Purpose, ReasoningPart, TextPart, ToolCall, ToolCallPart, Usage,
 };
-use crate::engine::Kernel;
-use crate::engine::session::Session;
 use crate::error::{Error, Result};
+use crate::kernel::Kernel;
+use crate::kernel::session::Session;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 

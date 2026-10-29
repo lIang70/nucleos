@@ -1,7 +1,7 @@
 //! The kernel's pure types.
 //!
 //! No I/O, no clocks, no sockets. Everything here is data that can be compared, logged,
-//! stored and replayed, which is what lets the engine be tested without a runtime and an
+//! stored and replayed, which is what lets a driver be tested without a runtime and an
 //! event log be replayed without a network.
 //!
 //! The types are deliberately narrower than any provider's vocabulary. A capability that
@@ -599,6 +599,35 @@ pub enum EventKind {
         /// Which step of the turn produced it.
         step_index: u32,
     },
+    /// A command started.
+    ExecStarted {
+        /// The process id, when the platform gave one.
+        pid: u32,
+        /// What was run, verbatim, so an audit can see it.
+        argv: Vec<String>,
+        /// The policy it ran under, after any granted widening.
+        policy: SandboxPolicy,
+    },
+    /// A chunk of a command's output.
+    ExecOutput {
+        /// Which stream.
+        stream: ExecStream,
+        /// The text of this chunk.
+        chunk: String,
+    },
+    /// Bytes written to a running process's stdin.
+    ///
+    /// Recorded because it is the most audit-worthy thing in the system: spawning `/bin/sh` is
+    /// safe, writing `rm -rf /` into it is not.
+    ExecStdin {
+        /// What was written.
+        chunk: String,
+    },
+    /// A command ended.
+    ExecExited {
+        /// How it ended.
+        output: ExecOutput,
+    },
     /// Progress from a long-running call. A call whose only feedback is a deadline is
     /// indistinguishable from a hang.
     Progress {
@@ -629,6 +658,10 @@ impl EventKind {
             Self::ToolFinished { .. } => "nucleos.v1.tool_finished",
             Self::ToolCallArgs { .. } => "nucleos.v1.tool_call_args",
             Self::Usage { .. } => "nucleos.v1.usage",
+            Self::ExecStarted { .. } => "nucleos.v1.exec_started",
+            Self::ExecOutput { .. } => "nucleos.v1.exec_output",
+            Self::ExecStdin { .. } => "nucleos.v1.exec_stdin",
+            Self::ExecExited { .. } => "nucleos.v1.exec_exited",
             Self::CapabilityDegraded(_) => "nucleos.v1.capability_degraded",
             Self::AttemptFailed { .. } => "nucleos.v1.attempt_failed",
             Self::AwaitingHuman { .. } => "nucleos.v1.awaiting_human",
@@ -818,12 +851,22 @@ pub struct Snapshot {
     pub tools: Vec<String>,
     /// How answers are shaped.
     pub params: GenerateParams,
+    /// Where the session's commands run, and the default writable root.
+    pub workspace: Option<String>,
+    /// What its commands may touch.
+    pub sandbox: SandboxPolicy,
     /// The application's own state.
     ///
     /// Opaque: the kernel stores it, updates it atomically and restores it, and never reads a
     /// key. Every write is also an event, so a replay reproduces the value the application saw.
     #[serde(default)]
     pub data: BTreeMap<String, serde_json::Value>,
+    /// What this session is for.
+    #[serde(default)]
+    pub kind: SessionKind,
+    /// The process, when this is a process session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process: Option<ProcessState>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1051,4 +1094,220 @@ pub struct GenerateParams {
     /// The shape the answer must have.
     #[serde(default)]
     pub format: TextFormat,
+}
+
+// ---------------------------------------------------------------------------
+// Sandboxing
+// ---------------------------------------------------------------------------
+
+/// What a session's commands may touch.
+///
+/// Set when the session opens and carried in its checkpoint. It is **not** a field of a request:
+/// a caller that can name its own policy can name `DangerFullAccess`, and a permission slip the
+/// untrusted side writes is not a permission model.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SandboxPolicy {
+    /// No restriction. Use with caution, and only where the code is yours.
+    DangerFullAccess,
+    /// Read everything, write nothing.
+    ReadOnly {
+        /// Whether outbound network is allowed.
+        #[serde(default)]
+        network_access: bool,
+    },
+    /// Write inside the session's workspace and nothing else.
+    WorkspaceWrite {
+        /// Extra roots outside the workspace that may be written.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        extra_writable_roots: Vec<String>,
+        /// Whether outbound network is allowed.
+        #[serde(default)]
+        network_access: bool,
+    },
+    /// The process is already outside our reach; only the network setting is ours to honour.
+    ExternalSandbox {
+        /// Whether outbound network is allowed.
+        #[serde(default)]
+        network_access: bool,
+    },
+}
+
+/// The default is the useful one, not the loosest: write inside the workspace, no network.
+impl Default for SandboxPolicy {
+    fn default() -> Self {
+        Self::WorkspaceWrite {
+            extra_writable_roots: Vec::new(),
+            network_access: false,
+        }
+    }
+}
+
+impl SandboxPolicy {
+    /// The narrowest policy: read only, no network.
+    #[must_use]
+    pub fn read_only() -> Self {
+        Self::ReadOnly {
+            network_access: false,
+        }
+    }
+
+    /// Whether outbound network is permitted under this policy.
+    #[must_use]
+    pub fn network_access(&self) -> bool {
+        match self {
+            Self::DangerFullAccess => true,
+            Self::ReadOnly { network_access }
+            | Self::WorkspaceWrite { network_access, .. }
+            | Self::ExternalSandbox { network_access } => *network_access,
+        }
+    }
+}
+
+/// Extra room asked for by one command.
+///
+/// Only ever widens: a caller cannot use it to narrow the session's policy, because narrowing by
+/// request would let one command quietly change what a later command is allowed to assume.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AdditionalPermissions {
+    /// Roots outside the workspace this command may write.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub writable_roots: Vec<String>,
+    /// Whether this command may reach the network.
+    #[serde(default)]
+    pub network_access: bool,
+}
+
+/// What a single `exec` asks for.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SandboxPermissions {
+    /// Run under the session's policy.
+    #[default]
+    UseDefault,
+    /// Run outside the sandbox. The gate turns this into a human question, not a formality.
+    RequireEscalated,
+    /// Stay in the sandbox, with more room for this command only.
+    WithAdditionalPermissions {
+        /// What to add. Never what to remove.
+        additional: AdditionalPermissions,
+    },
+}
+
+/// Which stream a chunk came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecStream {
+    /// Standard output.
+    Stdout,
+    /// Standard error.
+    Stderr,
+}
+
+/// A piece of captured output, and whether it was cut.
+///
+/// Truncation is carried rather than applied silently: a model that cannot see that its output
+/// was shortened will reason about a file it only half read.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct OutputChunk {
+    /// The text kept.
+    pub text: String,
+    /// The line after which the rest was dropped, when it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncated_after_lines: Option<u32>,
+}
+
+/// How one command ended.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ExecOutput {
+    /// The exit status, or `-1` when the process was killed by a signal.
+    pub exit_code: i32,
+    /// Standard output.
+    pub stdout: OutputChunk,
+    /// Standard error.
+    pub stderr: OutputChunk,
+    /// How long it ran.
+    pub duration_millis: u64,
+    /// Whether it was killed for exceeding its deadline.
+    pub timed_out: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Processes
+// ---------------------------------------------------------------------------
+
+/// What a session is for.
+///
+/// A process session is not a second kind of object: it is the same lifecycle — single writer,
+/// event log, budget, sandbox, checkpoint — with a different syscall face. In Unix a shell
+/// session is a process, and the same reasoning applies here.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionKind {
+    /// Runs a model loop.
+    #[default]
+    Agent,
+    /// Runs one command, and stays open while it does.
+    Process,
+}
+
+/// How to start a process session.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ProcessSpec {
+    /// The command line. No shell by default: an argv cannot be word-split by accident.
+    pub argv: Vec<String>,
+    /// Where to run it. Absent means the session's workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Environment to add.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    /// What this command asks for on top of the session's policy.
+    #[serde(default)]
+    pub permissions: SandboxPermissions,
+}
+
+/// Where a process is.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ProcessStatus {
+    /// No pid yet: the session exists, the process does not.
+    #[default]
+    Pending,
+    /// Running, under whatever isolation the platform could give.
+    Running {
+        /// The process id.
+        pid: u32,
+    },
+    /// It ended.
+    Exited {
+        /// How.
+        output: ExecOutput,
+    },
+    /// The process is gone and we do not know how it ended.
+    ///
+    /// A live process cannot be reconstructed from a log — its memory, its file descriptors and
+    /// its cursor are not in the event stream. So a session that outlives the runtime says this,
+    /// rather than pretending the command is still running.
+    Lost,
+}
+
+/// A process session's state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ProcessState {
+    /// How it was started.
+    pub spec: ProcessSpec,
+    /// Where it is now.
+    pub status: ProcessStatus,
+}
+
+impl ProcessState {
+    /// Whether the process has ended, one way or another.
+    #[must_use]
+    pub fn is_finished(&self) -> bool {
+        matches!(
+            self.status,
+            ProcessStatus::Exited { .. } | ProcessStatus::Lost
+        )
+    }
 }

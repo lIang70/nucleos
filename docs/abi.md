@@ -23,6 +23,15 @@ encoding rules and why the schema is not a separate type tree.
 | `POST /v1/sessions/{id}/verdict` | `VerdictRequest` | `StartResponse` — runs the loop on |
 | `GET /v1/sessions/{id}/events?from_seq=` | — | `text/event-stream` of `Event` |
 
+The machine-readable form of this table is [`openapi/v1/openapi.json`](../openapi/v1/openapi.json):
+`components.schemas` is the JSON Schema this repository already generates, and `paths` is the same
+ten routes with their status codes. It is committed and a test fails when it drifts:
+
+```bash
+NUCLEOS_OPENAPI=1 cargo test -p nucleos --test openapi   # regenerate
+cargo test -p nucleos --test openapi                     # fail if stale
+```
+
 Two layers, deliberately:
 
 - **The driver** (`/v1/agents`, `/v1/sessions/{id}/verdict`) runs the reference loop from
@@ -56,20 +65,27 @@ Session control and source management are separate groups on purpose: one is per
 and hot, the other is node-wide and rare. Merging them would make every session call carry
 node-wide authority.
 
-### 1.1 The schema
+### 1.1 The published artefact
 
-One document, N generators. `schema/v1/schema.json` holds every type once, generated from the
-kernel's own definitions; an SDK generates its types from it and never copies it — a copy is a
-version that drifts, and the drift is discovered by a client failing in production.
+One document: [`openapi/v1/openapi.json`](../openapi/v1/openapi.json). Its `components.schemas`
+is every message the ABI carries, generated from the kernel's own types; its `paths` is the ten
+routes above. An SDK generates from it and never copies it — a copy is a version that drifts, and
+the drift is discovered by a client failing in production.
 
 ```bash
-NUCLEOS_SCHEMA=1 cargo test -p nucleos --test schema   # regenerate
-cargo test -p nucleos --test schema                    # fail if stale
+NUCLEOS_OPENAPI=1 cargo test -p nucleos --test openapi   # regenerate
+cargo test -p nucleos --test openapi                     # fail if stale
 ```
 
-The default run only reads, so CI fails instead of quietly rewriting the file. What an SDK does
-with the document is that ecosystem's decision; what this repository guarantees is that the
-document matches the code.
+The default run only reads, so CI fails instead of quietly rewriting the file.
+
+Two things it cannot express, both stated rather than hidden:
+
+- **The event stream.** Each `data:` line is an `Event` — the response schema says so — but a
+  generator will not produce a working SSE client. Every other route is generated; this one is
+  hand-written, and the document says how the framing works.
+- **The unix socket.** A socket has no URL, so the servers entry is `/` with the transport
+  described in prose. A `http://localhost` base URL would be a guess that is wrong by default.
 
 ## 2. Sessions
 

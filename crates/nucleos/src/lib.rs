@@ -8,17 +8,21 @@
 //! The module graph is one-way and is pinned by `tests/layering.rs`:
 //!
 //! ```text
-//! contract → engine → adapter → (host)
+//! contract → kernel → adapter
 //! ```
 //!
-//! The engine is driven entirely through [`adapter`], which is what lets most tests run without a
-//! network. The kernel's own types are also the wire format: [`wire`] holds the HTTP envelopes and
+//! `kernel` is the syscall surface; the loop that drives it lives in `nucleos-agent`, one crate
+//! up, because a kernel that runs your application's loop has taken a position on what your
+//! application should be.
+//!
+//! The kernel is driven entirely through [`adapter`], which is what lets most of the tests run
+//! without a network. The kernel's own types are also the wire format: [`wire`] holds the HTTP envelopes and
 //! the published schema, and no transport appears in this crate.
 
 pub mod adapter;
 pub mod contract;
-pub mod engine;
 pub mod error;
+pub mod kernel;
 pub mod wire;
 
 pub use contract::{
@@ -27,6 +31,7 @@ pub use contract::{
     StopReason, ToolCall, ToolResult, ToolSpec, Usage,
 };
 pub use error::{Error, Result};
+pub use kernel::Kernel;
 
 /// The kernel's own version.
 ///

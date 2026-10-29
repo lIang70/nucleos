@@ -7,7 +7,7 @@
 use crate::contract::{
     ErrorCode, Message, PendingCall, Purpose, SessionState, StopReason, ToolCall, ToolResult, Usage,
 };
-use crate::engine::Outcome;
+use crate::kernel::Outcome;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -37,6 +37,9 @@ pub struct StartRequest {
     /// How to shape answers.
     #[serde(default)]
     pub params: Params,
+    /// Where commands run, and what they may touch.
+    #[serde(default)]
+    pub sandbox: SandboxSettings,
     /// What the session may consume.
     #[serde(default)]
     pub budget: Budget,
@@ -63,7 +66,7 @@ impl StartRequest {
     }
 }
 
-impl From<StartRequest> for crate::engine::SessionSpec {
+impl From<StartRequest> for crate::kernel::SessionSpec {
     fn from(request: StartRequest) -> Self {
         use crate::adapter::{GenerateParams, ReasoningEffort, TextFormat, ToolChoice};
         Self {
@@ -107,8 +110,30 @@ impl From<StartRequest> for crate::engine::SessionSpec {
                 max_wall_millis: request.budget.max_wall_millis,
             },
             credit_tokens: request.credit_tokens,
+            // The policy is the operator's, not the caller's. A request that could name its own
+            // sandbox could name `danger_full_access`.
+            workspace: request.sandbox.workspace.clone(),
+            sandbox: request.sandbox.policy.clone(),
+            // Chosen by the route, not by the body: `/v1/agents` opens an agent session and the
+            // process route opens a process session.
+            kind: crate::contract::SessionKind::Agent,
+            process: None,
         }
     }
+}
+
+/// The sandbox a session's commands run in.
+///
+/// Config, not request: it is decided when the session opens and carried in its checkpoint, so a
+/// single command cannot widen it without asking.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SandboxSettings {
+    /// Where commands run. Absent means the daemon's working directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    /// What they may touch.
+    #[serde(default)]
+    pub policy: crate::contract::SandboxPolicy,
 }
 
 /// Generation parameters, as the wire carries them.
@@ -262,6 +287,25 @@ pub struct StateRequest {
     pub data: BTreeMap<String, serde_json::Value>,
 }
 
+/// One command to run inside the session's sandbox.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ExecRequest {
+    /// The command line. No shell by default: an argv cannot be word-split by accident.
+    pub argv: Vec<String>,
+    /// Where to run it. Absent means the session's workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Environment to add.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    /// Wall-clock ceiling. Absent means the session's remaining budget.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_millis: Option<u64>,
+    /// What to ask for on top of the session's policy.
+    #[serde(default)]
+    pub permissions: crate::contract::SandboxPermissions,
+}
+
 /// What a session looks like from outside.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SessionView {
@@ -277,6 +321,11 @@ pub struct SessionView {
     pub pending: Vec<PendingCall>,
     /// What it has spent.
     pub usage: Usage,
+    /// What its commands may touch.
+    pub sandbox: crate::contract::SandboxPolicy,
+    /// Where they run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
 }
 
 /// What a caller sends to answer a parked call.

@@ -15,7 +15,7 @@ use nucleos::contract::Principal;
 use nucleos::contract::{
     EventKind, Message, PartKind, Role, SessionId, SessionState, StopReason, ToolCall,
 };
-use nucleos::engine::{HitlVerdict, Kernel, Outcome, Session, SessionSpec, StateWrite};
+use nucleos::kernel::{HitlVerdict, Kernel, Outcome, Session, SessionSpec, StateWrite};
 use nucleos::{Error, Result};
 
 /// Open a session and drive it until it stops.

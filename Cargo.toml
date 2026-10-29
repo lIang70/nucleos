@@ -22,7 +22,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 axum = "0.8"
 tower = { version = "0.5", features = ["util"] }
 tokio-stream = { version = "0.1", features = ["sync", "net"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "process", "io-util"] }
 
 # `unwrap` in the kernel is a bug, not a shortcut. `expect` needs a reason on the line.
 [workspace.lints.rust]

@@ -73,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         bytes / N as usize
     );
 
-    // The engine appends one event at a time today. That is the number to keep an eye on, because
+    // A driver appends one event at a time today. That is the number to keep an eye on, because
     // a durable store turns it into one transaction per event.
     let runtime = tokio::runtime::Builder::new_current_thread().build()?;
     let store = nucleos::adapter::MemoryStore::new();

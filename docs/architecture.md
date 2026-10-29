@@ -57,6 +57,31 @@ daemon decides what a caller may see; the kernel just answers the query it was g
 - A shared store with a `tenant` column is a deployment choice, and the operator must know
 it is one.
 
+### 2.2 Isolation
+
+Two layers, and the split is the whole design:
+
+| Layer | Who sets it | Where it lives |
+| --- | --- | --- |
+| **Policy** — what a session's commands may touch | the operator | `SessionSpec.sandbox`, carried in the checkpoint |
+| **Permissions** — what one command asks for on top | the caller | a field of that one `exec` |
+
+`SandboxPolicy` is `danger_full_access`, `read_only`, `workspace_write` or `external_sandbox`,
+each with a network flag. `SandboxPermissions` is `use_default`, `require_escalated`, or
+`with_additional_permissions`.
+
+The policy is **not** a request field. A caller that can name its own policy can name
+`danger_full_access`, and a permission slip the untrusted side writes is not a permission model.
+
+Nothing widens without a gate. An escalation becomes `Gated::Exec` — the policy sees the argv, the
+session's policy and what was asked for — and the usual answer applies: allow, deny, or ask a
+human. `with_additional_permissions` only ever adds; there is no field for removing a restriction,
+because narrowing by request would let one command change what a later command may assume.
+
+The mechanism — seatbelt, bwrap with landlock, a Windows restricted token — sits behind the
+`exec` syscall and is never named in the contract. A deployment that runs on none of them still
+has a working `exec`; it just runs with the isolation the platform can give.
+
 ### 2.3 Session identity is `(tenant, session)`
 
 Two tenants may each own a session called `abc`. The kernel's key is the pair; the id is
@@ -69,42 +94,20 @@ see — and the first collision would be a cross-tenant read.
 `tenant` travels on the principal, never on a request field. A request that names its own
 tenant is a request that can name somebody else's.
 
-### 2.2 Isolation
+### 2.4 What the kernel still guarantees
 
-Isolation is a **declared property of a tool source**, enforced by whoever launches it:
+Two properties survive every rearrangement above, because they are correctness rather than
+policy:
 
-| Descriptor | Who enforces it |
-| --- | --- |
-| `none` | Trusted in-process code; nothing to enforce |
-| `process` | The daemon spawns a child (stdio) or connects to one (http); the sandbox is the OS's |
-| `vm` | The daemon launches a VM or a wasm instance |
-
-The kernel records the descriptor, refuses to migrate a session into a generation where it
-changed, and otherwise stays out of it. There is no isolator trait in the kernel, because
-the kernel never performs the isolation — it only refuses to pretend the descriptor is
-free to change.
-
-What the daemon owns, and the kernel does not:
-
-| Concern | What must be true |
-| --- | --- |
-| spawning | one child per `process` source, with a scrubbed environment — no inherited descriptors, no shared `HOME`, no shared temp directory |
-| separation | the agent's runtime and the tool's runtime are physically distinct environments; "the tool inherits the agent's credentials" is the classic incident |
-| deadlines | the deadline is enforced on the **call**, not on the process: graceful terminate, then kill |
-| egress | whatever the operator configured. The kernel has no opinion and no code path for it |
-
-What the kernel does guarantee, because these are correctness properties and not policy:
-
-- **Every tool call resolves** — with a result, a failure, or a timeout. Never with silence.
-- **It resolves against the generation that issued it**, even if a reload landed simultaneously.
-- **A dead tool is an unhealthy source, not a crashed kernel.** The call fails; the session
-  lives and decides what to do with a failure, which is business logic the kernel does not own.
+- **Every call resolves** — with a result, a failure, or a timeout. Never with silence.
+- **A dead tool is an unhealthy source, not a crashed kernel.** The call fails; the session lives
+  and decides what to do with a failure, which is business logic the kernel does not own.
 
 ## 3. Crates
 
 ```text
 crates/
-  nucleos/        contract/ · adapter/ · engine/ (syscalls) · wire/
+  nucleos/        contract/ · adapter/ · kernel/ (syscalls) · wire/
   nucleos-agent/  the reference loop, built on those syscalls
   nucleosd/       router · error mapping · listener
 schema/           the published JSON Schema, committed
@@ -113,7 +116,7 @@ schema/           the published JSON Schema, committed
 `nucleos-agent` depends on `nucleos` and nothing depends on `nucleos-agent` except the daemon:
 the loop is the application's, and the kernel must not learn it.
 
-The module graph inside `nucleos` is one-way: `contract → engine → adapter`, with `wire` beside
+The module graph inside `nucleos` is one-way: `contract → kernel → adapter`, with `wire` beside
 `contract` because it is the same types plus the HTTP envelopes.
 A single structural test pins it, so a later edit that reaches upward fails CI instead of
 quietly coupling the layers.
@@ -167,7 +170,7 @@ Three shapes are deliberate and easy to get wrong:
   Time is an input, not an ambient fact.
 
 `Tool`'s only production implementation wraps an MCP tool source (§8). The trait stays
-separate so the engine can be tested with a two-line fake, and `adapter::fake` ships those
+separate so the kernel can be tested with a two-line fake, and `adapter::fake` ships those
 fakes because a fake only the kernel's tests can reach is a fake every host writes again.
 
 ## 5. Session state machine
@@ -313,8 +316,8 @@ each `usage` event spends it, exhaustion drains the session and writes a checkpo
 | Layer | Enforced by |
 | --- | --- |
 | tokens / cost | credit from the caller, debited per model call |
-| steps | engine, per turn |
-| wall clock | engine, via `Clock` |
+| steps | the driver, per turn |
+| wall clock | the kernel, via `Clock` |
 | policy | `Verdict::Deny` before the tool runs |
 
 The ledger records every attempt — including attempts that failed after streaming a
@@ -432,6 +435,6 @@ I/O on the hot path of every turn.
 
 | Stage | Content | Passes when |
 | --- | --- | --- |
-| P1 | contract + engine + in-memory store + one model adapter + one MCP source | a multi-turn session with a tool call runs end to end |
+| P1 | contract + kernel + in-memory store + one model adapter + one MCP source | a multi-turn session with a tool call runs end to end |
 | P2 | SQLite store, checkpoint/restore, credit enforcement | `kill -9` then resume continues the session |
 | P3 | context management: budget, compaction, retrieval references | a session stays coherent past the model's context window |

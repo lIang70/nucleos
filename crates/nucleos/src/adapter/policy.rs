@@ -1,6 +1,9 @@
 //! Whether a call may happen.
 
-use crate::contract::{ErrorCode, PermissionOption, Principal, Purpose, SessionId, ToolCall};
+use crate::contract::{
+    ErrorCode, PermissionOption, Principal, Purpose, SandboxPermissions, SandboxPolicy, SessionId,
+    ToolCall,
+};
 use async_trait::async_trait;
 
 /// The kernel's only policy question.
@@ -32,6 +35,18 @@ pub enum Gated<'a> {
         model: &'a str,
         /// Why.
         purpose: Purpose,
+    },
+    /// A command is about to run.
+    ///
+    /// The three fields are what a policy needs to decide: you cannot judge "run this" without
+    /// seeing what it may touch, and you cannot judge an escalation without seeing what it wants.
+    Exec {
+        /// The command line, verbatim.
+        argv: &'a [String],
+        /// The session's policy, before any widening.
+        policy: &'a SandboxPolicy,
+        /// What this command asks for on top.
+        permissions: &'a SandboxPermissions,
     },
 }
 

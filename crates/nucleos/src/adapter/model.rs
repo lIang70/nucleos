@@ -13,7 +13,7 @@ use tokio_stream::Stream;
 
 /// A stream of deltas.
 ///
-/// `Send` so the engine can drive a session from any task; `'static` so it can outlive the
+/// `Send` so a driver can hold a session across tasks; `'static` so it can outlive the
 /// call that produced it.
 pub type ModelStream = Pin<Box<dyn Stream<Item = Result<ModelDelta>> + Send>>;
 
@@ -88,7 +88,7 @@ pub use crate::contract::{GenerateParams, ReasoningEffort, TextFormat, ToolChoic
 /// One fragment of a model's answer.
 ///
 /// The variants mirror the events the kernel emits, but they are not the events: an adapter
-/// reports what the provider said, and the engine decides what that means for a session.
+/// reports what the provider said, and the driver decides what that means for a session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelDelta {
     /// Text for a specific part of the message.

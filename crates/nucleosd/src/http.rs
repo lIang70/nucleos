@@ -12,14 +12,15 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event as SseEvent, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{MethodRouter, get, post};
 use axum::{Json, Router};
 use nucleos::contract::{ErrorCode, Principal, SessionId, SessionState};
-use nucleos::engine::{HitlVerdict, Kernel, SessionSpec, StateWrite};
+use nucleos::kernel::{HitlVerdict, Kernel, SessionSpec, StateWrite};
 use nucleos::wire::api::{
     DescribeResponse, ErrorBody, InferenceRequest, InferenceResponse, SessionView, StartRequest,
     StartResponse, StateRequest, ToolBatchRequest, ToolBatchResponse, VerdictRequest,
 };
+use nucleos::wire::openapi;
 use nucleos_agent as agent;
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -73,22 +74,147 @@ impl App {
     }
 }
 
-/// The router.
+/// One route: what it is, and how it is served.
+///
+/// The two halves are one row on purpose. A table for the document and a chain of `.route()`
+/// calls for the server drift, and nothing notices: a `Router` does not expose its routes, so no
+/// test can compare them. Here the verb sits three lines above the handler that serves it, and
+/// `tests/http.rs` proves the pair by sending a request.
+pub struct Route {
+    /// What the published document says about it.
+    pub meta: openapi::Route,
+    /// How it is served.
+    pub build: fn() -> MethodRouter<Arc<App>>,
+}
+
+/// Every route the daemon serves.
+pub const ROUTES: &[Route] = &[
+    Route {
+        meta: openapi::Route {
+            method: "get",
+            path: "/v1/describe",
+            operation: "describe",
+            summary: "Capabilities, models, and the ABI version.",
+            request: None,
+            reply: openapi::Reply::Json("DescribeResponse"),
+        },
+        build: || get(describe),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "post",
+            path: "/v1/agents",
+            operation: "runAgent",
+            summary: "Open a session and run the reference loop to completion.",
+            request: Some("StartRequest"),
+            reply: openapi::Reply::Json("StartResponse"),
+        },
+        build: || post(run_agent),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "post",
+            path: "/v1/sessions",
+            operation: "openSession",
+            summary: "Open a session. Drives nothing: the caller decides each turn.",
+            request: Some("StartRequest"),
+            reply: openapi::Reply::Json("StartResponse"),
+        },
+        build: || post(open),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "get",
+            path: "/v1/sessions/{id}",
+            operation: "viewSession",
+            summary: "Where a session is, what it has spent, and what it waits on.",
+            request: None,
+            reply: openapi::Reply::Json("SessionView"),
+        },
+        build: || get(view),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "post",
+            path: "/v1/sessions/{id}/inference",
+            operation: "inference",
+            summary: "One model call. Appends nothing: what you send is what you get.",
+            request: Some("InferenceRequest"),
+            reply: openapi::Reply::Json("InferenceResponse"),
+        },
+        build: || post(inference),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "post",
+            path: "/v1/sessions/{id}/tools",
+            operation: "invokeTools",
+            summary: "Run a batch of tool calls. Policy is asked about all of them first.",
+            request: Some("ToolBatchRequest"),
+            reply: openapi::Reply::Json("ToolBatchResponse"),
+        },
+        build: || post(tools),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "post",
+            path: "/v1/sessions/{id}/state",
+            operation: "appendState",
+            summary: "Append messages, or write the application's own opaque state.",
+            request: Some("StateRequest"),
+            reply: openapi::Reply::NoContent,
+        },
+        build: || post(append),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "post",
+            path: "/v1/sessions/{id}/close",
+            operation: "closeSession",
+            summary: "Close a session. Further calls are refused.",
+            request: None,
+            reply: openapi::Reply::Json("StartResponse"),
+        },
+        build: || post(close),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "post",
+            path: "/v1/sessions/{id}/verdict",
+            operation: "verdict",
+            summary: "Answer a call parked on a human, then run the reference loop on.",
+            request: Some("VerdictRequest"),
+            reply: openapi::Reply::Json("StartResponse"),
+        },
+        build: || post(verdict),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "get",
+            path: "/v1/sessions/{id}/events",
+            operation: "events",
+            summary: "The event stream. `id:` is the event's `seq`, so Last-Event-ID resumes.",
+            request: None,
+            reply: openapi::Reply::Stream,
+        },
+        build: || get(events),
+    },
+];
+
+/// The router, built from the same table the document is.
 pub fn router(app: Arc<App>) -> Router {
-    Router::new()
-        .route("/v1/describe", get(describe))
-        // The driver: one call that runs the reference loop to completion.
-        .route("/v1/agents", post(run_agent))
-        // The syscalls: one call each, in the order the caller chooses.
-        .route("/v1/sessions", post(open))
-        .route("/v1/sessions/{id}", get(view))
-        .route("/v1/sessions/{id}/inference", post(inference))
-        .route("/v1/sessions/{id}/tools", post(tools))
-        .route("/v1/sessions/{id}/state", post(append))
-        .route("/v1/sessions/{id}/close", post(close))
-        .route("/v1/sessions/{id}/verdict", post(verdict))
-        .route("/v1/sessions/{id}/events", get(events))
+    ROUTES
+        .iter()
+        .fold(Router::new(), |router, route| {
+            router.route(route.meta.path, (route.build)())
+        })
         .with_state(app)
+}
+
+/// The table, for the OpenAPI generator.
+#[must_use]
+pub fn openapi_routes() -> Vec<openapi::Route> {
+    ROUTES.iter().map(|route| route.meta).collect()
 }
 
 async fn describe(State(app): State<Arc<App>>) -> Json<DescribeResponse> {
@@ -152,6 +278,8 @@ async fn view(
         inference_calls: session.inference_calls(),
         pending: session.pending().to_vec(),
         usage: session.usage().clone(),
+        sandbox: session.sandbox().clone(),
+        workspace: session.workspace().cloned(),
     }))
 }
 
@@ -294,7 +422,7 @@ async fn events(
     Ok(Sse::new(stream))
 }
 
-async fn load(kernel: &Kernel, app: &App, id: &str) -> Result<nucleos::engine::Session, ApiError> {
+async fn load(kernel: &Kernel, app: &App, id: &str) -> Result<nucleos::kernel::Session, ApiError> {
     kernel
         .load(&app.principal, &SessionId::new(id))
         .await

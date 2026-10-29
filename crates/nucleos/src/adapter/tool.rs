@@ -5,7 +5,7 @@ use async_trait::async_trait;
 
 /// One tool, behind the only interface the kernel has.
 ///
-/// The production implementation wraps an MCP client; this trait stays separate so the engine
+/// The production implementation wraps an MCP client; this trait stays separate so the kernel
 /// can be tested against a fake that spawns nothing.
 #[async_trait]
 pub trait Tool: Send + Sync {

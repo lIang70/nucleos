@@ -1,0 +1,3161 @@
+{
+  "components": {
+    "schemas": {
+      "AdditionalPermissions": {
+        "description": "Extra room asked for by one command.\n\nOnly ever widens: a caller cannot use it to narrow the session's policy, because narrowing by\nrequest would let one command quietly change what a later command is allowed to assume.",
+        "properties": {
+          "network_access": {
+            "default": false,
+            "description": "Whether this command may reach the network.",
+            "type": "boolean"
+          },
+          "writable_roots": {
+            "description": "Roots outside the workspace this command may write.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "Attempt": {
+        "description": "One attempt, recorded whether or not it produced anything.",
+        "properties": {
+          "degraded": {
+            "description": "Fields this attempt could not honour.",
+            "items": {
+              "$ref": "#/components/schemas/Degraded"
+            },
+            "type": "array"
+          },
+          "duration_millis": {
+            "description": "How long it took.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "index": {
+            "description": "Position in the ledger.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "model": {
+            "description": "The target. Empty for a preflight refusal, which never had one.",
+            "type": "string"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/AttemptOutcome",
+            "description": "How it ended."
+          },
+          "phase": {
+            "$ref": "#/components/schemas/AttemptPhase",
+            "description": "Where it happened."
+          },
+          "trigger": {
+            "$ref": "#/components/schemas/AttemptTrigger",
+            "description": "What caused it."
+          },
+          "usage": {
+            "$ref": "#/components/schemas/Usage",
+            "description": "What it consumed, if anything."
+          }
+        },
+        "required": [
+          "index",
+          "model",
+          "phase",
+          "trigger",
+          "outcome",
+          "usage",
+          "duration_millis",
+          "degraded"
+        ],
+        "type": "object"
+      },
+      "AttemptOutcome": {
+        "description": "How an attempt ended.",
+        "oneOf": [
+          {
+            "description": "It answered.",
+            "properties": {
+              "outcome": {
+                "const": "ok",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "It did not. Present even when a partial answer was streamed, because that one still\ncost money.",
+            "properties": {
+              "code": {
+                "$ref": "#/components/schemas/ErrorCode",
+                "description": "A stable category."
+              },
+              "outcome": {
+                "const": "failed",
+                "type": "string"
+              },
+              "reason": {
+                "description": "For humans.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome",
+              "code",
+              "reason"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "AttemptPhase": {
+        "description": "Where in a call an attempt happened.",
+        "oneOf": [
+          {
+            "const": "preflight",
+            "description": "Compiling and checking, before anything was sent.",
+            "type": "string"
+          },
+          {
+            "const": "execute",
+            "description": "The provider call itself.",
+            "type": "string"
+          },
+          {
+            "const": "circuit_open",
+            "description": "Refused before it happened.",
+            "type": "string"
+          }
+        ]
+      },
+      "AttemptTrigger": {
+        "description": "What caused an attempt.",
+        "oneOf": [
+          {
+            "const": "selection",
+            "description": "The first attempt for the chosen target.",
+            "type": "string"
+          },
+          {
+            "const": "retry",
+            "description": "Another try at the same target.",
+            "type": "string"
+          },
+          {
+            "const": "fallback",
+            "description": "A hop to the next target.",
+            "type": "string"
+          }
+        ]
+      },
+      "Budget": {
+        "description": "What a session may consume.",
+        "properties": {
+          "max_micros_usd": {
+            "description": "Cost in micro-USD.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_steps": {
+            "description": "Turns a session may take.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_tokens": {
+            "description": "Tokens across every model call.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_wall_millis": {
+            "description": "Wall clock in milliseconds.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "Content": {
+        "description": "An ordered multimodal payload.",
+        "properties": {
+          "parts": {
+            "description": "The parts, in order.",
+            "items": {
+              "$ref": "#/components/schemas/Part"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "parts"
+        ],
+        "type": "object"
+      },
+      "DataPart": {
+        "description": "Structured output. JSON text rather than bytes, because JSON is UTF-8 by definition and\ntext is what every toolchain can read.",
+        "properties": {
+          "json": {
+            "description": "The JSON, as text.",
+            "type": "string"
+          },
+          "media_type": {
+            "description": "The media type, usually `application/json`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "media_type",
+          "json"
+        ],
+        "type": "object"
+      },
+      "Degraded": {
+        "description": "A field the provider could not honour.\n\nRecorded rather than swallowed: a `tool_choice = Required` that quietly became `Auto` is a\nsession behaving differently than it was configured to, and the difference is\nundiscoverable afterwards.",
+        "properties": {
+          "field": {
+            "description": "The request field, e.g. `tool_choice`.",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Why, in the provider's terms.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "field",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "DescribeResponse": {
+        "description": "What a caller learns before it starts anything.",
+        "properties": {
+          "abi_version": {
+            "description": "The ABI version it speaks, from the schema's own `$id`.",
+            "type": "string"
+          },
+          "models": {
+            "description": "The models a route may name.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "version": {
+            "description": "The daemon's version.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "abi_version",
+          "models"
+        ],
+        "type": "object"
+      },
+      "ErrorBody": {
+        "description": "The body of a failed request.\n\nOne shape for every failure: a caller should not have to know which endpoint it called to\nknow how to read why it failed.",
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode",
+            "description": "A stable category programs match on."
+          },
+          "details": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Machine-readable detail, e.g. `{\"needed_tokens\": \"40000\"}`.",
+            "type": "object"
+          },
+          "reason": {
+            "description": "For humans. Never parsed.",
+            "type": "string"
+          },
+          "retry_after_millis": {
+            "description": "When to retry, in milliseconds. Absent means no hint.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "retryable": {
+            "description": "A statement about this request, not about the world.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "code",
+          "reason",
+          "retryable"
+        ],
+        "type": "object"
+      },
+      "ErrorCode": {
+        "description": "A stable error category.\n\nCodes are enums rather than strings because the first caller who compares a string\nfreezes it forever.",
+        "oneOf": [
+          {
+            "const": "invalid",
+            "description": "The request was malformed.",
+            "type": "string"
+          },
+          {
+            "const": "not_found",
+            "description": "The thing named does not exist.",
+            "type": "string"
+          },
+          {
+            "const": "denied",
+            "description": "Policy refused.",
+            "type": "string"
+          },
+          {
+            "const": "budget",
+            "description": "A budget was exhausted.",
+            "type": "string"
+          },
+          {
+            "const": "timeout",
+            "description": "A deadline passed.",
+            "type": "string"
+          },
+          {
+            "const": "unavailable",
+            "description": "A dependency was not reachable.",
+            "type": "string"
+          },
+          {
+            "const": "internal",
+            "description": "A bug.",
+            "type": "string"
+          }
+        ]
+      },
+      "Event": {
+        "description": "An append-only record of something that happened.\n\n`seq` is dense and gap-free, which is what makes it usable as a resume cursor without\na separate acknowledgement protocol. `schema_version` is written alongside the event so\na reader can upcast instead of guessing.",
+        "properties": {
+          "at_unix_millis": {
+            "description": "Unix milliseconds, from the injected clock so replay is deterministic.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/EventKind",
+            "description": "What happened."
+          },
+          "meta": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Opaque extension, same rule as [`Part::meta`].",
+            "type": "object"
+          },
+          "schema_version": {
+            "description": "The schema this event was written with.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "seq": {
+            "description": "Monotonic within a session, starting at 0.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionId",
+            "description": "The session this belongs to."
+          }
+        },
+        "required": [
+          "seq",
+          "session",
+          "at_unix_millis",
+          "schema_version",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "EventKind": {
+        "description": "The payload of an [`Event`].\n\nEvents carry the content model rather than copies of its fields — [`ToolCall`] here is\nthe same type a [`ToolCallPart`] holds — so a live stream and a stored history cannot\ndisagree about the shape of an answer.",
+        "oneOf": [
+          {
+            "description": "A session state transition, with the reason when it is terminal.",
+            "properties": {
+              "kind": {
+                "const": "state_changed",
+                "type": "string"
+              },
+              "state": {
+                "$ref": "#/components/schemas/SessionState",
+                "description": "The state entered."
+              },
+              "stop": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/StopReason"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Set when the state is terminal."
+              }
+            },
+            "required": [
+              "kind",
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A fragment of assistant text.",
+            "properties": {
+              "kind": {
+                "const": "text_delta",
+                "type": "string"
+              },
+              "part_index": {
+                "description": "Which part of the message it belongs to.\n\nWithout it a client cannot tell a second text block from a continuation of the\nfirst, so text → tool call → more text is unrepresentable in the stream.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "text": {
+                "description": "The fragment.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "part_index",
+              "text"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A fragment of a reasoning trace.\n\n`signature` usually arrives on its own, in a delta with empty `text`: a provider\nsigns the finished block rather than each fragment.",
+            "properties": {
+              "kind": {
+                "const": "reasoning_delta",
+                "type": "string"
+              },
+              "part_index": {
+                "description": "Which part of the message it belongs to.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "signature": {
+                "description": "The provider's signature fragment, returned verbatim.",
+                "type": "string"
+              },
+              "text": {
+                "description": "The fragment.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "part_index",
+              "text",
+              "signature"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A tool call began. Its arguments follow as [`EventKind::ToolCallArgs`].",
+            "properties": {
+              "deadline_unix_millis": {
+                "description": "Wall-clock deadline for this call.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "index": {
+                "description": "Position in this turn's tool-call list.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "const": "tool_call_started",
+                "type": "string"
+              },
+              "name": {
+                "description": "The tool name.",
+                "type": "string"
+              },
+              "progress_token": {
+                "description": "When set, the tool reports progress under this token.",
+                "type": "string"
+              },
+              "tool_call_id": {
+                "description": "The correlation id the result will be filed under.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "index",
+              "tool_call_id",
+              "name",
+              "deadline_unix_millis",
+              "progress_token"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A fragment of one call's arguments.\n\nArguments stream as text because that is what providers send and because a partial\nobject cannot be handed to a tool. The kernel assembles and validates before anything\nruns; malformed arguments become a result the model can read.",
+            "properties": {
+              "fragment": {
+                "description": "The fragment.",
+                "type": "string"
+              },
+              "index": {
+                "description": "Which call this fragment belongs to.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "const": "tool_call_args",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "index",
+              "fragment"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A tool call resolved.",
+            "properties": {
+              "duration_millis": {
+                "description": "How long it took.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "const": "tool_finished",
+                "type": "string"
+              },
+              "result": {
+                "$ref": "#/components/schemas/ToolResult",
+                "description": "The result — the same value that enters history."
+              },
+              "usage": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Usage"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "What the tool reported it spent, when it reported anything.\n\nAbsent is not zero: a tool that says nothing has not said it was free."
+              }
+            },
+            "required": [
+              "kind",
+              "duration_millis",
+              "result"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "One model call's consumption, debited whether or not the answer was usable.",
+            "properties": {
+              "attempt_index": {
+                "description": "Which attempt in the ledger it belongs to.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "const": "usage",
+                "type": "string"
+              },
+              "model": {
+                "description": "The model that served it, after routing.",
+                "type": "string"
+              },
+              "purpose": {
+                "$ref": "#/components/schemas/Purpose",
+                "description": "Why the call happened, so a summary's spend can be told from an answer's."
+              },
+              "usage": {
+                "$ref": "#/components/schemas/Usage",
+                "description": "What it consumed."
+              }
+            },
+            "required": [
+              "kind",
+              "usage",
+              "purpose",
+              "model",
+              "attempt_index"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/components/schemas/Degraded",
+            "description": "A field the provider could not honour.\n\nReported, never swallowed: a `tool_choice = Required` that quietly became `Auto` is a\nsession behaving differently than it was configured to.",
+            "properties": {
+              "kind": {
+                "const": "capability_degraded",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "One attempt ended badly. Recorded because a retry does not erase the attempt that failed,\nor the money it spent.",
+            "properties": {
+              "attempt": {
+                "$ref": "#/components/schemas/Attempt",
+                "description": "What happened."
+              },
+              "kind": {
+                "const": "attempt_failed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "attempt"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A policy verdict of `AskHuman` was reached.",
+            "properties": {
+              "default_if_unanswered": {
+                "$ref": "#/components/schemas/PermissionKind",
+                "description": "What the kernel does if nobody answers. A refusal, not a silent approval."
+              },
+              "kind": {
+                "const": "awaiting_human",
+                "type": "string"
+              },
+              "options": {
+                "description": "Typed answers, so a client can render \"once\" and \"always\" differently and the\nverdict can say which was chosen.",
+                "items": {
+                  "$ref": "#/components/schemas/PermissionOption"
+                },
+                "type": "array"
+              },
+              "question": {
+                "description": "What the host should ask.",
+                "type": "string"
+              },
+              "tool_call_id": {
+                "description": "The call being gated.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "question",
+              "tool_call_id",
+              "options",
+              "default_if_unanswered"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A budget dimension ran out.",
+            "properties": {
+              "kind": {
+                "const": "budget_exhausted",
+                "type": "string"
+              },
+              "reason": {
+                "$ref": "#/components/schemas/StopReason",
+                "description": "Which one."
+              }
+            },
+            "required": [
+              "kind",
+              "reason"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Something failed.",
+            "properties": {
+              "code": {
+                "$ref": "#/components/schemas/ErrorCode",
+                "description": "A stable code for programs."
+              },
+              "kind": {
+                "const": "failed",
+                "type": "string"
+              },
+              "reason": {
+                "description": "For humans.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "code",
+              "reason"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The session moved to a newer tool-source generation.\n\nRecorded rather than inferred, so a replay reproduces which tool set each turn ran\nagainst.",
+            "properties": {
+              "from": {
+                "$ref": "#/components/schemas/Generation",
+                "description": "Where it came from."
+              },
+              "kind": {
+                "const": "generation_migrated",
+                "type": "string"
+              },
+              "to": {
+                "$ref": "#/components/schemas/Generation",
+                "description": "Where it went."
+              }
+            },
+            "required": [
+              "kind",
+              "from",
+              "to"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The assembled message a model call produced.\n\nDeltas are a rendering protocol; this is the record. Some content can only be\nassembled — a reasoning signature arrives as its own delta — and a client that joins\nlate should render without replaying every fragment.",
+            "properties": {
+              "kind": {
+                "const": "message_completed",
+                "type": "string"
+              },
+              "message": {
+                "$ref": "#/components/schemas/Message",
+                "description": "The message, as it enters history."
+              },
+              "step_index": {
+                "description": "Which step of the turn produced it.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "message",
+              "step_index"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A command started.",
+            "properties": {
+              "argv": {
+                "description": "What was run, verbatim, so an audit can see it.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "kind": {
+                "const": "exec_started",
+                "type": "string"
+              },
+              "pid": {
+                "description": "The process id, when the platform gave one.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "policy": {
+                "$ref": "#/components/schemas/SandboxPolicy",
+                "description": "The policy it ran under, after any granted widening."
+              }
+            },
+            "required": [
+              "kind",
+              "pid",
+              "argv",
+              "policy"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A chunk of a command's output.",
+            "properties": {
+              "chunk": {
+                "description": "The text of this chunk.",
+                "type": "string"
+              },
+              "kind": {
+                "const": "exec_output",
+                "type": "string"
+              },
+              "stream": {
+                "$ref": "#/components/schemas/ExecStream",
+                "description": "Which stream."
+              }
+            },
+            "required": [
+              "kind",
+              "stream",
+              "chunk"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Bytes written to a running process's stdin.\n\nRecorded because it is the most audit-worthy thing in the system: spawning `/bin/sh` is\nsafe, writing `rm -rf /` into it is not.",
+            "properties": {
+              "chunk": {
+                "description": "What was written.",
+                "type": "string"
+              },
+              "kind": {
+                "const": "exec_stdin",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "chunk"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A command ended.",
+            "properties": {
+              "kind": {
+                "const": "exec_exited",
+                "type": "string"
+              },
+              "output": {
+                "$ref": "#/components/schemas/ExecOutput",
+                "description": "How it ended."
+              }
+            },
+            "required": [
+              "kind",
+              "output"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Progress from a long-running call. A call whose only feedback is a deadline is\nindistinguishable from a hang.",
+            "properties": {
+              "done": {
+                "description": "Units completed.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "const": "progress",
+                "type": "string"
+              },
+              "message": {
+                "description": "For humans.",
+                "type": "string"
+              },
+              "token": {
+                "description": "The token from [`EventKind::ToolCallStarted`].",
+                "type": "string"
+              },
+              "total": {
+                "description": "Units expected. Zero means unknown, not zero.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "token",
+              "done",
+              "total",
+              "message"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ExecOutput": {
+        "description": "How one command ended.",
+        "properties": {
+          "duration_millis": {
+            "description": "How long it ran.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "exit_code": {
+            "description": "The exit status, or `-1` when the process was killed by a signal.",
+            "format": "int32",
+            "type": "integer"
+          },
+          "stderr": {
+            "$ref": "#/components/schemas/OutputChunk",
+            "description": "Standard error."
+          },
+          "stdout": {
+            "$ref": "#/components/schemas/OutputChunk",
+            "description": "Standard output."
+          },
+          "timed_out": {
+            "description": "Whether it was killed for exceeding its deadline.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "exit_code",
+          "stdout",
+          "stderr",
+          "duration_millis",
+          "timed_out"
+        ],
+        "type": "object"
+      },
+      "ExecRequest": {
+        "description": "One command to run inside the session's sandbox.",
+        "properties": {
+          "argv": {
+            "description": "The command line. No shell by default: an argv cannot be word-split by accident.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cwd": {
+            "description": "Where to run it. Absent means the session's workspace.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "env": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Environment to add.",
+            "type": "object"
+          },
+          "permissions": {
+            "$ref": "#/components/schemas/SandboxPermissions",
+            "default": {
+              "kind": "use_default"
+            },
+            "description": "What to ask for on top of the session's policy."
+          },
+          "timeout_millis": {
+            "description": "Wall-clock ceiling. Absent means the session's remaining budget.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "argv"
+        ],
+        "type": "object"
+      },
+      "ExecStream": {
+        "description": "Which stream a chunk came from.",
+        "oneOf": [
+          {
+            "const": "stdout",
+            "description": "Standard output.",
+            "type": "string"
+          },
+          {
+            "const": "stderr",
+            "description": "Standard error.",
+            "type": "string"
+          }
+        ]
+      },
+      "FilePart": {
+        "description": "A reference to content that is not carried here: an artifact, a workspace file, or a\ntruncated tool result's spill.\n\nThis is also how truncation is expressed. A result too large to store is spilled; the\ntext keeps a marker and this part keeps the pointer. That is a policy outcome, not an\nerror.",
+        "properties": {
+          "media_type": {
+            "description": "What it is.",
+            "type": "string"
+          },
+          "name": {
+            "description": "A human-facing name.",
+            "type": "string"
+          },
+          "uri": {
+            "description": "Where to find it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "uri",
+          "media_type",
+          "name"
+        ],
+        "type": "object"
+      },
+      "Format": {
+        "description": "The shape the answer must have.",
+        "oneOf": [
+          {
+            "description": "Prose.",
+            "properties": {
+              "kind": {
+                "const": "text",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A JSON object, schema unchecked.",
+            "properties": {
+              "kind": {
+                "const": "json_object",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A JSON object that must match the schema.",
+            "properties": {
+              "kind": {
+                "const": "json_schema",
+                "type": "string"
+              },
+              "name": {
+                "description": "The name the provider files it under.",
+                "type": "string"
+              },
+              "schema": {
+                "description": "The schema, as a JSON object."
+              }
+            },
+            "required": [
+              "kind",
+              "name",
+              "schema"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Generation": {
+        "description": "A tool-source generation.\n\nGenerations are immutable snapshots of the declared sources. A session is pinned to\none at start and may only move forward at a turn boundary, and only when the two\ngenerations are compatible.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "ImagePart": {
+        "description": "An image.",
+        "properties": {
+          "source": {
+            "$ref": "#/components/schemas/MediaSource",
+            "description": "Where the bytes are."
+          }
+        },
+        "required": [
+          "source"
+        ],
+        "type": "object"
+      },
+      "InferenceRequest": {
+        "description": "One inference: the messages to send.\n\nThe messages are the caller's, not the session's. What you send is what you get, and whether\nthe answer enters history is the next request's business — which is what makes a verification\nturn possible without polluting the transcript.",
+        "properties": {
+          "messages": {
+            "default": [],
+            "description": "The conversation to send, oldest first. Absent sends nothing.",
+            "items": {
+              "$ref": "#/components/schemas/Message"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "InferenceResponse": {
+        "description": "What one inference produced.",
+        "properties": {
+          "finish": {
+            "description": "The provider's own reason for stopping.",
+            "type": "string"
+          },
+          "message": {
+            "$ref": "#/components/schemas/Message",
+            "description": "The assistant message. Nothing has been appended to the session."
+          },
+          "usage": {
+            "$ref": "#/components/schemas/Usage",
+            "description": "What the session has spent so far."
+          }
+        },
+        "required": [
+          "message",
+          "finish",
+          "usage"
+        ],
+        "type": "object"
+      },
+      "Ledger": {
+        "description": "Every attempt a call made, and the sum.",
+        "properties": {
+          "attempts": {
+            "description": "In order.",
+            "items": {
+              "$ref": "#/components/schemas/Attempt"
+            },
+            "type": "array"
+          },
+          "total": {
+            "$ref": "#/components/schemas/Usage",
+            "description": "The sum across every attempt that produced tokens."
+          }
+        },
+        "required": [
+          "attempts",
+          "total"
+        ],
+        "type": "object"
+      },
+      "MediaFrom": {
+        "description": "Where media bytes live.",
+        "oneOf": [
+          {
+            "description": "A URL to fetch.",
+            "properties": {
+              "from": {
+                "const": "url",
+                "type": "string"
+              },
+              "url": {
+                "description": "The URL.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "from",
+              "url"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Bytes carried inline.",
+            "properties": {
+              "data": {
+                "description": "The bytes.",
+                "items": {
+                  "format": "uint8",
+                  "maximum": 255,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              "from": {
+                "const": "data",
+                "type": "string"
+              }
+            },
+            "required": [
+              "from",
+              "data"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "MediaSource": {
+        "description": "Bytes, or a reference to them, plus the type that makes them renderable.\n\n`url` exists because inlining a large image into an event log is a storage incident: the\nlog is append-only and replayed, so every byte is paid for on every replay. `data` exists\nbecause a caller with no reachable store must still be able to send one.",
+        "properties": {
+          "from": {
+            "$ref": "#/components/schemas/MediaFrom",
+            "description": "Where the bytes come from."
+          },
+          "media_type": {
+            "description": "The media type, e.g. `image/png`. Required: bytes without a type are not renderable.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "media_type",
+          "from"
+        ],
+        "type": "object"
+      },
+      "Message": {
+        "description": "One turn's worth of content.",
+        "properties": {
+          "content": {
+            "$ref": "#/components/schemas/Content",
+            "description": "What it contains.\n\nNon-empty whenever the kernel writes one: an empty content is a bug in whatever\nproduced it, not something a reader has to tolerate."
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role",
+            "description": "Who produced it."
+          }
+        },
+        "required": [
+          "role",
+          "content"
+        ],
+        "type": "object"
+      },
+      "OutputChunk": {
+        "description": "A piece of captured output, and whether it was cut.\n\nTruncation is carried rather than applied silently: a model that cannot see that its output\nwas shortened will reason about a file it only half read.",
+        "properties": {
+          "text": {
+            "description": "The text kept.",
+            "type": "string"
+          },
+          "truncated_after_lines": {
+            "description": "The line after which the rest was dropped, when it was.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      },
+      "Params": {
+        "description": "Generation parameters, as the wire carries them.\n\nMirrors `crate::adapter::GenerateParams`, but as a `#[serde(default)]`-friendly struct:\na caller should be able to send `{}` and get the defaults, which is not true of the kernel's\ntype because its `TextFormat` is an enum.",
+        "properties": {
+          "format": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Format"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`text`, `json_object`, or a JSON Schema object to conform to."
+          },
+          "max_output_tokens": {
+            "description": "The completion ceiling.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "reasoning_effort": {
+            "description": "Reasoning effort, for models that expose one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stop": {
+            "default": [],
+            "description": "Sequences that end the completion.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "temperature": {
+            "description": "Sampling temperature.",
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "tool_choice": {
+            "description": "`auto`, `required` or `none`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "top_p": {
+            "description": "Nucleus sampling.",
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "Part": {
+        "description": "One piece of content.\n\nThe union is small on purpose: seven kinds. Audio and video are [`PartKind::File`] with an\n`audio/*` or `video/*` media type, because the kernel moves those bytes and never\ninterprets them. A kind is added when the kernel must act differently — not when a\nprovider can emit something new.",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/TextPart",
+            "description": "Plain text.",
+            "properties": {
+              "kind": {
+                "const": "text",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/components/schemas/ImagePart",
+            "description": "An image, inline or referenced.",
+            "properties": {
+              "kind": {
+                "const": "image",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/components/schemas/FilePart",
+            "description": "A reference to content that is not carried here.",
+            "properties": {
+              "kind": {
+                "const": "file",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/components/schemas/DataPart",
+            "description": "Structured output.",
+            "properties": {
+              "kind": {
+                "const": "data",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/components/schemas/ToolCallPart",
+            "description": "The model asking for a tool.",
+            "properties": {
+              "kind": {
+                "const": "tool_call",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/components/schemas/ToolResultPart",
+            "description": "A tool's answer, folded back into history.",
+            "properties": {
+              "kind": {
+                "const": "tool_result",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/components/schemas/ReasoningPart",
+            "description": "A provider reasoning trace.",
+            "properties": {
+              "kind": {
+                "const": "reasoning",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          }
+        ],
+        "properties": {
+          "meta": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Contextual or vendor-specific data.\n\nThe kernel never reads it, never interprets it, and never rejects an unknown key.\nThis is the only extension hatch: a schema with two of them has everyone using the\nother one.",
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "PendingCall": {
+        "description": "A call waiting on a human.\n\nPart of the snapshot because the wait outlives any process: a session parked on a\nconfirmation must be resumable tomorrow, and the call it is holding has to come back with\nit.",
+        "properties": {
+          "call": {
+            "$ref": "#/components/schemas/ToolCall",
+            "description": "The call that has not run."
+          },
+          "options": {
+            "description": "What may be answered.",
+            "items": {
+              "$ref": "#/components/schemas/PermissionOption"
+            },
+            "type": "array"
+          },
+          "question": {
+            "description": "What was asked.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "call",
+          "options",
+          "question"
+        ],
+        "type": "object"
+      },
+      "PermissionKind": {
+        "description": "The kinds of answer a permission request offers.",
+        "oneOf": [
+          {
+            "const": "allow_once",
+            "description": "Allow this call.",
+            "type": "string"
+          },
+          {
+            "const": "allow_always",
+            "description": "Allow this call and, if the host agrees, this tool for the session.",
+            "type": "string"
+          },
+          {
+            "const": "reject",
+            "description": "Refuse this call.",
+            "type": "string"
+          }
+        ]
+      },
+      "PermissionOption": {
+        "description": "What a human may answer when a call is gated.\n\nThe kernel *reports* the choice; it never decides that \"always\" applies. That is policy,\nand it belongs to the host.",
+        "properties": {
+          "id": {
+            "description": "Caller-chosen, returned verbatim in the verdict.",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/PermissionKind",
+            "description": "What it means."
+          },
+          "label": {
+            "description": "For humans.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "label"
+        ],
+        "type": "object"
+      },
+      "ProcessSpec": {
+        "description": "How to start a process session.",
+        "properties": {
+          "argv": {
+            "description": "The command line. No shell by default: an argv cannot be word-split by accident.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cwd": {
+            "description": "Where to run it. Absent means the session's workspace.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "env": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Environment to add.",
+            "type": "object"
+          },
+          "permissions": {
+            "$ref": "#/components/schemas/SandboxPermissions",
+            "default": {
+              "kind": "use_default"
+            },
+            "description": "What this command asks for on top of the session's policy."
+          }
+        },
+        "required": [
+          "argv"
+        ],
+        "type": "object"
+      },
+      "ProcessState": {
+        "description": "A process session's state.",
+        "properties": {
+          "spec": {
+            "$ref": "#/components/schemas/ProcessSpec",
+            "description": "How it was started."
+          },
+          "status": {
+            "$ref": "#/components/schemas/ProcessStatus",
+            "description": "Where it is now."
+          }
+        },
+        "required": [
+          "spec",
+          "status"
+        ],
+        "type": "object"
+      },
+      "ProcessStatus": {
+        "description": "Where a process is.",
+        "oneOf": [
+          {
+            "description": "No pid yet: the session exists, the process does not.",
+            "properties": {
+              "status": {
+                "const": "pending",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Running, under whatever isolation the platform could give.",
+            "properties": {
+              "pid": {
+                "description": "The process id.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "status": {
+                "const": "running",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "pid"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "It ended.",
+            "properties": {
+              "output": {
+                "$ref": "#/components/schemas/ExecOutput",
+                "description": "How."
+              },
+              "status": {
+                "const": "exited",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "output"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The process is gone and we do not know how it ended.\n\nA live process cannot be reconstructed from a log — its memory, its file descriptors and\nits cursor are not in the event stream. So a session that outlives the runtime says this,\nrather than pretending the command is still running.",
+            "properties": {
+              "status": {
+                "const": "lost",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Purpose": {
+        "description": "Why a model call is happening.\n\nThe kernel makes calls of its own — a compaction summary is one — so the purpose has to be\nfirst-class: a budget whose summarisation spend is indistinguishable from answer spend is a\nbudget nobody can explain after the fact.",
+        "oneOf": [
+          {
+            "const": "answer",
+            "description": "The answer the caller is waiting for.",
+            "type": "string"
+          },
+          {
+            "const": "summary",
+            "description": "The kernel's own bookkeeping.",
+            "type": "string"
+          },
+          {
+            "const": "repair",
+            "description": "Another try at a turn that produced something unusable.",
+            "type": "string"
+          }
+        ]
+      },
+      "ReasoningPart": {
+        "description": "One provider reasoning trace.\n\n`signature` is why this is not a plain string: some providers sign a reasoning block and\nreject the next turn when the signature is not returned verbatim. Dropping it turns a\nmulti-turn session into a failure on turn two. `id` and `source` exist for the same\nreason — they are opaque to the kernel and must round-trip.",
+        "properties": {
+          "id": {
+            "description": "The provider's item id, when it uses one.",
+            "type": "string"
+          },
+          "signature": {
+            "description": "The provider's signature, returned verbatim.",
+            "type": "string"
+          },
+          "source": {
+            "description": "The provider's verification scope.",
+            "type": "string"
+          },
+          "text": {
+            "description": "The reasoning text. May be empty when the provider withholds it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "signature",
+          "id",
+          "source"
+        ],
+        "type": "object"
+      },
+      "Role": {
+        "description": "Who produced a message.\n\nThe set is the smallest one every provider can express. A provider with a fifth role\nmaps it onto one of these in its adapter — the kernel does not learn it.",
+        "oneOf": [
+          {
+            "const": "system",
+            "description": "Instructions.",
+            "type": "string"
+          },
+          {
+            "const": "user",
+            "description": "The caller.",
+            "type": "string"
+          },
+          {
+            "const": "assistant",
+            "description": "The model.",
+            "type": "string"
+          },
+          {
+            "const": "tool",
+            "description": "A tool's output.",
+            "type": "string"
+          }
+        ]
+      },
+      "SandboxPermissions": {
+        "description": "What a single `exec` asks for.",
+        "oneOf": [
+          {
+            "description": "Run under the session's policy.",
+            "properties": {
+              "kind": {
+                "const": "use_default",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Run outside the sandbox. The gate turns this into a human question, not a formality.",
+            "properties": {
+              "kind": {
+                "const": "require_escalated",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Stay in the sandbox, with more room for this command only.",
+            "properties": {
+              "additional": {
+                "$ref": "#/components/schemas/AdditionalPermissions",
+                "description": "What to add. Never what to remove."
+              },
+              "kind": {
+                "const": "with_additional_permissions",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "additional"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "SandboxPolicy": {
+        "description": "What a session's commands may touch.\n\nSet when the session opens and carried in its checkpoint. It is **not** a field of a request:\na caller that can name its own policy can name `DangerFullAccess`, and a permission slip the\nuntrusted side writes is not a permission model.",
+        "oneOf": [
+          {
+            "description": "No restriction. Use with caution, and only where the code is yours.",
+            "properties": {
+              "kind": {
+                "const": "danger_full_access",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Read everything, write nothing.",
+            "properties": {
+              "kind": {
+                "const": "read_only",
+                "type": "string"
+              },
+              "network_access": {
+                "default": false,
+                "description": "Whether outbound network is allowed.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Write inside the session's workspace and nothing else.",
+            "properties": {
+              "extra_writable_roots": {
+                "description": "Extra roots outside the workspace that may be written.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "kind": {
+                "const": "workspace_write",
+                "type": "string"
+              },
+              "network_access": {
+                "default": false,
+                "description": "Whether outbound network is allowed.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The process is already outside our reach; only the network setting is ours to honour.",
+            "properties": {
+              "kind": {
+                "const": "external_sandbox",
+                "type": "string"
+              },
+              "network_access": {
+                "default": false,
+                "description": "Whether outbound network is allowed.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "SandboxSettings": {
+        "description": "The sandbox a session's commands run in.\n\nConfig, not request: it is decided when the session opens and carried in its checkpoint, so a\nsingle command cannot widen it without asking.",
+        "properties": {
+          "policy": {
+            "$ref": "#/components/schemas/SandboxPolicy",
+            "default": {
+              "kind": "workspace_write",
+              "network_access": false
+            },
+            "description": "What they may touch."
+          },
+          "workspace": {
+            "description": "Where commands run. Absent means the daemon's working directory.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "SessionId": {
+        "description": "A session identifier.\n\nThe caller chooses it when resuming, so it is a string rather than an opaque handle.\nThat makes a retried `Start` idempotent instead of creating a second session.",
+        "type": "string"
+      },
+      "SessionKind": {
+        "description": "What a session is for.\n\nA process session is not a second kind of object: it is the same lifecycle — single writer,\nevent log, budget, sandbox, checkpoint — with a different syscall face. In Unix a shell\nsession is a process, and the same reasoning applies here.",
+        "oneOf": [
+          {
+            "const": "agent",
+            "description": "Runs a model loop.",
+            "type": "string"
+          },
+          {
+            "const": "process",
+            "description": "Runs one command, and stays open while it does.",
+            "type": "string"
+          }
+        ]
+      },
+      "SessionState": {
+        "description": "Where a session is in its life.\n\nThe vocabulary is the session's, not a provider's. `AwaitingHuman` is a state rather\nthan a callback, so a confirmation that arrives three hours later resumes a session\ninstead of reviving a stack frame.",
+        "oneOf": [
+          {
+            "const": "open",
+            "description": "Accepting calls.",
+            "type": "string"
+          },
+          {
+            "const": "closed",
+            "description": "Finished. No further call is accepted.",
+            "type": "string"
+          }
+        ]
+      },
+      "SessionView": {
+        "description": "What a session looks like from outside.",
+        "properties": {
+          "inference_calls": {
+            "description": "How many inferences it has made.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "next_seq": {
+            "description": "The cursor a client resumes from.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pending": {
+            "description": "Calls waiting on a human.",
+            "items": {
+              "$ref": "#/components/schemas/PendingCall"
+            },
+            "type": "array"
+          },
+          "sandbox": {
+            "$ref": "#/components/schemas/SandboxPolicy",
+            "description": "What its commands may touch."
+          },
+          "session": {
+            "description": "Its identifier.",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/SessionState",
+            "description": "Whether it still takes calls."
+          },
+          "usage": {
+            "$ref": "#/components/schemas/Usage",
+            "description": "What it has spent."
+          },
+          "workspace": {
+            "description": "Where they run.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "session",
+          "state",
+          "next_seq",
+          "inference_calls",
+          "pending",
+          "usage",
+          "sandbox"
+        ],
+        "type": "object"
+      },
+      "StartRequest": {
+        "description": "What a caller must send to create a session.",
+        "properties": {
+          "budget": {
+            "$ref": "#/components/schemas/Budget",
+            "default": {},
+            "description": "What the session may consume."
+          },
+          "credit_tokens": {
+            "default": 0,
+            "description": "Tokens granted up front, spent by usage. Zero means \"no credit, no model calls\".",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "initial": {
+            "default": [],
+            "description": "The opening messages.",
+            "items": {
+              "$ref": "#/components/schemas/Message"
+            },
+            "type": "array"
+          },
+          "model_chain": {
+            "description": "The route, first name that answers wins. Absent asks for the daemon's default.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "params": {
+            "$ref": "#/components/schemas/Params",
+            "default": {
+              "stop": []
+            },
+            "description": "How to shape answers."
+          },
+          "resume": {
+            "default": false,
+            "description": "Continue an existing session instead of creating one.",
+            "type": "boolean"
+          },
+          "retries": {
+            "default": 0,
+            "description": "Extra attempts per target before falling through.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sandbox": {
+            "$ref": "#/components/schemas/SandboxSettings",
+            "default": {
+              "policy": {
+                "kind": "workspace_write",
+                "network_access": false
+              }
+            },
+            "description": "Where commands run, and what they may touch."
+          },
+          "session": {
+            "description": "Caller-chosen id. A retried request with the same id resumes instead of creating a\nsecond session, which is the only way a `POST` survives a network retry.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "system": {
+            "description": "Standing instructions.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tools": {
+            "default": [],
+            "description": "Tool names this session may use. Empty means every registered tool.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "StartResponse": {
+        "description": "What a caller gets back after starting or resuming.",
+        "properties": {
+          "next_seq": {
+            "description": "The cursor a client resumes from.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session": {
+            "description": "Which session.",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/SessionState",
+            "description": "Where it is."
+          },
+          "stop": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StopReason"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why it stopped, when it did."
+          }
+        },
+        "required": [
+          "session",
+          "state",
+          "next_seq"
+        ],
+        "type": "object"
+      },
+      "StateRequest": {
+        "description": "A write to the session's own state.",
+        "properties": {
+          "data": {
+            "additionalProperties": true,
+            "description": "Keys to set in the application's opaque state.",
+            "type": "object"
+          },
+          "messages": {
+            "default": [],
+            "description": "Messages to append to the conversation.",
+            "items": {
+              "$ref": "#/components/schemas/Message"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "StopReason": {
+        "description": "Why a session stopped.\n\nFour layers, all present: a provider's `finish_reason`, the step cap, the wall clock,\nand the cost ledger. Each alone can be defeated; together they cannot.",
+        "oneOf": [
+          {
+            "const": "completed",
+            "description": "The model said it was finished and no stop condition fired first.",
+            "type": "string"
+          },
+          {
+            "const": "steps",
+            "description": "The step cap was reached.",
+            "type": "string"
+          },
+          {
+            "const": "tokens",
+            "description": "The token budget was spent.",
+            "type": "string"
+          },
+          {
+            "const": "cost",
+            "description": "The cost budget was spent.",
+            "type": "string"
+          },
+          {
+            "const": "wall",
+            "description": "The wall-clock budget was spent.",
+            "type": "string"
+          },
+          {
+            "const": "denied",
+            "description": "Policy denied a call.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "A tool or model call failed.",
+            "type": "string"
+          },
+          {
+            "const": "cancelled",
+            "description": "Stopped on request.",
+            "type": "string"
+          }
+        ]
+      },
+      "TextPart": {
+        "description": "Plain text.",
+        "properties": {
+          "text": {
+            "description": "The text.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      },
+      "ToolBatchRequest": {
+        "description": "A batch of tool calls.",
+        "properties": {
+          "calls": {
+            "default": [],
+            "description": "The calls to run. Policy is asked about all of them before any runs.",
+            "items": {
+              "$ref": "#/components/schemas/ToolCall"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "ToolBatchResponse": {
+        "description": "What the batch produced.\n\nA failure is a result with `is_error`, not an HTTP error: the model reads why and decides.",
+        "properties": {
+          "results": {
+            "description": "One result per call, in order.",
+            "items": {
+              "$ref": "#/components/schemas/ToolResult"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "results"
+        ],
+        "type": "object"
+      },
+      "ToolCall": {
+        "description": "One tool invocation.",
+        "properties": {
+          "arguments_json": {
+            "description": "A JSON object, kept as text so that a replay is byte-faithful.",
+            "type": "string"
+          },
+          "id": {
+            "description": "The correlation id.",
+            "type": "string"
+          },
+          "meta": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Opaque extension, same rule as [`Part::meta`].",
+            "type": "object"
+          },
+          "name": {
+            "description": "The tool name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "arguments_json"
+        ],
+        "type": "object"
+      },
+      "ToolCallPart": {
+        "description": "The model asking for a tool.",
+        "properties": {
+          "call": {
+            "$ref": "#/components/schemas/ToolCall",
+            "description": "The call."
+          }
+        },
+        "required": [
+          "call"
+        ],
+        "type": "object"
+      },
+      "ToolResult": {
+        "description": "How a tool call ended.\n\n**Failure is a flag, not a branch.** A failed call still carries content, because the\nerror text is something the model must be able to read and reason about; putting the\nfailure outside the content model would leave the model with a message it cannot see.\nThe cost is honest: `is_error` is a runtime flag a client can forget to check, where a\n`oneof` would have been enforced by the type system.\n\nOne rule constrains the recursion `Content → Part → ToolResult → Content` otherwise\nallows: a tool result's content may contain any kind **except** [`PartKind::ToolCall`] or\n[`PartKind::ToolResult`]. Nesting is one level deep, and a validator enforces it.",
+        "properties": {
+          "call_id": {
+            "description": "The call this answers.",
+            "type": "string"
+          },
+          "content": {
+            "$ref": "#/components/schemas/Content",
+            "description": "What came back — on success and on failure alike."
+          },
+          "is_error": {
+            "description": "Whether the call failed.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "call_id",
+          "content",
+          "is_error"
+        ],
+        "type": "object"
+      },
+      "ToolResultPart": {
+        "description": "A tool's answer.",
+        "properties": {
+          "result": {
+            "$ref": "#/components/schemas/ToolResult",
+            "description": "The result."
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      },
+      "Usage": {
+        "description": "What a model call consumed.\n\nA counter the provider did not report stays `None` rather than becoming zero: a budget\nthat charges for silence is worse than one that knows it does not know.",
+        "properties": {
+          "input_tokens": {
+            "description": "Prompt tokens.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "micros_usd": {
+            "description": "Cost in micro-USD, when the provider reported one.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "output_tokens": {
+            "description": "Completion tokens.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "input_tokens",
+          "output_tokens"
+        ],
+        "type": "object"
+      },
+      "VerdictRequest": {
+        "description": "What a caller sends to answer a parked call.",
+        "properties": {
+          "option_id": {
+            "description": "Which offered option was picked.",
+            "type": "string"
+          },
+          "tool_call_id": {
+            "description": "Which call was gated.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tool_call_id",
+          "option_id"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "An agent OS kernel. Two layers: `/v1/agents` runs the reference loop, and the `/v1/sessions/{id}/…` routes are the syscalls an application composes into a loop of its own. Every failure is the same `ErrorBody`.",
+    "title": "nucleos.v1",
+    "version": "1"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/v1/agents": {
+      "post": {
+        "operationId": "runAgent",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartResponse"
+                }
+              }
+            },
+            "description": "The result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "Open a session and run the reference loop to completion."
+      }
+    },
+    "/v1/describe": {
+      "get": {
+        "operationId": "describe",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DescribeResponse"
+                }
+              }
+            },
+            "description": "The result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "Capabilities, models, and the ABI version."
+      }
+    },
+    "/v1/sessions": {
+      "post": {
+        "operationId": "openSession",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartResponse"
+                }
+              }
+            },
+            "description": "The result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "Open a session. Drives nothing: the caller decides each turn."
+      }
+    },
+    "/v1/sessions/{id}": {
+      "get": {
+        "operationId": "viewSession",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionView"
+                }
+              }
+            },
+            "description": "The result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "Where a session is, what it has spent, and what it waits on."
+      }
+    },
+    "/v1/sessions/{id}/close": {
+      "post": {
+        "operationId": "closeSession",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartResponse"
+                }
+              }
+            },
+            "description": "The result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "Close a session. Further calls are refused."
+      }
+    },
+    "/v1/sessions/{id}/events": {
+      "get": {
+        "operationId": "events",
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/Event"
+                }
+              }
+            },
+            "description": "One server-sent event per frame. `event:` is the event's type, `id:` is its `seq`, `data:` is the event as JSON. Reconnecting with Last-Event-ID replays from the next event."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "The event stream. `id:` is the event's `seq`, so Last-Event-ID resumes."
+      }
+    },
+    "/v1/sessions/{id}/inference": {
+      "post": {
+        "operationId": "inference",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InferenceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InferenceResponse"
+                }
+              }
+            },
+            "description": "The result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "One model call. Appends nothing: what you send is what you get."
+      }
+    },
+    "/v1/sessions/{id}/state": {
+      "post": {
+        "operationId": "appendState",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Done."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "Append messages, or write the application's own opaque state."
+      }
+    },
+    "/v1/sessions/{id}/tools": {
+      "post": {
+        "operationId": "invokeTools",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolBatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolBatchResponse"
+                }
+              }
+            },
+            "description": "The result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "Run a batch of tool calls. Policy is asked about all of them first."
+      }
+    },
+    "/v1/sessions/{id}/verdict": {
+      "post": {
+        "operationId": "verdict",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerdictRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartResponse"
+                }
+              }
+            },
+            "description": "The result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "Answer a call parked on a human, then run the reference loop on."
+      }
+    }
+  },
+  "servers": [
+    {
+      "description": "The daemon's unix socket, or TCP when configured.",
+      "url": "/"
+    }
+  ]
+}
