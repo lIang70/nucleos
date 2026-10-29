@@ -40,6 +40,44 @@ enum Control {
     Kill,
 }
 
+/// The session's log, as the tasks that write to it see it.
+///
+/// One writer per process session, so this travels as one value rather than as three arguments that
+/// always move together.
+#[derive(Clone)]
+struct Log {
+    store: Arc<dyn crate::adapter::Store>,
+    session: SessionId,
+    seq: Arc<AtomicU64>,
+}
+
+impl Log {
+    async fn append(&self, kind: EventKind) -> Result<()> {
+        let seq = self.seq.fetch_add(1, Ordering::SeqCst);
+        let event = Event {
+            seq,
+            session: self.session.clone(),
+            at_unix_millis: 0,
+            schema_version: Event::SCHEMA_VERSION,
+            kind,
+            meta: BTreeMap::new(),
+        };
+        self.store.append(&self.session, &[event]).await
+    }
+}
+
+/// What a process wrote, kept so that `wait` can answer with it.
+///
+/// The event stream already carries this text incrementally, for a client watching it happen. A
+/// caller that waits wants the result instead of a reassembly job, and an exit code with no output
+/// is not a result.
+#[derive(Debug, Default)]
+struct Captured {
+    stdout: String,
+    stderr: String,
+    truncated_after_lines: Option<u32>,
+}
+
 /// One running process: a mailbox, and the exit it will eventually report.
 struct Running {
     control: mpsc::Sender<Control>,
@@ -108,7 +146,13 @@ impl Supervisor {
         let pid = child.id();
 
         // The counter starts where the session's log ends: this task is the only writer from here.
-        let seq = Arc::new(AtomicU64::new(seq));
+        let log = Log {
+            store: Arc::clone(&store),
+            session: session.clone(),
+            seq: Arc::new(AtomicU64::new(seq)),
+        };
+        let captured = Arc::new(Mutex::new(Captured::default()));
+        let (drained_tx, drained_rx) = mpsc::channel::<()>(2);
         let (exited_tx, exited_rx) = oneshot::channel();
 
         let stdout = child.stdout.take();
@@ -116,18 +160,18 @@ impl Supervisor {
 
         if let Some(pipe) = stdout {
             tokio::spawn(reader(
-                Arc::clone(&store),
-                session.clone(),
-                Arc::clone(&seq),
+                log.clone(),
+                Arc::clone(&captured),
+                drained_tx.clone(),
                 ExecStream::Stdout,
                 pipe,
             ));
         }
         if let Some(pipe) = stderr {
             tokio::spawn(reader(
-                Arc::clone(&store),
-                session.clone(),
-                Arc::clone(&seq),
+                log.clone(),
+                Arc::clone(&captured),
+                drained_tx.clone(),
                 ExecStream::Stderr,
                 pipe,
             ));
@@ -136,10 +180,10 @@ impl Supervisor {
         let (control_tx, control_rx) = mpsc::channel(64);
         tokio::spawn(supervise(
             child,
-            Arc::clone(&store),
-            session.clone(),
-            Arc::clone(&seq),
+            log.clone(),
+            Arc::clone(&captured),
             control_rx,
+            drained_rx,
             exited_tx,
         ));
 
@@ -151,16 +195,11 @@ impl Supervisor {
             },
         );
 
-        append(
-            &store,
-            session,
-            &seq,
-            EventKind::ExecStarted {
-                pid: pid.unwrap_or(0),
-                argv: spec.argv.clone(),
-                policy: sandbox.clone(),
-            },
-        )
+        log.append(EventKind::ExecStarted {
+            pid: pid.unwrap_or(0),
+            argv: spec.argv.clone(),
+            policy: sandbox.clone(),
+        })
         .await?;
 
         Ok(Spawned { pid })
@@ -232,10 +271,10 @@ impl Supervisor {
 /// thread-unsafe; one task with a mailbox is what makes it a single writer for the session.
 async fn supervise(
     mut child: Child,
-    store: Arc<dyn crate::adapter::Store>,
-    session: SessionId,
-    seq: Arc<AtomicU64>,
+    log: Log,
+    captured: Arc<Mutex<Captured>>,
     mut control: mpsc::Receiver<Control>,
+    mut drained: mpsc::Receiver<()>,
     exited: oneshot::Sender<ExecOutput>,
 ) {
     let started = std::time::Instant::now();
@@ -249,7 +288,11 @@ async fn supervise(
                 Some(Control::Stdin(chunk)) => {
                     // Recorded before it is sent: if the write fails halfway, the log still says
                     // what we tried to run, which is the part an audit needs.
-                    let _ = append(&store, &session, &seq, EventKind::ExecStdin { chunk: chunk.clone() }).await;
+                    let _ = log
+                        .append(EventKind::ExecStdin {
+                            chunk: chunk.clone(),
+                        })
+                        .await;
                     if let Some(stdin) = stdin.as_mut() {
                         let _ = stdin.write_all(chunk.as_bytes()).await;
                         let _ = stdin.flush().await;
@@ -264,31 +307,42 @@ async fn supervise(
         }
     };
 
+    // A process that has exited has not necessarily been *read*. Wait for both pipes to reach EOF,
+    // or `wait` answers with an exit code and half the output.
+    drop(control);
+    while drained.recv().await.is_some() {}
+
+    let captured = captured.lock().await;
     let output = ExecOutput {
         exit_code: status
             .as_ref()
             .map_or(-1, |status| status.code().unwrap_or(-1)),
-        stdout: OutputChunk::default(),
-        stderr: OutputChunk::default(),
         duration_millis: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         timed_out: false,
-    };
-    let _ = append(
-        &store,
-        &session,
-        &seq,
-        EventKind::ExecExited {
-            output: output.clone(),
+        stdout: OutputChunk {
+            text: captured.stdout.clone(),
+            truncated_after_lines: captured.truncated_after_lines,
         },
-    )
-    .await;
+        stderr: OutputChunk {
+            text: captured.stderr.clone(),
+            truncated_after_lines: captured.truncated_after_lines,
+        },
+    };
+    drop(captured);
+
+    // The record is the events, so the exit event carries the summary and leaves the text where it
+    // already is: a log that repeats sixty-four kilobytes is a log with two truths.
+    let mut summary = output.clone();
+    summary.stdout.text.clear();
+    summary.stderr.text.clear();
+    let _ = log.append(EventKind::ExecExited { output: summary }).await;
     let _ = exited.send(output);
 }
 
 async fn reader(
-    store: Arc<dyn crate::adapter::Store>,
-    session: SessionId,
-    seq: Arc<AtomicU64>,
+    log: Log,
+    captured: Arc<Mutex<Captured>>,
+    drained: mpsc::Sender<()>,
     stream: ExecStream,
     mut pipe: impl AsyncReadExt + Unpin,
 ) {
@@ -304,38 +358,25 @@ async fn reader(
                 let take = read.min(OUTPUT_BUDGET_BYTES - written);
                 written += take;
                 let chunk = String::from_utf8_lossy(&buffer[..take]).into_owned();
-                if append(
-                    &store,
-                    &session,
-                    &seq,
-                    EventKind::ExecOutput { stream, chunk },
-                )
-                .await
-                .is_err()
+                {
+                    let mut captured = captured.lock().await;
+                    match stream {
+                        ExecStream::Stdout => captured.stdout.push_str(&chunk),
+                        ExecStream::Stderr => captured.stderr.push_str(&chunk),
+                    }
+                }
+                if log
+                    .append(EventKind::ExecOutput { stream, chunk })
+                    .await
+                    .is_err()
                 {
                     break;
                 }
             }
         }
     }
-}
-
-async fn append(
-    store: &Arc<dyn crate::adapter::Store>,
-    session: &SessionId,
-    seq: &Arc<AtomicU64>,
-    kind: EventKind,
-) -> Result<()> {
-    let seq = seq.fetch_add(1, Ordering::SeqCst);
-    let event = Event {
-        seq,
-        session: session.clone(),
-        at_unix_millis: 0,
-        schema_version: Event::SCHEMA_VERSION,
-        kind,
-        meta: BTreeMap::new(),
-    };
-    store.append(session, &[event]).await
+    // EOF: every byte this stream will ever produce has been appended.
+    let _ = drained.send(()).await;
 }
 
 impl Kernel {

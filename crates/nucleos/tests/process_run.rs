@@ -74,6 +74,60 @@ fn output_text(store: &MemoryStore, id: &SessionId) -> String {
 }
 
 #[tokio::test]
+async fn wait_answers_with_the_output_not_just_an_exit_code() -> nucleos::Result<()> {
+    let (kernel, _) = kernel();
+    let session = kernel
+        .spawn(
+            &principal(),
+            SessionId::new("p1"),
+            spec(
+                &["sh", "-c", "printf out; printf err 1>&2"],
+                SandboxPolicy::DangerFullAccess,
+            ),
+        )
+        .await?;
+
+    let output = kernel.wait(&session).await?;
+
+    // An exit code with no output is not a result. The event stream carries the same text
+    // incrementally, for a client watching it happen; `wait` carries it once, for a client that
+    // wants the answer.
+    assert_eq!(output.stdout.text, "out");
+    assert_eq!(output.stderr.text, "err");
+    assert_eq!(output.exit_code, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_exit_event_carries_the_summary_and_leaves_the_text_in_the_stream()
+-> nucleos::Result<()> {
+    let (kernel, store) = kernel();
+    let id = SessionId::new("p1");
+    let session = kernel
+        .spawn(
+            &principal(),
+            id.clone(),
+            spec(&["sh", "-c", "printf hi"], SandboxPolicy::DangerFullAccess),
+        )
+        .await?;
+    kernel.wait(&session).await?;
+
+    let exit = store
+        .recorded(&id)
+        .into_iter()
+        .find_map(|event| match event.kind {
+            EventKind::ExecExited { output } => Some(output),
+            _ => None,
+        })
+        .unwrap();
+
+    // A log that repeats the output would be a log with two truths; the chunks are already there.
+    assert_eq!(exit.stdout.text, "");
+    assert_eq!(exit.exit_code, 0);
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_command_runs_and_its_output_lands_in_the_log() -> nucleos::Result<()> {
     let (kernel, store) = kernel();
     let id = SessionId::new("p1");
