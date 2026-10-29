@@ -780,6 +780,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleos-policy"
+version = "0.0.1-preview"
+dependencies = [
+ "async-trait",
+ "nucleos",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "nucleos-sqlite"
 version = "0.0.1-preview"
 dependencies = [
@@ -809,6 +820,7 @@ dependencies = [
  "nucleos-agent",
  "nucleos-mcp",
  "nucleos-openai",
+ "nucleos-policy",
  "nucleos-sqlite",
  "nucleos-testkit",
  "serde",

@@ -434,3 +434,26 @@ holding it is dropped, a second kernel on the same path loads the session.
 is the one that made this change necessary — a store that answers every call and keeps nothing —
 and the only way to see it is to stop pretending the process stays alive.
 
+## 35. A policy evaluates deny first, and is not a language
+
+**Decision.** `nucleos-policy` reads a JSON document: rules match by tool name, model name or
+program, and the evaluation order is `deny` → `ask` → `allow` → the document's `default`. There is
+no expression language, no priorities, no time windows.
+
+**Why deny first.** Ordering by decision rather than by line means moving a rule in the file cannot
+widen access. A deployment can make a policy stricter by adding a `deny` and nothing else; the
+reverse requires editing the rule that allowed it, which is what a reviewer looks at.
+
+**Why not a language.** Every policy language grows until it is a program nobody reviews, and its
+bugs are silent in the permissive direction. The kernel already has a place for programs: the host
+that implements `Policy`.
+
+**Why commands are matched as arguments, not text.** `program` is compared to the basename of
+`argv[0]` and `argv_prefix` to the leading arguments. There is no shell between the policy and the
+process, so there is no command-line syntax to parse — and therefore no parser that disagrees with
+the one that spawns.
+
+**Why the daemon refuses to start without a policy.** An absent policy that silently means "allow"
+is the failure this replaced: the deployment believed it had a gate. `"default": "allow"` costs one
+line and is reviewable; forgetfulness costs nothing and is invisible.
+

@@ -180,11 +180,15 @@ That double lives in `nucleos-testkit`, which no binary depends on. It used to l
 in-memory store and an allow-everything policy shipped as the deployment. A fake in the crate
 everything links is a fake one `use` away from being the product, and nothing in a build says which.
 
-Two of the five adapters now ship with a real implementation instead: `SystemClock`, because
-reading the time is not a decision, and `nucleos-sqlite`'s store, because a test that runs against a
-different store than production is a test of a store nobody deploys. The policies `AllowAll` and
-`DenyAll` stay in the kernel crate because "nothing is gated" and "everything is refused" are
-answers, not stand-ins — and the daemon states which one it is using.
+Three of the five adapters now ship with a real implementation instead: `SystemClock`, because
+reading the time is not a decision; `nucleos-sqlite`'s store, because a test that runs against a
+different store than production is a test of a store nobody deploys; and `nucleos-policy`, because
+"no policy configured" was, until recently, what the daemon actually ran.
+
+`AllowAll` and `DenyAll` stay in the kernel crate as adapters rather than stand-ins — they are
+answers, not substitutes — but the daemon no longer picks one by default. It reads `NUCLEOS_POLICY`
+and refuses to start without it; `"default": "allow"` in that file is how a deployment says "gate
+nothing", in a file that is versioned and reviewed.
 
 ## 5. Session state machine
 

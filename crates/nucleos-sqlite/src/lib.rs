@@ -97,7 +97,9 @@ impl SqliteStore {
         // A panic in the closure poisons the mutex; `into_inner` recovers the connection rather
         // than turning one bad call into a store that refuses everything afterwards.
         tokio::task::spawn_blocking(move || {
-            let mut guard = connection.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut guard = connection
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             work(&mut guard)
         })
         .await
@@ -139,7 +141,11 @@ impl Store for SqliteStore {
                 transaction
                     .execute(
                         "insert into events (session, seq, body) values (?1, ?2, ?3)",
-                        params![session.as_str(), i64::try_from(event.seq).unwrap_or(i64::MAX), body],
+                        params![
+                            session.as_str(),
+                            i64::try_from(event.seq).unwrap_or(i64::MAX),
+                            body
+                        ],
                     )
                     .map_err(failed)?;
                 expected = expected.saturating_add(1);
@@ -176,7 +182,9 @@ impl Store for SqliteStore {
             let rows = statement
                 .query_map(params![after, kind, limit], |row| row.get::<_, String>(0))
                 .map_err(failed)?;
-            let mut ids: Vec<String> = rows.collect::<std::result::Result<_, _>>().map_err(failed)?;
+            let mut ids: Vec<String> = rows
+                .collect::<std::result::Result<_, _>>()
+                .map_err(failed)?;
 
             let more = ids.len() > query.limit;
             ids.truncate(query.limit);
@@ -201,9 +209,9 @@ impl Store for SqliteStore {
                 .optional()
                 .map_err(failed)?;
             match body {
-                Some(body) => serde_json::from_str(&body)
-                    .map(Some)
-                    .map_err(|error| Error::invalid(format!("stored snapshot is unreadable: {error}"))),
+                Some(body) => serde_json::from_str(&body).map(Some).map_err(|error| {
+                    Error::invalid(format!("stored snapshot is unreadable: {error}"))
+                }),
                 None => Ok(None),
             }
         })
@@ -258,9 +266,7 @@ impl Store for SqliteStore {
         let session = session.clone();
         self.run(move |connection| {
             let mut statement = connection
-                .prepare(
-                    "select body from events where session = ?1 and seq >= ?2 order by seq",
-                )
+                .prepare("select body from events where session = ?1 and seq >= ?2 order by seq")
                 .map_err(failed)?;
             let rows = statement
                 .query_map(

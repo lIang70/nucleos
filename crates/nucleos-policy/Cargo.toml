@@ -1,0 +1,23 @@
+[package]
+name = "nucleos-policy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A deny-by-default policy document for the nucleos kernel."
+readme = "../../README.md"
+keywords = ["agent", "kernel", "policy", "security"]
+categories = ["development-tools"]
+
+[dependencies]
+async-trait = { workspace = true }
+nucleos = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true
