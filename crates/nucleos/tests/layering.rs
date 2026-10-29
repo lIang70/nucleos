@@ -31,12 +31,15 @@ fn modules_are_declared_bottom_up() {
 /// needs it" is a constraint it would carry forever, so the manifest is the place to stop
 /// it.
 #[test]
-fn kernel_does_not_depend_on_the_wire() {
+fn kernel_does_not_depend_on_a_transport() {
+    // The wire *format* is the kernel's own types now (that is the trade C1 makes). What must
+    // still stay out is the *transport*: a kernel that links a web framework has opinions about
+    // sockets, and a host that embeds it inherits them.
     let manifest = read("Cargo.toml");
-    for forbidden in ["nucleos-proto", "tonic", "prost", "axum"] {
+    for forbidden in ["axum", "hyper", "tower", "tonic", "prost"] {
         assert!(
             !manifest.contains(forbidden),
-            "the kernel must not depend on `{forbidden}`: translation belongs in nucleosd"
+            "the kernel must not depend on `{forbidden}`: transport belongs in nucleosd"
         );
     }
 }

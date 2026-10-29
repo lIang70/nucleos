@@ -30,19 +30,15 @@ as the goals.
 
 ```text
 crates/
-  nucleos-proto/   generated Rust bindings (committed)
-  nucleos/         the kernel library — no dependency on the wire
-  nucleosd/        the daemon — authn, translation, listener
-proto/             the ABI contract — one source of truth for every SDK
-docs/              design documents
+  nucleos/    the kernel library — contracts, engine, adapters, the wire envelopes
+  nucleosd/   the daemon — router, error mapping, listener
+schema/       the published JSON Schema, committed
+docs/         design documents
 ```
 
-Dependency direction is one-way and enforced by a structural test:
-`nucleos-proto ← nucleosd → nucleos`.
-
-The `.proto` files live at the root, not inside a crate, because they are the contract for
-every language. The Rust crate publishes only the **generated** bindings, so a consumer
-never needs `protoc` and never needs the source tree.
+One ABI: JSON over HTTP, with server-sent events for streams. The schema is generated from the
+kernel's own types and committed, so an SDK generates from it and never needs a compiler
+toolchain to read the contract.
 
 ## License
 

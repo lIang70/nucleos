@@ -15,8 +15,8 @@
 //! `Send`. Everything else returns an explicit `UNIMPLEMENTED` with the reason, because a
 //! method that pretends to work is worse than one that says what it is waiting for.
 
-use nucleosd::KernelService;
-
+use nucleosd::{App, router};
+use std::sync::Arc;
 /// A unix socket by default: the peer is already the local user, which is the only
 /// authentication this daemon can honestly claim until per-connection credentials exist.
 const DEFAULT_SOCKET: &str = "/tmp/nucleosd.sock";
@@ -37,24 +37,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let listener = tokio::net::UnixListener::bind(&socket)
         .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { Box::new(error) })?;
-    let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
 
-    let service = match std::env::var("NUCLEOS_DEPLOYMENT") {
-        // A deployment file is the next slice; until then the daemon is up, describes itself,
-        // and refuses to pretend it has models.
+    let app = match std::env::var("NUCLEOS_DEPLOYMENT") {
+        // A deployment file is the next slice; until then the daemon is up, describes itself, and
+        // refuses to pretend it has models.
         Ok(path) => {
             eprintln!(
-                "nucleosd: deployment files are not implemented yet ({path}); serving Describe only"
+                "nucleosd: deployment files are not implemented yet ({path}); serving /v1/describe"
             );
-            KernelService::unconfigured()
+            App::unconfigured()
         }
-        Err(_) => KernelService::unconfigured(),
+        Err(_) => App::unconfigured(),
     };
 
     eprintln!("nucleosd listening on unix:{socket}");
-    tonic::transport::Server::builder()
-        .add_service(nucleos_proto::pb::kernel_server::KernelServer::new(service))
-        .serve_with_incoming(incoming)
+    axum::serve(listener, router(Arc::new(app)))
         .await
         .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { Box::new(error) })?;
 

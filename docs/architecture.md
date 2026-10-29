@@ -18,7 +18,7 @@ that line in the wrong place makes everything downstream ambiguous.
 ## 2. Process and trust boundary
 
 ```text
-SDK ──gRPC (Unix socket by default; TCP + TLS optional)──▶ nucleosd
+SDK ──HTTP/JSON + SSE (Unix socket by default; TCP + TLS optional)──▶ nucleosd
                                                             │
                           ┌─────────────────────────────────┤
                           │  authn → Principal{tenant, subject}
@@ -104,13 +104,13 @@ What the kernel does guarantee, because these are correctness properties and not
 
 ```text
 crates/
-  nucleos-proto/   generated bindings (committed) — see proto/ for the source
-  nucleos/         contract/ · engine/ · adapter/
-  nucleosd/        listener · authn · translation
-proto/             the ABI contract: nucleos/v1/*.proto
+  nucleos/    contract/ · adapter/ · engine/ · wire/ (envelopes + schema)
+  nucleosd/   router · error mapping · listener
+schema/       the published JSON Schema, committed
 ```
 
-The module graph inside `nucleos` is one-way: `contract → engine → adapter → facade`.
+The module graph inside `nucleos` is one-way: `contract → engine → adapter`, with `wire` beside
+`contract` because it is the same types plus the HTTP envelopes.
 A single structural test pins it, so a later edit that reaches upward fails CI instead of
 quietly coupling the layers.
 

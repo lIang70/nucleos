@@ -84,14 +84,19 @@ identical.
 **Why.** A version number is a human claim, and humans get it wrong. A schema diff is
 machine-checkable and cannot lie about itself.
 
-## 9. The kernel does not know the wire
+## 9. The kernel does not know the transport
 
-**Decision.** `nucleos` has no dependency on `nucleos-proto`. Values that only exist on
-the wire are translated in `nucleosd`.
+**Decision.** The kernel's types *are* the wire format: `contract.rs` derives `JsonSchema` beside
+`Serialize`. What stays out of the kernel is the **transport** — `axum`, `hyper`, `tower`, sockets,
+authentication — and a structural test fails if any of them appears in its manifest.
 
-**Why.** Every abstraction that exists because "the wire needs it" is a constraint the
-kernel will carry forever. Keeping the dependency out is one line in a manifest and a
-structural test; keeping it out later is a refactor.
+**Why the line moved.** It used to run between the kernel and the wire, and the price was a
+623-line translation layer plus a second type tree. JSON has none of protobuf's odd corners
+(`uint64` as a string, `oneof` as `Option`) that made the separation pay for itself, so the
+cheaper line is the one between *what a message is* and *how it travels*.
+
+**What it still buys.** A host that embeds the kernel inherits no web framework, and the
+transport can be replaced without touching a single domain type.
 
 ## 10. No multi-bearer abstraction
 
@@ -132,22 +137,23 @@ incident cannot be trusted.
 ambiguous — the writer cannot know whether a state is settled. Single-writer makes
 "settled" mean "the task is at a boundary".
 
-## 15. The schema's file layout is not the contract
+## 15. The schema is committed, and a test fails when it drifts
 
-**Decision.** Six `.proto` files, split by reason to change; imports run
-`{common, content} ← {session, event}`, `common ← source`, everything `← kernel`.
+**Decision.** `schema/v1/schema.json` is generated from the kernel's types and committed.
+Regeneration is explicit (`NUCLEOS_SCHEMA=1 cargo test -p nucleos --test schema`), and the
+default run only reads — so CI fails instead of quietly rewriting the file.
 
-**Why.** The compatibility unit is the `package` and the field numbers, not the file a
-message sits in. That means the layout is free to reorganise — and it also means splitting
-files buys no independent versioning, which is the thing people expect it to buy.
+**Why.** Under C1 the kernel's serialized shape is a promise to every client, and a promise with
+no artefact is a rumour. The committed schema is what an SDK generates from; the drift test is
+what keeps it honest.
 
-**What it does buy.** proto3 forbids circular imports, so `protoc` fails on a schema that
-reaches upward. The import graph becomes a layering test we did not have to write, and an
-event-only consumer can link `event.proto` without the session control surface.
+**What replaced the compiler.** `protoc` used to reject a circular import and `buf` used to catch
+a breaking change; both are gone. In their place: a `$ref`-resolves test, a duplicate-definition
+test, and the drift test. They are weaker than `buf breaking`, which is why §5 of [`wire.md`] is a
+written rule rather than a tool.
 
-**Failure it prevents.** One 450-line file where a diff that changes an event payload and a
-diff that adds a method look identical to a reviewer, and where nothing stops the event
-vocabulary from depending on session control.
+**Failure it prevents.** A field renamed in Rust that silently renames itself on the wire, and an
+SDK generated from a schema nobody regenerated.
 
 ## 16. A tool result is content, and failure is a flag
 
@@ -265,3 +271,16 @@ duplicated history is a transcript nobody can trust.
 
 **What it costs.** A flaky provider that drops mid-stream is not silently papered over. That is
 the point: the failure is visible, and the operator can see which provider dropped.
+
+## 24. Generate a schema from one root, not by merging roots
+
+**Decision.** `nucleos::wire::schema` takes a single `schema_for!(Abi)` and publishes that.
+
+**Why.** Merging a document per type looks equivalent and is not: schemars describes the same
+reachable type twice — once as a root, once as another root's definition — and the two
+descriptions are free to differ in ways nothing reconciles. The first attempt did exactly that
+and died on "two different schemas share the name ToolResult".
+
+**What it also fixed.** A recursive type's root is a `$ref` to its own definition, so inserting it
+as a body collides with the definition already collected. One pass has one version of each type by
+construction, and neither problem exists.

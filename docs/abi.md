@@ -4,45 +4,24 @@ The ABI is a permanent commitment. Once a caller depends on a field, that field 
 forever. Every decision below is made to keep the surface small rather than to keep it
 convenient.
 
-> **Wire in transition.** The ABI is moving from gRPC to JSON over HTTP with server-sent events.
-> [`wire.md`](wire.md) defines the target wire and the encoding rules; `proto/` still compiles and
-> the daemon still serves it, until the migration's later steps land.
-
 ## 1. Shape
 
-One service, thirteen methods, two streams. The contract lives at the repository root,
-`proto/nucleos/v1/`, because it belongs to every SDK rather than to the Rust crate that
-happens to serve it. The version is in the path, so a breaking change adds
-`proto/nucleos/v2/` and both are served — no schema is ever edited in place.
+JSON over HTTP, with server-sent events for the two streams. The contract is
+`schema/v1/schema.json`, generated from the kernel's own types — see [`wire.md`](wire.md) for the
+encoding rules and why the schema is not a separate type tree.
 
-Six files, split by *reason to change* rather than by size:
-
-| File | Contents | Changes when |
+| Route | Body | Returns |
 | --- | --- | --- |
-| `common.proto` | `Code`, `Error`, `Usage`, `Budget`, `SessionState`, `StopReason`, `Failure` | almost never; the leaf vocabulary |
-| `content.proto` | `Role`, `Message`, `Part`, `ToolUse`, `ToolResult` | the content model changes |
-| `session.proto` | `SessionSpec` and the lifecycle requests | a session request changes |
-| `event.proto` | `Event` and its payloads | **rarely — a diff here is a compatibility review** |
-| `source.proto` | `ToolSource`, transports, `Isolation`, register/reload | tool sourcing changes |
-| `kernel.proto` | the `service` and `Describe` — the table of contents | a method is added |
+| `GET /v1/describe` | — | `DescribeResponse` — version, models, ABI version |
+| `POST /v1/sessions` | `StartRequest` | `StartResponse`, or the error body |
+| `POST /v1/sessions/{id}/verdict` | `VerdictRequest` | `StartResponse` |
+| `GET /v1/sessions/{id}/events?from_seq=` | — | `text/event-stream` of `Event` |
 
-The import graph is `{common, content} ← {session, event}`, `common ← source`, and
-everything `← kernel`. `common` and `content` are leaves: neither imports another file of
-ours, which is what stops the graph from ever needing a cycle. Two consequences worth relying on:
-
-- **protoc enforces the layering for free.** proto3 forbids circular imports, so a schema
-  that reaches upward does not compile — the same discipline as the Rust module graph, and
-  the same reason for it.
-- **An event-only consumer imports `event.proto` and nothing else.** A log replayer or a UI
-  should not be linked against the session control surface it will never call.
-
-The split follows one rule: **anything referenced from two files belongs below them.**
-That is why `content.proto` exists at all — both a request (the initial messages) and an
-event (a tool result) carry it, so it cannot live inside either.
-
-Splitting files does **not** create independent versions: the compatibility unit is the
-`package`, so `nucleos.v1` is frozen as a whole. File layout is also *not* part of the
-contract — it can be reorganised at any time without touching a single field number.
+Four routes, and the surface is deliberately the whole of v1's served ABI. The endpoints the
+kernel can already support but that the daemon does not yet expose — credit, cancel, close,
+list, tool-source registration, reload, the stateless gateway — are listed in §12 rather than
+declared and left returning 501: an endpoint that exists but refuses is a contract nobody can
+rely on.
 
 ```text
 Describe   capabilities and the current generation
@@ -66,22 +45,20 @@ Session control and source management are separate groups on purpose: one is per
 and hot, the other is node-wide and rare. Merging them would make every session call carry
 node-wide authority.
 
-### 1.1 Generated bindings
+### 1.1 The schema
 
-One schema, N generators. The schema is **never copied** into a crate or an SDK — a copy is
-a version that can drift, and the drift is only discovered by a client that fails in
-production.
+One document, N generators. `schema/v1/schema.json` holds every type once, generated from the
+kernel's own definitions; an SDK generates its types from it and never copies it — a copy is a
+version that drifts, and the drift is discovered by a client failing in production.
 
-| Language | Generated where | Why |
-| --- | --- | --- |---|---|
-| Rust (`nucleos-proto`) | committed to the repo | `cargo publish` packages only the crate directory, so the artefact — not the schema — is what ships |
-| other SDKs | committed or built, following that ecosystem's norm | Go and Python expect generated code checked in; TS builds it |
+```bash
+NUCLEOS_SCHEMA=1 cargo test -p nucleos --test schema   # regenerate
+cargo test -p nucleos --test schema                    # fail if stale
+```
 
-The consequence worth stating: **consumers never need `protoc`.** Requiring a compiler
-toolchain before a caller can open a session is a reason not to adopt.
-
-Regeneration runs from the repo root over `proto/`, so adding `v2/` is a directory, not a
-fork of the build.
+The default run only reads, so CI fails instead of quietly rewriting the file. What an SDK does
+with the document is that ecosystem's decision; what this repository guarantees is that the
+document matches the code.
 
 ## 2. Sessions
 
@@ -266,8 +243,9 @@ stops on empty, never on a short page.
   new field.
 - Enum values are added, never renumbered. Unknown values must be tolerated by clients —
   which is why `DESCRIBE` reports the daemon's supported version range.
-- Generators are run by us and the bindings ship in `nucleos-proto`; consumers never need
-  `protoc`.
+- The schema is committed and a test fails when the code and the file disagree. Renaming a
+  serialized field is a breaking change even when the Rust field keeps its name: `#[serde(rename)]`
+  is how a rename stays invisible on the wire.
 
 ## 9. Mapping to MCP
 

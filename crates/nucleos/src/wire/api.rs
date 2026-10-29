@@ -4,14 +4,18 @@
 //! `SessionSpec` and an `Outcome`. These structs are where the HTTP shape lives, and they are
 //! part of the published schema because an SDK generates its client from it.
 
-use nucleos::contract::{ErrorCode, Message, Purpose, SessionState, StopReason};
-use nucleos::engine::Outcome;
+use crate::contract::{ErrorCode, Message, Purpose, SessionState, StopReason};
+use crate::engine::Outcome;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// What a caller must send to create a session.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct StartRequest {
+    /// Caller-chosen id. A retried request with the same id resumes instead of creating a
+    /// second session, which is the only way a `POST` survives a network retry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
     /// The route, first name that answers wins. Absent asks for the daemon's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_chain: Option<Vec<String>>,
@@ -41,9 +45,72 @@ pub struct StartRequest {
     pub resume: bool,
 }
 
+impl StartRequest {
+    /// The session id to use, derived from the route when the caller did not choose one.
+    #[must_use]
+    pub fn session_id(&self) -> String {
+        self.session.clone().unwrap_or_else(|| {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            self.model_chain.hash(&mut hasher);
+            self.system.hash(&mut hasher);
+            self.credit_tokens.hash(&mut hasher);
+            format!("session-{:016x}", hasher.finish())
+        })
+    }
+}
+
+impl From<StartRequest> for crate::engine::SessionSpec {
+    fn from(request: StartRequest) -> Self {
+        use crate::adapter::{GenerateParams, ReasoningEffort, TextFormat, ToolChoice};
+        Self {
+            routing: request.model_chain.map(|chain| crate::contract::Routing {
+                chain,
+                retries: request.retries,
+            }),
+            system: request.system,
+            initial: request.initial,
+            tools: request.tools,
+            params: GenerateParams {
+                max_output_tokens: request.params.max_output_tokens,
+                temperature: request.params.temperature,
+                top_p: request.params.top_p,
+                stop: request.params.stop,
+                reasoning_effort: match request.params.reasoning_effort.as_deref() {
+                    Some("minimal") => Some(ReasoningEffort::Minimal),
+                    Some("low") => Some(ReasoningEffort::Low),
+                    Some("medium") => Some(ReasoningEffort::Medium),
+                    Some("high") => Some(ReasoningEffort::High),
+                    _ => None,
+                },
+                tool_choice: match request.params.tool_choice.as_deref() {
+                    Some("required") => ToolChoice::Required,
+                    Some("none") => ToolChoice::None,
+                    _ => ToolChoice::Auto,
+                },
+                format: match request.params.format {
+                    None | Some(Format::Text) => TextFormat::Text,
+                    Some(Format::JsonObject) => TextFormat::JsonObject,
+                    Some(Format::JsonSchema { name, schema }) => TextFormat::JsonSchema {
+                        name,
+                        schema_json: schema.to_string(),
+                    },
+                },
+            },
+            budget: crate::contract::Budget {
+                max_steps: request.budget.max_steps,
+                max_tokens: request.budget.max_tokens,
+                max_micros_usd: request.budget.max_micros_usd,
+                max_wall_millis: request.budget.max_wall_millis,
+            },
+            credit_tokens: request.credit_tokens,
+        }
+    }
+}
+
 /// Generation parameters, as the wire carries them.
 ///
-/// Mirrors `nucleos::adapter::GenerateParams`, but as a `#[serde(default)]`-friendly struct:
+/// Mirrors `crate::adapter::GenerateParams`, but as a `#[serde(default)]`-friendly struct:
 /// a caller should be able to send `{}` and get the defaults, which is not true of the kernel's
 /// type because its `TextFormat` is an enum.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -128,6 +195,17 @@ impl From<&Outcome> for StartResponse {
             next_seq: outcome.next_seq,
         }
     }
+}
+
+/// What a caller learns before it starts anything.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DescribeResponse {
+    /// The daemon's version.
+    pub version: String,
+    /// The ABI version it speaks, from the schema's own `$id`.
+    pub abi_version: String,
+    /// The models a route may name.
+    pub models: Vec<String>,
 }
 
 /// What a caller sends to answer a parked call.

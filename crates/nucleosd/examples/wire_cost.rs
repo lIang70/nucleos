@@ -1,13 +1,11 @@
-//! Throwaway measurement: what does the translation layer cost per event?
+//! Throwaway measurement: what does the wire cost per event?
 //!
-//! Run with `cargo run --release --example translate_cost -p nucleosd`.
+//! Run with `cargo run --release --example wire_cost -p nucleosd`.
 //!
 //! A measurement, not a test: it asserts nothing, and its numbers depend on the machine. It
-//! exists so that "is the translation layer expensive?" is answered with a number instead of an
-//! opinion.
+//! exists so that "is the JSON wire expensive?" is answered with a number instead of an opinion.
 
 use nucleos::contract as k;
-use nucleosd::translate;
 use std::collections::BTreeMap;
 use std::time::Instant;
 
@@ -45,38 +43,37 @@ fn tool_result() -> k::Event {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    const N: u32 = 500_000;
+    use nucleos::adapter::Store;
+    const N: u32 = 200_000;
 
     let small = text_delta();
     let start = Instant::now();
-    let mut sink = 0usize;
+    let mut bytes = 0usize;
     for _ in 0..N {
-        let wire = translate::event(&small);
-        sink += wire.seq as usize;
+        bytes += serde_json::to_vec(&small)?.len();
     }
     let elapsed = start.elapsed();
     println!(
-        "translate small event: {:>7.1} ns/op  ({N} ops in {:?})  [sink {sink}]",
+        "serialise a text delta:      {:>7.1} ns/op  ({} bytes)  [{N} ops in {elapsed:?}]",
         elapsed.as_nanos() as f64 / f64::from(N),
-        elapsed
+        bytes / N as usize
     );
 
     let big = tool_result();
     let start = Instant::now();
+    let mut bytes = 0usize;
     for _ in 0..N {
-        let wire = translate::event(&big);
-        sink += wire.seq as usize;
+        bytes += serde_json::to_vec(&big)?.len();
     }
     let elapsed = start.elapsed();
     println!(
-        "translate 256-byte tool result: {:>7.1} ns/op  ({N} ops in {:?})  [sink {sink}]",
+        "serialise a 256-byte result: {:>7.1} ns/op  ({} bytes)  [{N} ops in {elapsed:?}]",
         elapsed.as_nanos() as f64 / f64::from(N),
-        elapsed
+        bytes / N as usize
     );
 
-    // The engine appends one event at a time today. That is the number worth comparing against
-    // translation, because it is the one that would hurt with a durable store.
-    use nucleos::adapter::Store;
+    // The engine appends one event at a time today. That is the number to keep an eye on, because
+    // a durable store turns it into one transaction per event.
     let runtime = tokio::runtime::Builder::new_current_thread().build()?;
     let store = nucleos::adapter::MemoryStore::new();
     let session = k::SessionId::new("s1");
@@ -90,26 +87,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         let elapsed = start.elapsed();
         println!(
-            "store append, one event at a time: {:>7.1} ns/op  ({N} ops in {:?})",
-            elapsed.as_nanos() as f64 / f64::from(N),
-            elapsed
+            "store append, one at a time: {:>7.1} ns/op  [{N} ops in {elapsed:?}]",
+            elapsed.as_nanos() as f64 / f64::from(N)
         );
         Ok::<(), nucleos::Error>(())
     })?;
-
-    let wire = translate::event(&small);
-    let start = Instant::now();
-    let mut bytes = 0usize;
-    for _ in 0..N {
-        let encoded = prost::Message::encode_to_vec(&wire);
-        bytes += encoded.len();
-    }
-    let elapsed = start.elapsed();
-    println!(
-        "prost encode of that event: {:>7.1} ns/op  ({N} ops in {:?})  [{} bytes each]",
-        elapsed.as_nanos() as f64 / f64::from(N),
-        elapsed,
-        bytes / N as usize
-    );
     Ok(())
 }

@@ -5,9 +5,8 @@ The ABI is JSON over HTTP, with server-sent events for streams. The schema is
 wire shape, which is the trade this design makes in exchange for not maintaining a second type
 tree.
 
-> **Status.** The daemon still serves gRPC; this document defines the wire it is migrating to.
-> Steps B–D of the migration move the listener and delete `proto/`. Until then both exist, and
-> only this one is authoritative for new work.
+> **Status.** This is the wire. The daemon serves it, `proto/` is gone, and the schema is
+> generated from the kernel's own types.
 
 ## 1. One wire, two bindings
 

@@ -230,6 +230,32 @@
       ],
       "type": "object"
     },
+    "DescribeResponse": {
+      "description": "What a caller learns before it starts anything.",
+      "properties": {
+        "abi_version": {
+          "description": "The ABI version it speaks, from the schema's own `$id`.",
+          "type": "string"
+        },
+        "models": {
+          "description": "The models a route may name.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "version": {
+          "description": "The daemon's version.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "abi_version",
+        "models"
+      ],
+      "type": "object"
+    },
     "ErrorBody": {
       "description": "The body of a failed request.\n\nOne shape for every failure: a caller should not have to know which endpoint it called to\nknow how to read why it failed.",
       "properties": {
@@ -965,7 +991,7 @@
       "type": "object"
     },
     "Params": {
-      "description": "Generation parameters, as the wire carries them.\n\nMirrors `nucleos::adapter::GenerateParams`, but as a `#[serde(default)]`-friendly struct:\na caller should be able to send `{}` and get the defaults, which is not true of the kernel's\ntype because its `TextFormat` is an enum.",
+      "description": "Generation parameters, as the wire carries them.\n\nMirrors `crate::adapter::GenerateParams`, but as a `#[serde(default)]`-friendly struct:\na caller should be able to send `{}` and get the defaults, which is not true of the kernel's\ntype because its `TextFormat` is an enum.",
       "properties": {
         "format": {
           "anyOf": [
@@ -1358,6 +1384,13 @@
           "minimum": 0,
           "type": "integer"
         },
+        "session": {
+          "description": "Caller-chosen id. A retried request with the same id resumes instead of creating a\nsecond session, which is the only way a `POST` survives a network retry.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "system": {
           "description": "Standing instructions.",
           "type": [
@@ -1603,6 +1636,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "The nucleos ABI. Events are server-sent frames whose `event` field is the routable type and whose `id` is the sequence number; every other endpoint is JSON over HTTP.",
   "properties": {
+    "describe_response": {
+      "$ref": "#/$defs/DescribeResponse",
+      "description": "`GET /v1/describe`."
+    },
     "error": {
       "$ref": "#/$defs/ErrorBody",
       "description": "The body of every failure."
@@ -1634,6 +1671,7 @@
   },
   "required": [
     "event",
+    "describe_response",
     "start_request",
     "start_response",
     "verdict_request",

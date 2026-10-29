@@ -8,8 +8,8 @@
 //! of some other root — and those two descriptions are allowed to differ in ways nobody wants to
 //! reconcile. One pass has one version of each type by construction.
 
-use crate::api;
-use nucleos::contract as k;
+use super::api;
+use crate::contract as k;
 use schemars::{JsonSchema, schema_for};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -28,6 +28,8 @@ pub struct Abi {
     /// There is no frame *type*: a server-sent event already gives the type (`event:`) and the
     /// cursor (`id:`), and a second type restating them is a second truth.
     pub event: k::Event,
+    /// `GET /v1/describe`.
+    pub describe_response: api::DescribeResponse,
     /// `POST /v1/sessions`.
     pub start_request: api::StartRequest,
     /// What that returns.
