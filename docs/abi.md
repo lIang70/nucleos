@@ -13,15 +13,27 @@ encoding rules and why the schema is not a separate type tree.
 | Route | Body | Returns |
 | --- | --- | --- |
 | `GET /v1/describe` | — | `DescribeResponse` — version, models, ABI version |
-| `POST /v1/sessions` | `StartRequest` | `StartResponse`, or the error body |
-| `POST /v1/sessions/{id}/verdict` | `VerdictRequest` | `StartResponse` |
+| `POST /v1/agents` | `StartRequest` | `StartResponse` — runs the reference loop to completion |
+| `POST /v1/sessions` | `StartRequest` | `StartResponse` — opens a session, drives nothing |
+| `GET /v1/sessions/{id}` | — | `SessionView` |
+| `POST /v1/sessions/{id}/inference` | `InferenceRequest` | `InferenceResponse` |
+| `POST /v1/sessions/{id}/tools` | `ToolBatchRequest` | `ToolBatchResponse` |
+| `POST /v1/sessions/{id}/state` | `StateRequest` | `204` |
+| `POST /v1/sessions/{id}/close` | — | `StartResponse` |
+| `POST /v1/sessions/{id}/verdict` | `VerdictRequest` | `StartResponse` — runs the loop on |
 | `GET /v1/sessions/{id}/events?from_seq=` | — | `text/event-stream` of `Event` |
 
-Four routes, and the surface is deliberately the whole of v1's served ABI. The endpoints the
-kernel can already support but that the daemon does not yet expose — credit, cancel, close,
-list, tool-source registration, reload, the stateless gateway — are listed in §12 rather than
-declared and left returning 501: an endpoint that exists but refuses is a contract nobody can
-rely on.
+Two layers, deliberately:
+
+- **The driver** (`/v1/agents`, `/v1/sessions/{id}/verdict`) runs the reference loop from
+  `nucleos-agent`. One call, an agent happens.
+- **The syscalls** (`open`, `inference`, `tools`, `state`, `close`) are one turn each, in an
+  order the caller chooses. An application that wants a different loop — plan-execute,
+  verification turns, map-reduce over items, its own sub-agents — calls these and owns the loop.
+
+`inference` takes its messages **in the request** and appends nothing: what you send is what you
+get, and whether the answer enters history is decided by the next `state` call. That is what makes
+a verification turn possible without polluting the transcript.
 
 ```text
 Describe   capabilities and the current generation
@@ -315,7 +327,7 @@ A stream that can be wrong about order is a stream nobody can build a UI on, so:
 | Embeddings | A tool: an embedding model belongs with the index and the ranking that use it. |
 | Speech to text, text to speech | A tool. Voice output also needs an artifact store the kernel does not have. |
 | Tool-source registration, reload | Tool sources are declared in the daemon's configuration; discovery lands with the MCP client. |
-| Credit, cancel, close, list | They need a session table and live handles the daemon does not hold yet. |
+| Credit, cancel, list | They need an operator surface; `close` exists because a syscall can do it statelessly. |
 
 An endpoint that exists and returns 501 is a contract nobody can rely on, so these are absent
 rather than declared.

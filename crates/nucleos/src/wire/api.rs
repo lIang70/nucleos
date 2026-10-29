@@ -4,10 +4,13 @@
 //! `SessionSpec` and an `Outcome`. These structs are where the HTTP shape lives, and they are
 //! part of the published schema because an SDK generates its client from it.
 
-use crate::contract::{ErrorCode, Message, Purpose, SessionState, StopReason};
+use crate::contract::{
+    ErrorCode, Message, PendingCall, Purpose, SessionState, StopReason, ToolCall, ToolResult, Usage,
+};
 use crate::engine::Outcome;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// What a caller must send to create a session.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -206,6 +209,74 @@ pub struct DescribeResponse {
     pub abi_version: String,
     /// The models a route may name.
     pub models: Vec<String>,
+}
+
+/// One inference: the messages to send.
+///
+/// The messages are the caller's, not the session's. What you send is what you get, and whether
+/// the answer enters history is the next request's business — which is what makes a verification
+/// turn possible without polluting the transcript.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct InferenceRequest {
+    /// The conversation to send, oldest first. Absent sends nothing.
+    #[serde(default)]
+    pub messages: Vec<Message>,
+}
+
+/// What one inference produced.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct InferenceResponse {
+    /// The assistant message. Nothing has been appended to the session.
+    pub message: Message,
+    /// The provider's own reason for stopping.
+    pub finish: String,
+    /// What the session has spent so far.
+    pub usage: Usage,
+}
+
+/// A batch of tool calls.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ToolBatchRequest {
+    /// The calls to run. Policy is asked about all of them before any runs.
+    #[serde(default)]
+    pub calls: Vec<ToolCall>,
+}
+
+/// What the batch produced.
+///
+/// A failure is a result with `is_error`, not an HTTP error: the model reads why and decides.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ToolBatchResponse {
+    /// One result per call, in order.
+    pub results: Vec<ToolResult>,
+}
+
+/// A write to the session's own state.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct StateRequest {
+    /// Messages to append to the conversation.
+    #[serde(default)]
+    pub messages: Vec<Message>,
+    /// Keys to set in the application's opaque state.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub data: BTreeMap<String, serde_json::Value>,
+}
+
+/// What a session looks like from outside.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SessionView {
+    /// Its identifier.
+    pub session: String,
+    /// Whether it still takes calls.
+    pub state: SessionState,
+    /// The cursor a client resumes from.
+    pub next_seq: u64,
+    /// How many inferences it has made.
+    pub inference_calls: u64,
+    /// Calls waiting on a human.
+    pub pending: Vec<PendingCall>,
+    /// What it has spent.
+    pub usage: Usage,
 }
 
 /// What a caller sends to answer a parked call.

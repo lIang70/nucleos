@@ -36,10 +36,11 @@ fn kernel_does_not_depend_on_a_transport() {
     // still stay out is the *transport*: a kernel that links a web framework has opinions about
     // sockets, and a host that embeds it inherits them.
     let manifest = read("Cargo.toml");
-    for forbidden in ["axum", "hyper", "tower", "tonic", "prost"] {
+    for forbidden in ["axum", "hyper", "tower", "tonic", "prost", "nucleos-agent"] {
         assert!(
             !manifest.contains(forbidden),
-            "the kernel must not depend on `{forbidden}`: transport belongs in nucleosd"
+            "the kernel must not depend on `{forbidden}`: transport belongs in nucleosd, \
+and the loop belongs in nucleos-agent"
         );
     }
 }

@@ -77,78 +77,9 @@ impl ModelRequest {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Generation parameters
-// ---------------------------------------------------------------------------
-
-/// How the model should choose among the tools it was given.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum ToolChoice {
-    /// It decides.
-    #[default]
-    Auto,
-    /// It must call one.
-    ///
-    /// This variant exists for one reason: "the model explained the problem instead of
-    /// calling the tool" is the most common way an agent fails, and this is the only fix for
-    /// it that does not involve asking the prompt more nicely.
-    Required,
-    /// It must not call one.
-    None,
-}
-
-/// How hard a reasoning model should think.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReasoningEffort {
-    /// Barely.
-    Minimal,
-    /// A little.
-    Low,
-    /// Normal.
-    Medium,
-    /// As much as it costs.
-    High,
-}
-
-/// The shape the answer must have.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum TextFormat {
-    /// Prose.
-    #[default]
-    Text,
-    /// A JSON object, schema unchecked.
-    JsonObject,
-    /// A JSON object that must match a schema.
-    JsonSchema {
-        /// The name the provider files it under.
-        name: String,
-        /// The schema, serialized.
-        schema_json: String,
-    },
-}
-
-/// What the caller wants from this call.
-///
-/// Every field is carried, not decided: the kernel has no opinion about sampling. They live
-/// here rather than as a bag of extras because a bag is a second extension hatch, and the
-/// five parameters below are the ones every provider has.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct GenerateParams {
-    /// The completion ceiling.
-    pub max_output_tokens: Option<u32>,
-    /// Sampling temperature.
-    pub temperature: Option<f32>,
-    /// Nucleus sampling.
-    pub top_p: Option<f32>,
-    /// Sequences that end the completion.
-    pub stop: Vec<String>,
-    /// Reasoning effort, for models that expose one.
-    pub reasoning_effort: Option<ReasoningEffort>,
-    /// How to choose among tools.
-    pub tool_choice: ToolChoice,
-    /// The shape the answer must have.
-    pub format: TextFormat,
-}
+// The generation parameters are data, not adapter behaviour: the checkpoint carries them, so
+// they live beside the rest of the contract and are re-exported here for convenience.
+pub use crate::contract::{GenerateParams, ReasoningEffort, TextFormat, ToolChoice};
 
 // ---------------------------------------------------------------------------
 // Deltas

@@ -42,6 +42,18 @@ pub struct Abi {
     pub message: k::Message,
     /// What a call cost, attempt by attempt.
     pub ledger: k::Ledger,
+    /// `POST /v1/sessions/{id}/inference`.
+    pub inference_request: api::InferenceRequest,
+    /// What that returns.
+    pub inference_response: api::InferenceResponse,
+    /// `POST /v1/sessions/{id}/tools`.
+    pub tool_batch_request: api::ToolBatchRequest,
+    /// What that returns.
+    pub tool_batch_response: api::ToolBatchResponse,
+    /// `POST /v1/sessions/{id}/state`.
+    pub state_request: api::StateRequest,
+    /// `GET /v1/sessions/{id}`.
+    pub session_view: api::SessionView,
 }
 
 /// The published document.

@@ -333,29 +333,17 @@ pub struct ReasoningPart {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionState {
-    /// Allocated, spec not yet applied.
-    Created,
-    /// Driving a turn.
-    Running,
-    /// A tool call is in flight.
-    AwaitingTool,
-    /// Blocked on a human decision.
-    AwaitingHuman,
-    /// Stopping: finish the current turn, then checkpoint.
-    Cancelling,
-    /// Finished normally.
-    Done,
-    /// Finished with an error.
-    Failed,
-    /// Stopped on request.
-    Cancelled,
+    /// Accepting calls.
+    Open,
+    /// Finished. No further call is accepted.
+    Closed,
 }
 
 impl SessionState {
-    /// Whether no further transition is possible.
+    /// Whether the session accepts no further calls.
     #[must_use]
-    pub fn is_terminal(self) -> bool {
-        matches!(self, Self::Done | Self::Failed | Self::Cancelled)
+    pub fn is_closed(self) -> bool {
+        matches!(self, Self::Closed)
     }
 }
 
@@ -795,7 +783,7 @@ pub struct PendingCall {
 ///
 /// `seq` is the event this snapshot already includes, so recovery is `load(snapshot)` then
 /// `events_since(snapshot.seq + 1)`. Two numbers that must agree, written down once.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Snapshot {
     /// The session it belongs to.
     pub session: SessionId,
@@ -809,10 +797,33 @@ pub struct Snapshot {
     pub messages: Vec<Message>,
     /// What it has spent.
     pub usage: Usage,
-    /// Turns taken.
-    pub steps: u64,
-    /// The call this session is parked on, when it is parked.
-    pub pending: Option<PendingCall>,
+    /// How many inference calls it has made.
+    pub inference_calls: u64,
+    /// Tokens granted and not yet spent.
+    ///
+    /// In the checkpoint because every syscall may be served by a different process: a budget
+    /// that resets on reload is not a budget.
+    pub credit_tokens: u64,
+    /// Calls waiting on a human. A batch can have more than one.
+    #[serde(default)]
+    pub pending: Vec<PendingCall>,
+    /// The route this session was started with.
+    ///
+    /// In the checkpoint because a resume that had to be told its own route again is a resume
+    /// that can silently behave differently — and the caller cannot know what to send.
+    pub routing: Routing,
+    /// Standing instructions.
+    pub system: Option<String>,
+    /// Tool names this session may use.
+    pub tools: Vec<String>,
+    /// How answers are shaped.
+    pub params: GenerateParams,
+    /// The application's own state.
+    ///
+    /// Opaque: the kernel stores it, updates it atomically and restores it, and never reads a
+    /// key. Every write is also an event, so a replay reproduces the value the application saw.
+    #[serde(default)]
+    pub data: BTreeMap<String, serde_json::Value>,
 }
 
 // ---------------------------------------------------------------------------
@@ -961,4 +972,83 @@ impl Ledger {
     pub fn is_empty(&self) -> bool {
         self.attempts.is_empty()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Generation parameters
+// ---------------------------------------------------------------------------
+
+/// How the model should choose among the tools it was given.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolChoice {
+    /// It decides.
+    #[default]
+    Auto,
+    /// It must call one.
+    Required,
+    /// It must not call one.
+    None,
+}
+
+/// How hard a reasoning model should think.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningEffort {
+    /// Barely.
+    Minimal,
+    /// A little.
+    Low,
+    /// Normal.
+    Medium,
+    /// As much as it costs.
+    High,
+}
+
+/// The shape the answer must have.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TextFormat {
+    /// Prose.
+    #[default]
+    Text,
+    /// A JSON object, schema unchecked.
+    JsonObject,
+    /// A JSON object that must match a schema.
+    JsonSchema {
+        /// The name the provider files it under.
+        name: String,
+        /// The schema, serialized.
+        schema_json: String,
+    },
+}
+
+/// What the caller wants from one call.
+///
+/// Every field is carried, not decided: the kernel has no opinion about sampling. They live
+/// here rather than as a bag of extras because a bag is a second extension hatch, and these are
+/// the parameters every provider has.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct GenerateParams {
+    /// The completion ceiling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+    /// Sampling temperature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    /// Nucleus sampling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
+    /// Sequences that end the completion.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stop: Vec<String>,
+    /// Reasoning effort, for models that expose one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ReasoningEffort>,
+    /// How to choose among tools.
+    #[serde(default)]
+    pub tool_choice: ToolChoice,
+    /// The shape the answer must have.
+    #[serde(default)]
+    pub format: TextFormat,
 }

@@ -1,4 +1,4 @@
-//! The engine, end to end, on fakes.
+//! The reference loop, end to end, on fakes.
 //!
 //! Every test here answers one question about a rule in `docs/architecture.md`: does the loop
 //! stop where it says it stops, does the ledger count what it says it counts, does a parked
@@ -17,6 +17,7 @@ use nucleos::contract::{
 };
 use nucleos::engine::{HitlVerdict, Kernel, SessionSpec};
 use nucleos::{Error, Result};
+use nucleos_agent as agent;
 use std::sync::Arc;
 
 fn principal() -> Principal {
@@ -71,11 +72,11 @@ async fn a_single_turn_session_answers_and_checkpoints() -> Result<()> {
     let (kernel, store) = kernel(FakeModel::text(["hello"]));
     let id = SessionId::new("s1");
 
-    let outcome = kernel.start(&principal(), id.clone(), spec()).await?;
+    let outcome = agent::start(&kernel, &principal(), id.clone(), spec()).await?;
 
-    assert_eq!(outcome.state, SessionState::Done);
+    assert_eq!(outcome.state, SessionState::Closed);
     assert_eq!(outcome.stop, Some(StopReason::Completed));
-    assert!(outcome.is_terminal());
+    assert!(outcome.is_closed());
 
     let seen = kinds(&store, &id);
     assert_eq!(
@@ -89,8 +90,8 @@ async fn a_single_turn_session_answers_and_checkpoints() -> Result<()> {
     );
 
     let snapshot = store.snapshot(&id).await?.unwrap();
-    assert_eq!(snapshot.state, SessionState::Done);
-    assert_eq!(snapshot.steps, 1);
+    assert_eq!(snapshot.state, SessionState::Closed);
+    assert_eq!(snapshot.inference_calls, 1);
     assert_eq!(
         snapshot.seq,
         outcome.next_seq - 1,
@@ -116,9 +117,9 @@ async fn a_tool_call_runs_and_the_model_answers_afterwards() -> Result<()> {
     let (kernel, store) = kernel(model);
     let id = SessionId::new("s1");
 
-    let outcome = kernel.start(&principal(), id.clone(), spec()).await?;
+    let outcome = agent::start(&kernel, &principal(), id.clone(), spec()).await?;
 
-    assert_eq!(outcome.state, SessionState::Done);
+    assert_eq!(outcome.state, SessionState::Closed);
     let seen = kinds(&store, &id);
     assert!(seen.contains(&"nucleos.v1.tool_call_started"));
     assert!(seen.contains(&"nucleos.v1.tool_call_args"));
@@ -132,7 +133,7 @@ async fn a_tool_call_runs_and_the_model_answers_afterwards() -> Result<()> {
     );
 
     let snapshot = store.snapshot(&id).await?.unwrap();
-    assert_eq!(snapshot.steps, 2);
+    assert_eq!(snapshot.inference_calls, 2);
     assert!(
         snapshot
             .messages
@@ -154,7 +155,7 @@ async fn malformed_arguments_never_reach_the_tool() -> Result<()> {
     let (kernel, store) = kernel(model);
     let id = SessionId::new("s1");
 
-    kernel.start(&principal(), id.clone(), spec()).await?;
+    agent::start(&kernel, &principal(), id.clone(), spec()).await?;
 
     let result = store
         .recorded(&id)
@@ -196,7 +197,7 @@ async fn a_tool_that_reports_a_cost_is_charged_for_it() -> Result<()> {
         .unwrap();
 
     let id = SessionId::new("s1");
-    kernel.start(&principal(), id.clone(), spec()).await?;
+    agent::start(&kernel, &principal(), id.clone(), spec()).await?;
 
     // A tool that calls a paid API can say what it cost, and the kernel attributes it. The
     // alternative — a gateway endpoint so the kernel could make the call itself — was a second
@@ -222,7 +223,7 @@ async fn a_tool_that_reports_nothing_is_not_assumed_free() -> Result<()> {
         }],
     ]));
     let id = SessionId::new("s1");
-    kernel.start(&principal(), id.clone(), spec()).await?;
+    agent::start(&kernel, &principal(), id.clone(), spec()).await?;
 
     let usage = store
         .recorded(&id)
@@ -248,21 +249,21 @@ async fn the_step_cap_stops_a_session_that_would_loop() -> Result<()> {
     let (kernel, store) = kernel(model);
     let id = SessionId::new("s1");
 
-    let outcome = kernel
-        .start(
-            &principal(),
-            id.clone(),
-            SessionSpec {
-                budget: Budget {
-                    max_steps: Some(1),
-                    ..Budget::default()
-                },
-                ..spec()
+    let outcome = agent::start(
+        &kernel,
+        &principal(),
+        id.clone(),
+        SessionSpec {
+            budget: Budget {
+                max_steps: Some(1),
+                ..Budget::default()
             },
-        )
-        .await?;
+            ..spec()
+        },
+    )
+    .await?;
 
-    assert_eq!(outcome.state, SessionState::Failed);
+    assert_eq!(outcome.state, SessionState::Closed);
     assert_eq!(outcome.stop, Some(StopReason::Steps));
     assert!(kinds(&store, &id).contains(&"nucleos.v1.budget_exhausted"));
     Ok(())
@@ -273,16 +274,16 @@ async fn no_credit_means_no_model_call() -> Result<()> {
     let (kernel, store) = kernel(FakeModel::text(["never asked"]));
     let id = SessionId::new("s1");
 
-    let outcome = kernel
-        .start(
-            &principal(),
-            id.clone(),
-            SessionSpec {
-                credit_tokens: 0,
-                ..spec()
-            },
-        )
-        .await?;
+    let outcome = agent::start(
+        &kernel,
+        &principal(),
+        id.clone(),
+        SessionSpec {
+            credit_tokens: 0,
+            ..spec()
+        },
+    )
+    .await?;
 
     assert_eq!(outcome.stop, Some(StopReason::Tokens));
     let seen = kinds(&store, &id);
@@ -303,11 +304,9 @@ async fn a_truncated_answer_stops_with_the_token_reason() -> Result<()> {
     ]]);
     let (kernel, _) = kernel(model);
 
-    let outcome = kernel
-        .start(&principal(), SessionId::new("s1"), spec())
-        .await?;
+    let outcome = agent::start(&kernel, &principal(), SessionId::new("s1"), spec()).await?;
     assert_eq!(outcome.stop, Some(StopReason::Tokens));
-    assert_eq!(outcome.state, SessionState::Failed);
+    assert_eq!(outcome.state, SessionState::Closed);
     Ok(())
 }
 
@@ -330,21 +329,21 @@ async fn a_failing_primary_falls_back_and_both_attempts_are_recorded() -> Result
         .build()
         .unwrap();
 
-    let outcome = kernel
-        .start(
-            &principal(),
-            SessionId::new("s1"),
-            SessionSpec {
-                routing: Some(Routing {
-                    chain: vec!["primary".to_owned(), "secondary".to_owned()],
-                    retries: 0,
-                }),
-                ..spec()
-            },
-        )
-        .await?;
+    let outcome = agent::start(
+        &kernel,
+        &principal(),
+        SessionId::new("s1"),
+        SessionSpec {
+            routing: Some(Routing {
+                chain: vec!["primary".to_owned(), "secondary".to_owned()],
+                retries: 0,
+            }),
+            ..spec()
+        },
+    )
+    .await?;
 
-    assert_eq!(outcome.state, SessionState::Done);
+    assert_eq!(outcome.state, SessionState::Closed);
     assert_eq!(outcome.ledger.len(), 2);
     assert!(matches!(
         outcome.ledger.attempts[0].outcome,
@@ -369,23 +368,23 @@ async fn an_attempt_that_streamed_is_not_retried() -> Result<()> {
         .build()
         .unwrap();
 
-    let outcome = kernel
-        .start(
-            &principal(),
-            SessionId::new("s1"),
-            SessionSpec {
-                routing: Some(Routing {
-                    chain: vec!["primary".to_owned(), "secondary".to_owned()],
-                    retries: 2,
-                }),
-                ..spec()
-            },
-        )
-        .await?;
+    let outcome = agent::start(
+        &kernel,
+        &principal(),
+        SessionId::new("s1"),
+        SessionSpec {
+            routing: Some(Routing {
+                chain: vec!["primary".to_owned(), "secondary".to_owned()],
+                retries: 2,
+            }),
+            ..spec()
+        },
+    )
+    .await?;
 
     // Retrying would put two partial answers in one turn's history, and no replay could tell
     // which one the model was continuing.
-    assert_eq!(outcome.state, SessionState::Failed);
+    assert_eq!(outcome.state, SessionState::Closed);
     assert_eq!(
         outcome.ledger.len(),
         1,
@@ -397,21 +396,21 @@ async fn an_attempt_that_streamed_is_not_retried() -> Result<()> {
 #[tokio::test]
 async fn an_unknown_route_target_is_refused() {
     let (kernel, _) = kernel(FakeModel::text(["hi"]));
-    let error = kernel
-        .start(
-            &principal(),
-            SessionId::new("s1"),
-            SessionSpec {
-                routing: Some(Routing {
-                    chain: vec!["nobody".to_owned()],
-                    retries: 0,
-                }),
-                ..spec()
-            },
-        )
-        .await
-        .err()
-        .unwrap();
+    let error = agent::start(
+        &kernel,
+        &principal(),
+        SessionId::new("s1"),
+        SessionSpec {
+            routing: Some(Routing {
+                chain: vec!["nobody".to_owned()],
+                retries: 0,
+            }),
+            ..spec()
+        },
+    )
+    .await
+    .err()
+    .unwrap();
     assert_eq!(error.code(), ErrorCode::NotFound);
 }
 
@@ -440,12 +439,10 @@ async fn a_denied_tool_answers_with_content_and_the_turn_continues() -> Result<(
         .build()
         .unwrap();
 
-    let outcome = kernel
-        .start(&principal(), SessionId::new("s1"), spec())
-        .await?;
+    let outcome = agent::start(&kernel, &principal(), SessionId::new("s1"), spec()).await?;
 
     // A refusal is content the model reads, not a failed turn: the session keeps going.
-    assert_eq!(outcome.state, SessionState::Done);
+    assert_eq!(outcome.state, SessionState::Closed);
     let refusal = store
         .recorded(&SessionId::new("s1"))
         .into_iter()
@@ -478,26 +475,28 @@ async fn a_gated_call_parks_the_session_and_a_verdict_resumes_it() -> Result<()>
         .unwrap();
 
     let id = SessionId::new("s1");
-    let parked = kernel.start(&principal(), id.clone(), spec()).await?;
-    assert_eq!(parked.state, SessionState::AwaitingHuman);
+    let parked = agent::start(&kernel, &principal(), id.clone(), spec()).await?;
+    assert_eq!(parked.state, SessionState::Open);
     assert_eq!(parked.stop, None, "parked is not stopped");
 
     let snapshot = store.snapshot(&id).await?.unwrap();
-    assert!(snapshot.pending.is_some(), "the call survives the process");
+    assert!(
+        !snapshot.pending.is_empty(),
+        "the call survives the process"
+    );
 
-    let resumed = kernel
-        .answer(
-            &principal(),
-            id.clone(),
-            spec(),
-            HitlVerdict {
-                tool_call_id: "call-1".to_owned(),
-                option_id: "allow".to_owned(),
-            },
-        )
-        .await?;
+    let resumed = agent::answer(
+        &kernel,
+        &principal(),
+        &id,
+        HitlVerdict {
+            tool_call_id: "call-1".to_owned(),
+            option_id: "allow".to_owned(),
+        },
+    )
+    .await?;
 
-    assert_eq!(resumed.state, SessionState::Done);
+    assert_eq!(resumed.state, SessionState::Closed);
     Ok(())
 }
 
@@ -524,21 +523,20 @@ async fn a_verdict_for_an_option_that_was_never_offered_is_refused() -> Result<(
     };
 
     let id = SessionId::new("s1");
-    kernel.start(&principal(), id.clone(), spec()).await?;
+    agent::start(&kernel, &principal(), id.clone(), spec()).await?;
 
-    let error = kernel
-        .answer(
-            &principal(),
-            id,
-            spec(),
-            HitlVerdict {
-                tool_call_id: "call-1".to_owned(),
-                option_id: "not-offered".to_owned(),
-            },
-        )
-        .await
-        .err()
-        .unwrap();
+    let error = agent::answer(
+        &kernel,
+        &principal(),
+        &id,
+        HitlVerdict {
+            tool_call_id: "call-1".to_owned(),
+            option_id: "not-offered".to_owned(),
+        },
+    )
+    .await
+    .err()
+    .unwrap();
     assert_eq!(error.code(), ErrorCode::Invalid);
     Ok(())
 }

@@ -104,10 +104,14 @@ What the kernel does guarantee, because these are correctness properties and not
 
 ```text
 crates/
-  nucleos/    contract/ · adapter/ · engine/ · wire/ (envelopes + schema)
-  nucleosd/   router · error mapping · listener
-schema/       the published JSON Schema, committed
+  nucleos/        contract/ · adapter/ · engine/ (syscalls) · wire/
+  nucleos-agent/  the reference loop, built on those syscalls
+  nucleosd/       router · error mapping · listener
+schema/           the published JSON Schema, committed
 ```
+
+`nucleos-agent` depends on `nucleos` and nothing depends on `nucleos-agent` except the daemon:
+the loop is the application's, and the kernel must not learn it.
 
 The module graph inside `nucleos` is one-way: `contract → engine → adapter`, with `wire` beside
 `contract` because it is the same types plus the HTTP envelopes.

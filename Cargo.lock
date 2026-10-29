@@ -262,11 +262,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleos-agent"
+version = "0.0.1-preview"
+dependencies = [
+ "async-trait",
+ "nucleos",
+ "tokio",
+ "tokio-stream",
+]
+
+[[package]]
 name = "nucleosd"
 version = "0.0.1-preview"
 dependencies = [
  "axum",
  "nucleos",
+ "nucleos-agent",
  "serde",
  "serde_json",
  "tokio",

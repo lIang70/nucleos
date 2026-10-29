@@ -897,6 +897,43 @@
       ],
       "type": "object"
     },
+    "InferenceRequest": {
+      "description": "One inference: the messages to send.\n\nThe messages are the caller's, not the session's. What you send is what you get, and whether\nthe answer enters history is the next request's business — which is what makes a verification\nturn possible without polluting the transcript.",
+      "properties": {
+        "messages": {
+          "default": [],
+          "description": "The conversation to send, oldest first. Absent sends nothing.",
+          "items": {
+            "$ref": "#/$defs/Message"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "InferenceResponse": {
+      "description": "What one inference produced.",
+      "properties": {
+        "finish": {
+          "description": "The provider's own reason for stopping.",
+          "type": "string"
+        },
+        "message": {
+          "$ref": "#/$defs/Message",
+          "description": "The assistant message. Nothing has been appended to the session."
+        },
+        "usage": {
+          "$ref": "#/$defs/Usage",
+          "description": "What the session has spent so far."
+        }
+      },
+      "required": [
+        "message",
+        "finish",
+        "usage"
+      ],
+      "type": "object"
+    },
     "Ledger": {
       "description": "Every attempt a call made, and the sum.",
       "properties": {
@@ -1178,6 +1215,32 @@
       },
       "type": "object"
     },
+    "PendingCall": {
+      "description": "A call waiting on a human.\n\nPart of the snapshot because the wait outlives any process: a session parked on a\nconfirmation must be resumable tomorrow, and the call it is holding has to come back with\nit.",
+      "properties": {
+        "call": {
+          "$ref": "#/$defs/ToolCall",
+          "description": "The call that has not run."
+        },
+        "options": {
+          "description": "What may be answered.",
+          "items": {
+            "$ref": "#/$defs/PermissionOption"
+          },
+          "type": "array"
+        },
+        "question": {
+          "description": "What was asked.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "call",
+        "options",
+        "question"
+      ],
+      "type": "object"
+    },
     "PermissionKind": {
       "description": "The kinds of answer a permission request offers.",
       "oneOf": [
@@ -1302,46 +1365,61 @@
       "description": "Where a session is in its life.\n\nThe vocabulary is the session's, not a provider's. `AwaitingHuman` is a state rather\nthan a callback, so a confirmation that arrives three hours later resumes a session\ninstead of reviving a stack frame.",
       "oneOf": [
         {
-          "const": "created",
-          "description": "Allocated, spec not yet applied.",
+          "const": "open",
+          "description": "Accepting calls.",
           "type": "string"
         },
         {
-          "const": "running",
-          "description": "Driving a turn.",
-          "type": "string"
-        },
-        {
-          "const": "awaiting_tool",
-          "description": "A tool call is in flight.",
-          "type": "string"
-        },
-        {
-          "const": "awaiting_human",
-          "description": "Blocked on a human decision.",
-          "type": "string"
-        },
-        {
-          "const": "cancelling",
-          "description": "Stopping: finish the current turn, then checkpoint.",
-          "type": "string"
-        },
-        {
-          "const": "done",
-          "description": "Finished normally.",
-          "type": "string"
-        },
-        {
-          "const": "failed",
-          "description": "Finished with an error.",
-          "type": "string"
-        },
-        {
-          "const": "cancelled",
-          "description": "Stopped on request.",
+          "const": "closed",
+          "description": "Finished. No further call is accepted.",
           "type": "string"
         }
       ]
+    },
+    "SessionView": {
+      "description": "What a session looks like from outside.",
+      "properties": {
+        "inference_calls": {
+          "description": "How many inferences it has made.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "next_seq": {
+          "description": "The cursor a client resumes from.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pending": {
+          "description": "Calls waiting on a human.",
+          "items": {
+            "$ref": "#/$defs/PendingCall"
+          },
+          "type": "array"
+        },
+        "session": {
+          "description": "Its identifier.",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/SessionState",
+          "description": "Whether it still takes calls."
+        },
+        "usage": {
+          "$ref": "#/$defs/Usage",
+          "description": "What it has spent."
+        }
+      },
+      "required": [
+        "session",
+        "state",
+        "next_seq",
+        "inference_calls",
+        "pending",
+        "usage"
+      ],
+      "type": "object"
     },
     "StartRequest": {
       "description": "What a caller must send to create a session.",
@@ -1456,6 +1534,25 @@
       ],
       "type": "object"
     },
+    "StateRequest": {
+      "description": "A write to the session's own state.",
+      "properties": {
+        "data": {
+          "additionalProperties": true,
+          "description": "Keys to set in the application's opaque state.",
+          "type": "object"
+        },
+        "messages": {
+          "default": [],
+          "description": "Messages to append to the conversation.",
+          "items": {
+            "$ref": "#/$defs/Message"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
     "StopReason": {
       "description": "Why a session stopped.\n\nFour layers, all present: a provider's `finish_reason`, the step cap, the wall clock,\nand the cost ledger. Each alone can be defeated; together they cannot.",
       "oneOf": [
@@ -1511,6 +1608,36 @@
       },
       "required": [
         "text"
+      ],
+      "type": "object"
+    },
+    "ToolBatchRequest": {
+      "description": "A batch of tool calls.",
+      "properties": {
+        "calls": {
+          "default": [],
+          "description": "The calls to run. Policy is asked about all of them before any runs.",
+          "items": {
+            "$ref": "#/$defs/ToolCall"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "ToolBatchResponse": {
+      "description": "What the batch produced.\n\nA failure is a result with `is_error`, not an HTTP error: the model reads why and decides.",
+      "properties": {
+        "results": {
+          "description": "One result per call, in order.",
+          "items": {
+            "$ref": "#/$defs/ToolResult"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "results"
       ],
       "type": "object"
     },
@@ -1659,6 +1786,14 @@
       "$ref": "#/$defs/Event",
       "description": "What one `GET /v1/sessions/{id}/events` frame carries.\n\nThere is no frame *type*: a server-sent event already gives the type (`event:`) and the\ncursor (`id:`), and a second type restating them is a second truth."
     },
+    "inference_request": {
+      "$ref": "#/$defs/InferenceRequest",
+      "description": "`POST /v1/sessions/{id}/inference`."
+    },
+    "inference_response": {
+      "$ref": "#/$defs/InferenceResponse",
+      "description": "What that returns."
+    },
     "ledger": {
       "$ref": "#/$defs/Ledger",
       "description": "What a call cost, attempt by attempt."
@@ -1667,12 +1802,28 @@
       "$ref": "#/$defs/Message",
       "description": "The conversation model, for a client that sends `initial` messages."
     },
+    "session_view": {
+      "$ref": "#/$defs/SessionView",
+      "description": "`GET /v1/sessions/{id}`."
+    },
     "start_request": {
       "$ref": "#/$defs/StartRequest",
       "description": "`POST /v1/sessions`."
     },
     "start_response": {
       "$ref": "#/$defs/StartResponse",
+      "description": "What that returns."
+    },
+    "state_request": {
+      "$ref": "#/$defs/StateRequest",
+      "description": "`POST /v1/sessions/{id}/state`."
+    },
+    "tool_batch_request": {
+      "$ref": "#/$defs/ToolBatchRequest",
+      "description": "`POST /v1/sessions/{id}/tools`."
+    },
+    "tool_batch_response": {
+      "$ref": "#/$defs/ToolBatchResponse",
       "description": "What that returns."
     },
     "verdict_request": {
@@ -1688,7 +1839,13 @@
     "verdict_request",
     "error",
     "message",
-    "ledger"
+    "ledger",
+    "inference_request",
+    "inference_response",
+    "tool_batch_request",
+    "tool_batch_response",
+    "state_request",
+    "session_view"
   ],
   "title": "nucleos.v1",
   "type": "object"

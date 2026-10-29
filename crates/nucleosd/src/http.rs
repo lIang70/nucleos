@@ -1,7 +1,12 @@
-//! The HTTP surface: a thin translation of the kernel onto the wire.
+//! The HTTP surface: the kernel's syscalls, and one convenience endpoint that drives them.
 //!
-//! Nothing here decides anything. It parses a request into kernel types, calls the kernel, and
-//! serializes what came back — which is why no handler contains a branch that changes behaviour.
+//! Nothing here decides anything. Each handler loads the session from its checkpoint, calls one
+//! syscall, and serializes what came back — which is why no handler contains a branch that
+//! changes behaviour.
+//!
+//! Loading per request is not a shortcut: every syscall may be served by a different process, so
+//! the checkpoint is the session, and a handler that kept one in memory would be the only thing
+//! that could disagree with it.
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -9,11 +14,13 @@ use axum::response::sse::{Event as SseEvent, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use nucleos::contract::{ErrorCode, Principal, SessionId};
-use nucleos::engine::{HitlVerdict, Kernel, SessionSpec};
+use nucleos::contract::{ErrorCode, Principal, SessionId, SessionState};
+use nucleos::engine::{HitlVerdict, Kernel, SessionSpec, StateWrite};
 use nucleos::wire::api::{
-    DescribeResponse, ErrorBody, StartRequest, StartResponse, VerdictRequest,
+    DescribeResponse, ErrorBody, InferenceRequest, InferenceResponse, SessionView, StartRequest,
+    StartResponse, StateRequest, ToolBatchRequest, ToolBatchResponse, VerdictRequest,
 };
+use nucleos_agent as agent;
 use std::convert::Infallible;
 use std::sync::Arc;
 use tokio_stream::StreamExt;
@@ -28,8 +35,7 @@ pub struct App {
     /// The principal every call is attributed to.
     ///
     /// Single-tenant for now. The unix socket's peer credentials are the authentication this
-    /// daemon can honestly claim; deriving a principal from them is the next slice, and inventing
-    /// a token scheme before that would be a promise it cannot keep.
+    /// daemon can honestly claim; deriving a principal from them is the next slice.
     principal: Principal,
     models: Vec<String>,
 }
@@ -71,7 +77,15 @@ impl App {
 pub fn router(app: Arc<App>) -> Router {
     Router::new()
         .route("/v1/describe", get(describe))
-        .route("/v1/sessions", post(start))
+        // The driver: one call that runs the reference loop to completion.
+        .route("/v1/agents", post(run_agent))
+        // The syscalls: one call each, in the order the caller chooses.
+        .route("/v1/sessions", post(open))
+        .route("/v1/sessions/{id}", get(view))
+        .route("/v1/sessions/{id}/inference", post(inference))
+        .route("/v1/sessions/{id}/tools", post(tools))
+        .route("/v1/sessions/{id}/state", post(append))
+        .route("/v1/sessions/{id}/close", post(close))
         .route("/v1/sessions/{id}/verdict", post(verdict))
         .route("/v1/sessions/{id}/events", get(events))
         .with_state(app)
@@ -85,7 +99,8 @@ async fn describe(State(app): State<Arc<App>>) -> Json<DescribeResponse> {
     })
 }
 
-async fn start(
+/// Open a session and run the reference loop to completion.
+async fn run_agent(
     State(app): State<Arc<App>>,
     Json(request): Json<StartRequest>,
 ) -> Result<Json<StartResponse>, ApiError> {
@@ -93,12 +108,131 @@ async fn start(
     let spec: SessionSpec = request.clone().into();
     let id = SessionId::new(request.session_id());
     let outcome = if request.resume {
-        kernel.resume(&app.principal, id, spec).await
+        agent::resume(&kernel, &app.principal, &id).await
     } else {
-        kernel.start(&app.principal, id, spec).await
+        agent::start(&kernel, &app.principal, id, spec).await
     }
     .map_err(|error| ApiError::from_error(&error))?;
     Ok(Json(StartResponse::from(&outcome)))
+}
+
+/// Open a session without driving it.
+async fn open(
+    State(app): State<Arc<App>>,
+    Json(request): Json<StartRequest>,
+) -> Result<Json<StartResponse>, ApiError> {
+    let kernel = app.kernel()?.clone();
+    let spec: SessionSpec = request.clone().into();
+    let session = kernel
+        .open(&app.principal, SessionId::new(request.session_id()), spec)
+        .await
+        .map_err(|error| ApiError::from_error(&error))?;
+    Ok(Json(StartResponse {
+        session: session.id().as_str().to_owned(),
+        state: SessionState::Open,
+        stop: None,
+        next_seq: session.next_seq(),
+    }))
+}
+
+async fn view(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+) -> Result<Json<SessionView>, ApiError> {
+    let kernel = app.kernel()?.clone();
+    let session = load(&kernel, &app, &id).await?;
+    Ok(Json(SessionView {
+        session: session.id().as_str().to_owned(),
+        state: if session.is_closed() {
+            SessionState::Closed
+        } else {
+            SessionState::Open
+        },
+        next_seq: session.next_seq(),
+        inference_calls: session.inference_calls(),
+        pending: session.pending().to_vec(),
+        usage: session.usage().clone(),
+    }))
+}
+
+async fn inference(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+    Json(request): Json<InferenceRequest>,
+) -> Result<Json<InferenceResponse>, ApiError> {
+    let kernel = app.kernel()?.clone();
+    let mut session = load(&kernel, &app, &id).await?;
+    let outcome = kernel
+        .inference(&mut session, &request.messages)
+        .await
+        .map_err(|error| ApiError::from_error(&error))?;
+    Ok(Json(InferenceResponse {
+        message: outcome.message,
+        finish: format!("{:?}", outcome.finish).to_lowercase(),
+        usage: outcome.usage,
+    }))
+}
+
+async fn tools(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+    Json(request): Json<ToolBatchRequest>,
+) -> Result<Json<ToolBatchResponse>, ApiError> {
+    let kernel = app.kernel()?.clone();
+    let mut session = load(&kernel, &app, &id).await?;
+    let outputs = kernel
+        .invoke_tools(&mut session, &request.calls)
+        .await
+        .map_err(|error| ApiError::from_error(&error))?;
+    Ok(Json(ToolBatchResponse {
+        results: outputs
+            .into_iter()
+            .zip(&request.calls)
+            .map(|(output, call)| nucleos::contract::ToolResult {
+                call_id: call.id.clone(),
+                content: output.content,
+                is_error: output.is_error,
+            })
+            .collect(),
+    }))
+}
+
+async fn append(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+    Json(request): Json<StateRequest>,
+) -> Result<StatusCode, ApiError> {
+    let kernel = app.kernel()?.clone();
+    let mut session = load(&kernel, &app, &id).await?;
+    kernel
+        .append(
+            &mut session,
+            StateWrite {
+                messages: request.messages,
+                data: request.data,
+            },
+        )
+        .await
+        .map_err(|error| ApiError::from_error(&error))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn close(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+) -> Result<Json<StartResponse>, ApiError> {
+    let kernel = app.kernel()?.clone();
+    let mut session = load(&kernel, &app, &id).await?;
+    kernel
+        .close(&mut session, nucleos::contract::StopReason::Cancelled)
+        .await
+        .map_err(|error| ApiError::from_error(&error))?;
+    Ok(Json(StartResponse {
+        session: session.id().as_str().to_owned(),
+        state: SessionState::Closed,
+        stop: Some(nucleos::contract::StopReason::Cancelled),
+        next_seq: session.next_seq(),
+    }))
 }
 
 async fn verdict(
@@ -107,18 +241,17 @@ async fn verdict(
     Json(request): Json<VerdictRequest>,
 ) -> Result<Json<StartResponse>, ApiError> {
     let kernel = app.kernel()?.clone();
-    let outcome = kernel
-        .answer(
-            &app.principal,
-            SessionId::new(id),
-            SessionSpec::default(),
-            HitlVerdict {
-                tool_call_id: request.tool_call_id,
-                option_id: request.option_id,
-            },
-        )
-        .await
-        .map_err(|error| ApiError::from_error(&error))?;
+    let outcome = agent::answer(
+        &kernel,
+        &app.principal,
+        &SessionId::new(id),
+        HitlVerdict {
+            tool_call_id: request.tool_call_id,
+            option_id: request.option_id,
+        },
+    )
+    .await
+    .map_err(|error| ApiError::from_error(&error))?;
     Ok(Json(StartResponse::from(&outcome)))
 }
 
@@ -159,6 +292,13 @@ async fn events(
         Ok(frame)
     });
     Ok(Sse::new(stream))
+}
+
+async fn load(kernel: &Kernel, app: &App, id: &str) -> Result<nucleos::engine::Session, ApiError> {
+    kernel
+        .load(&app.principal, &SessionId::new(id))
+        .await
+        .map_err(|error| ApiError::from_error(&error))
 }
 
 /// A failure, as the wire carries it.

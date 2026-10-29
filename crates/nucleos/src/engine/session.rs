@@ -8,7 +8,7 @@ use crate::contract::{
     Budget, Generation, Ledger, Message, PendingCall, Principal, SessionId, SessionState, Snapshot,
     Usage,
 };
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 /// A session in flight.
 ///
@@ -16,35 +16,99 @@ use crate::error::{Error, Result};
 /// makes checkpointing unambiguous: the writer knows when the state is settled because it *is*
 /// the only writer, and it is standing at a turn boundary.
 #[derive(Debug)]
-pub(crate) struct Session {
-    pub id: SessionId,
+pub struct Session {
+    pub(crate) id: SessionId,
     /// Who is asking. Carried for every policy gate, and never derived from a request field.
-    pub principal: Principal,
-    pub generation: Generation,
-    pub state: SessionState,
-    pub messages: Vec<Message>,
-    pub usage: Usage,
-    pub steps: u64,
-    pub ledger: Ledger,
+    pub(crate) principal: Principal,
+    pub(crate) generation: Generation,
+    pub(crate) state: SessionState,
+    pub(crate) messages: Vec<Message>,
+    pub(crate) usage: Usage,
+    pub(crate) steps: u64,
+    pub(crate) ledger: Ledger,
     /// Tokens the caller has granted and not yet spent.
-    pub credit_tokens: u64,
-    pub budget: Budget,
-    pub started_unix_millis: u64,
+    pub(crate) credit_tokens: u64,
+    pub(crate) budget: Budget,
+    pub(crate) started_unix_millis: u64,
     /// The next event's sequence number.
-    pub seq: u64,
-    /// The call this session is parked on, when it is parked.
-    pub pending: Option<PendingCall>,
+    pub(crate) seq: u64,
+    /// Calls waiting on a human. A batch can have several.
+    pub(crate) pending: Vec<PendingCall>,
+    /// The application's own state, opaque to the kernel.
+    pub(crate) data: std::collections::BTreeMap<String, serde_json::Value>,
+    /// The route this session was started with.
+    pub(crate) routing: crate::contract::Routing,
     /// Extra attempts per route target, resolved when the session started.
-    pub retries: u32,
+    pub(crate) retries: u32,
     /// What the caller asked for, kept for building each request.
-    pub params: crate::adapter::GenerateParams,
+    pub(crate) params: crate::adapter::GenerateParams,
     /// Standing instructions.
-    pub system: Option<String>,
+    pub(crate) system: Option<String>,
     /// Tool names this session may use. Empty means every registered tool.
-    pub tools: Vec<String>,
+    pub(crate) tools: Vec<String>,
 }
 
 impl Session {
+    /// The identifier.
+    #[must_use]
+    pub fn id(&self) -> &SessionId {
+        &self.id
+    }
+
+    /// The conversation as the kernel has it.
+    #[must_use]
+    pub fn messages(&self) -> &[Message] {
+        &self.messages
+    }
+
+    /// Calls waiting on a human.
+    #[must_use]
+    pub fn pending(&self) -> &[PendingCall] {
+        &self.pending
+    }
+
+    /// Whether the session takes further calls.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.state.is_closed()
+    }
+
+    /// The application's own state.
+    #[must_use]
+    pub fn data(&self) -> &std::collections::BTreeMap<String, serde_json::Value> {
+        &self.data
+    }
+
+    /// The route in force.
+    #[must_use]
+    pub fn routing(&self) -> &crate::contract::Routing {
+        &self.routing
+    }
+
+    /// How many inference calls have been made.
+    #[must_use]
+    pub fn inference_calls(&self) -> u64 {
+        self.steps
+    }
+
+    /// What it has spent.
+    #[must_use]
+    pub fn usage(&self) -> &Usage {
+        &self.usage
+    }
+
+    /// Every attempt, in order, with the sum.
+    #[must_use]
+    pub fn ledger(&self) -> &Ledger {
+        &self.ledger
+    }
+
+    /// The next event sequence number.
+    #[must_use]
+    pub fn next_seq(&self) -> u64 {
+        self.seq
+    }
+
     pub(crate) fn new(
         id: SessionId,
         principal: Principal,
@@ -57,7 +121,7 @@ impl Session {
             id,
             principal,
             generation,
-            state: SessionState::Created,
+            state: SessionState::Open,
             messages: Vec::new(),
             usage: Usage::default(),
             steps: 0,
@@ -66,7 +130,9 @@ impl Session {
             budget,
             started_unix_millis: now_unix_millis,
             seq: 0,
-            pending: None,
+            pending: Vec::new(),
+            data: std::collections::BTreeMap::new(),
+            routing: crate::contract::Routing::default(),
             retries: 0,
             params: crate::adapter::GenerateParams::default(),
             system: None,
@@ -74,27 +140,16 @@ impl Session {
         }
     }
 
-    /// Move to a state, if the move is legal.
+    /// Close the session. Calls after this are refused.
     ///
-    /// Returns `false` when nothing changed, so the caller only emits an event on a real
-    /// transition. A state machine that reports transitions it did not make is worse than none.
-    pub(crate) fn transition(&mut self, to: SessionState) -> Result<bool> {
-        if self.state == to {
+    /// There is no transition table any more: with the loop in the application, the kernel knows
+    /// two facts about a session — it takes calls, or it does not. The eight states that used to
+    /// live here were the loop's vocabulary, and the kernel no longer runs the loop.
+    pub(crate) fn close(&mut self) -> Result<bool> {
+        if self.state == SessionState::Closed {
             return Ok(false);
         }
-        if self.state.is_terminal() {
-            return Err(Error::internal(format!(
-                "session {} is {:?} and cannot move to {to:?}",
-                self.id, self.state
-            )));
-        }
-        if !legal(self.state, to) {
-            return Err(Error::internal(format!(
-                "illegal transition {:?} -> {to:?}",
-                self.state
-            )));
-        }
-        self.state = to;
+        self.state = SessionState::Closed;
         Ok(true)
     }
 
@@ -102,7 +157,7 @@ impl Session {
     ///
     /// Checked before a turn rather than during one: a turn that starts with no room left is a
     /// turn whose output has to be thrown away.
-    pub(crate) fn exhausted(&self, now_unix_millis: u64) -> Option<crate::contract::StopReason> {
+    pub fn exhausted(&self, now_unix_millis: u64) -> Option<crate::contract::StopReason> {
         use crate::contract::StopReason;
         if let Some(max) = self.budget.max_steps
             && self.steps >= max
@@ -145,8 +200,14 @@ impl Session {
             state: self.state,
             messages: self.messages.clone(),
             usage: self.usage.clone(),
-            steps: self.steps,
+            inference_calls: self.steps,
+            credit_tokens: self.credit_tokens,
             pending: self.pending.clone(),
+            routing: self.routing.clone(),
+            system: self.system.clone(),
+            tools: self.tools.clone(),
+            params: self.params.clone(),
+            data: self.data.clone(),
         })
     }
 
@@ -155,7 +216,6 @@ impl Session {
         snapshot: Snapshot,
         principal: Principal,
         budget: Budget,
-        credit_tokens: u64,
         now_unix_millis: u64,
     ) -> Self {
         Self {
@@ -165,9 +225,9 @@ impl Session {
             state: snapshot.state,
             messages: snapshot.messages,
             usage: snapshot.usage,
-            steps: snapshot.steps,
+            steps: snapshot.inference_calls,
+            credit_tokens: snapshot.credit_tokens,
             ledger: Ledger::default(),
-            credit_tokens,
             budget,
             // A resumed session's wall clock starts now: the time a paused session spent
             // waiting for a human is not the model's latency, and charging it would make every
@@ -176,38 +236,14 @@ impl Session {
             // The next event continues the log; the snapshot's `seq` is the last one included.
             seq: snapshot.seq.saturating_add(1),
             pending: snapshot.pending,
+            data: snapshot.data,
+            routing: snapshot.routing,
             retries: 0,
-            params: crate::adapter::GenerateParams::default(),
-            system: None,
-            tools: Vec::new(),
+            params: snapshot.params,
+            system: snapshot.system,
+            tools: snapshot.tools,
         }
     }
-}
-
-/// Which transitions exist.
-fn legal(from: SessionState, to: SessionState) -> bool {
-    use SessionState::{
-        AwaitingHuman, AwaitingTool, Cancelled, Cancelling, Created, Done, Failed, Running,
-    };
-    matches!(
-        (from, to),
-        (Created, Running)
-            | (Created, Cancelled)
-            | (Running, Running)
-            | (Running, AwaitingTool)
-            | (Running, AwaitingHuman)
-            | (Running, Cancelling)
-            | (Running, Done)
-            | (Running, Failed)
-            | (AwaitingTool, Running)
-            | (AwaitingTool, AwaitingHuman)
-            | (AwaitingTool, Failed)
-            | (AwaitingHuman, Running)
-            | (AwaitingHuman, Cancelling)
-            | (Cancelling, Done)
-            | (Cancelling, Cancelled)
-            | (Cancelling, Failed)
-    )
 }
 
 #[cfg(test)]
@@ -230,19 +266,11 @@ mod tests {
     }
 
     #[test]
-    fn a_terminal_state_is_terminal() {
+    fn closing_is_idempotent_and_final() {
         let mut session = session();
-        session.transition(SessionState::Running).unwrap();
-        session.transition(SessionState::Done).unwrap();
-        let error = session.transition(SessionState::Running).unwrap_err();
-        assert!(error.reason().contains("cannot move"));
-    }
-
-    #[test]
-    fn a_skipped_transition_is_refused() {
-        let mut session = session();
-        let error = session.transition(SessionState::Done).unwrap_err();
-        assert!(error.reason().contains("illegal transition"));
+        assert!(session.close().unwrap(), "the first close is a change");
+        assert!(!session.close().unwrap(), "the second is not");
+        assert!(session.state.is_closed());
     }
 
     #[test]

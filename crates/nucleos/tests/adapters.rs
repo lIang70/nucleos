@@ -352,11 +352,17 @@ async fn a_snapshot_cannot_claim_more_than_the_log_holds() -> Result<()> {
         session: session.clone(),
         seq: 3,
         generation: nucleos::Generation(1),
-        state: SessionState::Running,
+        state: SessionState::Open,
         messages: Vec::new(),
         usage: Usage::default(),
-        steps: 1,
-        pending: None,
+        inference_calls: 1,
+        credit_tokens: 1_000,
+        pending: Vec::new(),
+        routing: Default::default(),
+        system: None,
+        tools: Vec::new(),
+        params: Default::default(),
+        data: Default::default(),
     };
 
     let error = store.write_snapshot(snapshot).await.unwrap_err();
@@ -381,15 +387,21 @@ async fn a_valid_snapshot_round_trips() -> Result<()> {
             session: session.clone(),
             seq: 0,
             generation: nucleos::Generation(7),
-            state: SessionState::Done,
+            state: SessionState::Closed,
             messages: vec![message.clone()],
             usage: Usage {
                 input_tokens: 10,
                 output_tokens: 2,
                 micros_usd: Some(42),
             },
-            steps: 1,
-            pending: None,
+            inference_calls: 1,
+            credit_tokens: 1_000,
+            pending: Vec::new(),
+            routing: Default::default(),
+            system: None,
+            tools: Vec::new(),
+            params: Default::default(),
+            data: Default::default(),
         })
         .await?;
 
@@ -504,7 +516,7 @@ fn an_event_reports_a_routable_type() {
     assert_eq!(event.kind.type_name(), "nucleos.v1.text_delta");
 
     let terminal = EventKind::StateChanged {
-        state: SessionState::Done,
+        state: SessionState::Closed,
         stop: Some(StopReason::Completed),
     };
     assert_eq!(terminal.type_name(), "nucleos.v1.state_changed");

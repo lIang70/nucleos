@@ -104,6 +104,7 @@ impl Kernel {
     pub(crate) async fn call_model(
         &self,
         session: &mut Session,
+        messages: &[Message],
         targets: &[(String, Arc<dyn Model>)],
     ) -> Result<CallResult> {
         let retries = session.retries;
@@ -147,7 +148,7 @@ impl Kernel {
                 let started = self.now();
 
                 match self
-                    .invoke_once(session, model, name, attempt_index)
+                    .invoke_once(session, messages, model, name, attempt_index)
                     .await?
                 {
                     Ending::Answered {
@@ -215,11 +216,12 @@ impl Kernel {
     async fn invoke_once(
         &self,
         session: &mut Session,
+        messages: &[Message],
         model: &Arc<dyn Model>,
         name: &str,
         attempt_index: u32,
     ) -> Result<Ending> {
-        let request = self.build_request(session);
+        let request = self.build_request(session, messages);
         let mut stream = match model.invoke(request).await {
             Ok(stream) => stream,
             Err(error) => {
@@ -338,10 +340,14 @@ impl Kernel {
     }
 
     /// What this turn is asking for.
-    fn build_request(&self, session: &Session) -> ModelRequest {
+    ///
+    /// The messages come from the caller, not from the session: an inference is a pure call —
+    /// what you send is what you get, and whether the answer enters history is the caller's
+    /// decision. That is what makes a verification turn possible without polluting the transcript.
+    fn build_request(&self, session: &Session, messages: &[Message]) -> ModelRequest {
         ModelRequest {
             system: session.system.clone(),
-            messages: session.messages.clone(),
+            messages: messages.to_vec(),
             tools: self.tool_specs(session),
             params: session.params.clone(),
             purpose: Purpose::Answer,
@@ -352,13 +358,5 @@ impl Kernel {
     fn debit(&self, session: &mut Session, usage: &Usage) {
         session.usage.add(usage);
         session.credit_tokens = session.credit_tokens.saturating_sub(usage.total_tokens());
-    }
-
-    /// The wall-clock deadline a call inherits from the session.
-    fn deadline(&self, session: &Session) -> u64 {
-        match session.budget.max_wall_millis {
-            Some(max) => session.started_unix_millis.saturating_add(max),
-            None => u64::MAX,
-        }
     }
 }
