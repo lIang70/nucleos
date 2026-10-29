@@ -50,6 +50,18 @@ pub struct Abi {
     pub state_request: api::StateRequest,
     /// `GET /v1/sessions/{id}`.
     pub session_view: api::SessionView,
+    /// `POST /v1/processes`.
+    pub process_start_request: api::ProcessStartRequest,
+    /// What that answers with.
+    pub process_start_response: api::ProcessStartResponse,
+    /// `POST /v1/sessions/{id}/stdin`.
+    pub stdin_request: api::StdinRequest,
+    /// `POST /v1/sessions/{id}/configure`.
+    pub config_patch: k::ConfigPatch,
+    /// What that returns.
+    pub configure_response: api::ConfigureResponse,
+    /// Adapter hints, which a session may change while it runs.
+    pub hints: k::Hints,
     /// `POST /v1/sessions/{id}/exec`.
     pub exec_request: api::ExecRequest,
     /// What a command answers with.

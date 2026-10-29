@@ -30,8 +30,10 @@ as the goals.
 
 ```text
 crates/
-  nucleos/    the kernel library — contracts, kernel (syscalls), adapters, wire
-  nucleosd/   the daemon — router, error mapping, listener
+  nucleos/         the kernel library — contracts, kernel (syscalls), adapters, wire
+  nucleos-agent/   the reference loop, built on those syscalls
+  nucleos-openai/  one provider adapter (the whole OpenAI-compatible family)
+  nucleosd/        the daemon — router, error mapping, listener
 schema/       the published JSON Schema, committed
 docs/         design documents
 ```

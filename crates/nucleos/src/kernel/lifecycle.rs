@@ -23,11 +23,9 @@ impl Kernel {
             spec.credit_tokens,
             now,
         );
-        session.routing = spec.routing.clone().unwrap_or_else(|| self.routing.clone());
+        // The kernel's default route, then whatever the caller asked to start from.
+        session.routing = self.routing.clone();
         session.retries = session.routing.retries.max(self.retries);
-        session.params = spec.params.clone();
-        session.system = spec.system.clone();
-        session.tools = spec.tools.clone();
         session.workspace = spec.workspace.clone();
         session.sandbox = spec.sandbox.clone();
         session.kind = spec.kind;
@@ -47,9 +45,10 @@ impl Kernel {
             (crate::contract::SessionKind::Agent, _) => None,
         };
         session.messages = spec.initial.clone();
-        // Fail before anything is recorded: a route naming a model that does not exist is a
-        // configuration error, not a session that fails on its first turn. A process session has
-        // no route — validating one it will never use would make it refuse to start over a model.
+        // The same path `configure` uses, so a session can start in any state it could later be
+        // changed into. A process session has no route — validating one it will never use would
+        // make it refuse to start over a model.
+        self.apply_patch(&mut session, &spec.config)?;
         if session.kind == crate::contract::SessionKind::Agent {
             self.models.resolve(&session.routing)?;
         }

@@ -365,6 +365,7 @@ async fn a_snapshot_cannot_claim_more_than_the_log_holds() -> Result<()> {
         data: Default::default(),
         workspace: None,
         sandbox: Default::default(),
+        hints: Default::default(),
         kind: Default::default(),
         process: None,
     };
@@ -408,6 +409,7 @@ async fn a_valid_snapshot_round_trips() -> Result<()> {
             data: Default::default(),
             workspace: None,
             sandbox: Default::default(),
+            hints: Default::default(),
             kind: Default::default(),
             process: None,
         })

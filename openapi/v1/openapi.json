@@ -197,6 +197,78 @@
         },
         "type": "object"
       },
+      "ConfigPatch": {
+        "description": "A partial update to a session's mutable configuration.\n\nThe wiring — kind, sandbox, workspace — is not here, because it is decided when the session\nopens and is not the application's to change while it runs. Everything in this struct is\ncontent or strategy, and every field is optional: absent means unchanged, `null` (where the\nfield is doubly optional) means cleared.",
+        "properties": {
+          "hints": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Hints"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Adapter hints. Merged field by field."
+          },
+          "params": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GenerateParams"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Generation parameters. Replaces the whole block, because every field is already optional."
+          },
+          "routing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Routing"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The route this session takes. Absent means unchanged."
+          },
+          "system": {
+            "description": "Standing instructions. `Some(None)` clears them.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tools": {
+            "description": "The tool allow-list. Empty means every registered tool.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "ConfigureResponse": {
+        "description": "What a `configure` call changed.",
+        "properties": {
+          "changed": {
+            "description": "The fields that actually changed, in the order they were applied.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "changed"
+        ],
+        "type": "object"
+      },
       "Content": {
         "description": "An ordered multimodal payload.",
         "properties": {
@@ -626,6 +698,24 @@
             "type": "object"
           },
           {
+            "description": "The session's mutable configuration changed.\n\nRecorded because a replay has to know which system prompt was in force at turn 42; without\nit, the log would rebuild a conversation that never happened.",
+            "properties": {
+              "kind": {
+                "const": "session_configured",
+                "type": "string"
+              },
+              "patch": {
+                "$ref": "#/components/schemas/ConfigPatch",
+                "description": "What changed, field by field."
+              }
+            },
+            "required": [
+              "kind",
+              "patch"
+            ],
+            "type": "object"
+          },
+          {
             "$ref": "#/components/schemas/Degraded",
             "description": "A field the provider could not honour.\n\nReported, never swallowed: a `tool_choice = Required` that quietly became `Auto` is a\nsession behaving differently than it was configured to.",
             "properties": {
@@ -1033,64 +1123,145 @@
         ],
         "type": "object"
       },
-      "Format": {
-        "description": "The shape the answer must have.",
-        "oneOf": [
-          {
-            "description": "Prose.",
-            "properties": {
-              "kind": {
-                "const": "text",
-                "type": "string"
-              }
+      "GenerateParams": {
+        "description": "What the caller wants from one call.\n\nEvery field is carried, not decided: the kernel has no opinion about sampling. They live\nhere rather than as a bag of extras because a bag is a second extension hatch, and these are\nthe parameters every provider has.",
+        "properties": {
+          "format": {
+            "$ref": "#/components/schemas/TextFormat",
+            "default": {
+              "kind": "text"
             },
-            "required": [
-              "kind"
-            ],
-            "type": "object"
+            "description": "The shape the answer must have."
           },
-          {
-            "description": "A JSON object, schema unchecked.",
-            "properties": {
-              "kind": {
-                "const": "json_object",
-                "type": "string"
-              }
-            },
-            "required": [
-              "kind"
-            ],
-            "type": "object"
+          "max_output_tokens": {
+            "description": "The completion ceiling.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
           },
-          {
-            "description": "A JSON object that must match the schema.",
-            "properties": {
-              "kind": {
-                "const": "json_schema",
-                "type": "string"
+          "parallel_tool_calls": {
+            "description": "Whether one turn may call several tools at once.\n\nIn the contract rather than in an adapter because the *kernel* acts on it: `invoke_tools`\nfans a batch out concurrently. A provider that forbids it and a kernel that does it anyway\nwould disagree about what happened in a turn.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "reasoning_effort": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReasoningEffort"
               },
-              "name": {
-                "description": "The name the provider files it under.",
-                "type": "string"
-              },
-              "schema": {
-                "description": "The schema, as a JSON object."
+              {
+                "type": "null"
               }
-            },
-            "required": [
-              "kind",
-              "name",
-              "schema"
             ],
-            "type": "object"
+            "description": "Reasoning effort, for models that expose one."
+          },
+          "stop": {
+            "description": "Sequences that end the completion.\n\nNot every provider has this — the OpenAI Responses API rejects it outright — so an adapter\nthat cannot send it reports a [`Degraded`] rather than dropping it in silence.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "temperature": {
+            "description": "Sampling temperature.",
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "tool_choice": {
+            "$ref": "#/components/schemas/ToolChoice",
+            "default": "auto",
+            "description": "How to choose among tools."
+          },
+          "top_p": {
+            "description": "Nucleus sampling.",
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
           }
-        ]
+        },
+        "type": "object"
       },
       "Generation": {
         "description": "A tool-source generation.\n\nGenerations are immutable snapshots of the declared sources. A session is pinned to\none at start and may only move forward at a turn boundary, and only when the two\ngenerations are compatible.",
         "format": "uint64",
         "minimum": 0,
         "type": "integer"
+      },
+      "Hints": {
+        "description": "Preferences an adapter may honour, and must report when it cannot.\n\nSeparate from [`GenerateParams`] because these change while a session runs — a conversation\nthat is filling its window wants less prose, and a review turn wants more detail — and because\nthey are *hints*: an adapter that has no channel for one reports a [`Degraded`] rather than\nfailing the call.",
+        "properties": {
+          "max_tool_calls": {
+            "description": "A ceiling on tool calls in one response.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Labels the provider echoes back, up to sixteen.",
+            "type": "object"
+          },
+          "reasoning_summary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Summary"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How much of the reasoning to summarise."
+          },
+          "service_tier": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ServiceTier"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The cost/latency trade this session prefers."
+          },
+          "truncation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Truncation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What to do when the conversation does not fit."
+          },
+          "verbosity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Verbosity"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How much prose an answer should carry."
+          }
+        },
+        "type": "object"
       },
       "ImagePart": {
         "description": "An image.",
@@ -1266,70 +1437,6 @@
         "required": [
           "text"
         ],
-        "type": "object"
-      },
-      "Params": {
-        "description": "Generation parameters, as the wire carries them.\n\nMirrors `crate::adapter::GenerateParams`, but as a `#[serde(default)]`-friendly struct:\na caller should be able to send `{}` and get the defaults, which is not true of the kernel's\ntype because its `TextFormat` is an enum.",
-        "properties": {
-          "format": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/Format"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "`text`, `json_object`, or a JSON Schema object to conform to."
-          },
-          "max_output_tokens": {
-            "description": "The completion ceiling.",
-            "format": "uint32",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "reasoning_effort": {
-            "description": "Reasoning effort, for models that expose one.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "stop": {
-            "default": [],
-            "description": "Sequences that end the completion.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "temperature": {
-            "description": "Sampling temperature.",
-            "format": "float",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "tool_choice": {
-            "description": "`auto`, `required` or `none`.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "top_p": {
-            "description": "Nucleus sampling.",
-            "format": "float",
-            "type": [
-              "number",
-              "null"
-            ]
-          }
-        },
         "type": "object"
       },
       "Part": {
@@ -1551,6 +1658,96 @@
         ],
         "type": "object"
       },
+      "ProcessStartRequest": {
+        "description": "A command to start as a process session.",
+        "properties": {
+          "argv": {
+            "description": "The command line. No shell by default: an argv cannot be word-split by accident.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cwd": {
+            "description": "Where to run it. Absent means the workspace below.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "env": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Environment to add.",
+            "type": "object"
+          },
+          "permissions": {
+            "$ref": "#/components/schemas/SandboxPermissions",
+            "default": {
+              "kind": "use_default"
+            },
+            "description": "What to ask for on top of the session's policy."
+          },
+          "sandbox": {
+            "$ref": "#/components/schemas/SandboxSettings",
+            "default": {
+              "policy": {
+                "kind": "workspace_write",
+                "network_access": false
+              }
+            },
+            "description": "What its commands may touch. Set here because a process session is created by this call."
+          },
+          "timeout_millis": {
+            "description": "A wall-clock ceiling, in milliseconds.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "argv"
+        ],
+        "type": "object"
+      },
+      "ProcessStartResponse": {
+        "description": "What starting a process answered with.",
+        "properties": {
+          "next_seq": {
+            "description": "The cursor a client reads its output from.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pid": {
+            "description": "The pid, when the platform gave one.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "session": {
+            "description": "The session that owns it.",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ProcessStatus",
+            "description": "Where it is now."
+          }
+        },
+        "required": [
+          "session",
+          "state",
+          "next_seq"
+        ],
+        "type": "object"
+      },
       "ProcessState": {
         "description": "A process session's state.",
         "properties": {
@@ -1658,6 +1855,31 @@
           }
         ]
       },
+      "ReasoningEffort": {
+        "description": "How hard a reasoning model should think.",
+        "oneOf": [
+          {
+            "const": "minimal",
+            "description": "Barely.",
+            "type": "string"
+          },
+          {
+            "const": "low",
+            "description": "A little.",
+            "type": "string"
+          },
+          {
+            "const": "medium",
+            "description": "Normal.",
+            "type": "string"
+          },
+          {
+            "const": "high",
+            "description": "As much as it costs.",
+            "type": "string"
+          }
+        ]
+      },
       "ReasoningPart": {
         "description": "One provider reasoning trace.\n\n`signature` is why this is not a plain string: some providers sign a reasoning block and\nreject the next turn when the signature is not returned verbatim. Dropping it turns a\nmulti-turn session into a failure on turn two. `id` and `source` exist for the same\nreason — they are opaque to the kernel and must round-trip.",
         "properties": {
@@ -1710,6 +1932,29 @@
             "type": "string"
           }
         ]
+      },
+      "Routing": {
+        "description": "The route a call takes, in order.\n\nA chain rather than a name because the kernel owns retries and fallback: a runtime that\ngives up on the first 503 has the availability of its least reliable provider.",
+        "properties": {
+          "chain": {
+            "description": "Candidate models, first that answers wins.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "retries": {
+            "description": "Extra attempts against the same target before moving to the next.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "chain",
+          "retries"
+        ],
+        "type": "object"
       },
       "SandboxPermissions": {
         "description": "What a single `exec` asks for.",
@@ -1860,6 +2105,31 @@
         },
         "type": "object"
       },
+      "ServiceTier": {
+        "description": "The cost/latency trade a session prefers.",
+        "oneOf": [
+          {
+            "const": "auto",
+            "description": "Let the provider decide.",
+            "type": "string"
+          },
+          {
+            "const": "default",
+            "description": "The default tier.",
+            "type": "string"
+          },
+          {
+            "const": "flex",
+            "description": "Cheaper, slower.",
+            "type": "string"
+          },
+          {
+            "const": "priority",
+            "description": "More expensive, faster.",
+            "type": "string"
+          }
+        ]
+      },
       "SessionId": {
         "description": "A session identifier.\n\nThe caller chooses it when resuming, so it is a string rather than an opaque handle.\nThat makes a retried `Start` idempotent instead of creating a second session.",
         "type": "string"
@@ -1916,6 +2186,17 @@
             },
             "type": "array"
           },
+          "process": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProcessState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where it is, when it is a process session."
+          },
           "sandbox": {
             "$ref": "#/components/schemas/SandboxPolicy",
             "description": "What its commands may touch."
@@ -1959,49 +2240,30 @@
             "default": {},
             "description": "What the session may consume."
           },
+          "config": {
+            "$ref": "#/components/schemas/ConfigPatch",
+            "default": {},
+            "description": "The mutable configuration to start from — the same shape `configure` takes, so a session can\nbegin in any state it could later be changed into."
+          },
           "credit_tokens": {
             "default": 0,
-            "description": "Tokens granted up front, spent by usage. Zero means \"no credit, no model calls\".",
+            "description": "Tokens granted up front.",
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
           },
           "initial": {
             "default": [],
-            "description": "The opening messages.",
+            "description": "Messages to seed the conversation with.",
             "items": {
               "$ref": "#/components/schemas/Message"
             },
             "type": "array"
           },
-          "model_chain": {
-            "description": "The route, first name that answers wins. Absent asks for the daemon's default.",
-            "items": {
-              "type": "string"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "params": {
-            "$ref": "#/components/schemas/Params",
-            "default": {
-              "stop": []
-            },
-            "description": "How to shape answers."
-          },
           "resume": {
             "default": false,
             "description": "Continue an existing session instead of creating one.",
             "type": "boolean"
-          },
-          "retries": {
-            "default": 0,
-            "description": "Extra attempts per target before falling through.",
-            "format": "uint32",
-            "minimum": 0,
-            "type": "integer"
           },
           "sandbox": {
             "$ref": "#/components/schemas/SandboxSettings",
@@ -2014,26 +2276,11 @@
             "description": "Where commands run, and what they may touch."
           },
           "session": {
-            "description": "Caller-chosen id. A retried request with the same id resumes instead of creating a\nsecond session, which is the only way a `POST` survives a network retry.",
+            "description": "Caller-chosen id. A retried request with the same id resumes instead of creating a second\nsession, which is the only way a `POST` survives a network retry.",
             "type": [
               "string",
               "null"
             ]
-          },
-          "system": {
-            "description": "Standing instructions.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "tools": {
-            "default": [],
-            "description": "Tool names this session may use. Empty means every registered tool.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
           }
         },
         "type": "object"
@@ -2093,6 +2340,19 @@
         },
         "type": "object"
       },
+      "StdinRequest": {
+        "description": "Bytes for a running process's stdin.",
+        "properties": {
+          "chunk": {
+            "description": "What to write. Not necessarily a whole line.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "chunk"
+        ],
+        "type": "object"
+      },
       "StopReason": {
         "description": "Why a session stopped.\n\nFour layers, all present: a provider's `finish_reason`, the step cap, the wall clock,\nand the cost ledger. Each alone can be defeated; together they cannot.",
         "oneOf": [
@@ -2135,6 +2395,80 @@
             "const": "cancelled",
             "description": "Stopped on request.",
             "type": "string"
+          }
+        ]
+      },
+      "Summary": {
+        "description": "How much of the reasoning to summarise.",
+        "oneOf": [
+          {
+            "const": "auto",
+            "description": "The provider decides.",
+            "type": "string"
+          },
+          {
+            "const": "concise",
+            "description": "Short.",
+            "type": "string"
+          },
+          {
+            "const": "detailed",
+            "description": "Long.",
+            "type": "string"
+          }
+        ]
+      },
+      "TextFormat": {
+        "description": "The shape the answer must have.",
+        "oneOf": [
+          {
+            "description": "Prose.",
+            "properties": {
+              "kind": {
+                "const": "text",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A JSON object, schema unchecked.",
+            "properties": {
+              "kind": {
+                "const": "json_object",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A JSON object that must match a schema.",
+            "properties": {
+              "kind": {
+                "const": "json_schema",
+                "type": "string"
+              },
+              "name": {
+                "description": "The name the provider files it under.",
+                "type": "string"
+              },
+              "schema_json": {
+                "description": "The schema, serialized.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "name",
+              "schema_json"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -2224,6 +2558,26 @@
         ],
         "type": "object"
       },
+      "ToolChoice": {
+        "description": "How the model should choose among the tools it was given.",
+        "oneOf": [
+          {
+            "const": "auto",
+            "description": "It decides.",
+            "type": "string"
+          },
+          {
+            "const": "required",
+            "description": "It must call one.",
+            "type": "string"
+          },
+          {
+            "const": "none",
+            "description": "It must not call one.",
+            "type": "string"
+          }
+        ]
+      },
       "ToolResult": {
         "description": "How a tool call ended.\n\n**Failure is a flag, not a branch.** A failed call still carries content, because the\nerror text is something the model must be able to read and reason about; putting the\nfailure outside the content model would leave the model with a message it cannot see.\nThe cost is honest: `is_error` is a runtime flag a client can forget to check, where a\n`oneof` would have been enforced by the type system.\n\nOne rule constrains the recursion `Content → Part → ToolResult → Content` otherwise\nallows: a tool result's content may contain any kind **except** [`PartKind::ToolCall`] or\n[`PartKind::ToolResult`]. Nesting is one level deep, and a validator enforces it.",
         "properties": {
@@ -2260,6 +2614,21 @@
         ],
         "type": "object"
       },
+      "Truncation": {
+        "description": "What to do when the conversation does not fit.",
+        "oneOf": [
+          {
+            "const": "auto",
+            "description": "Drop the oldest items.",
+            "type": "string"
+          },
+          {
+            "const": "disabled",
+            "description": "Fail instead of dropping silently.",
+            "type": "string"
+          }
+        ]
+      },
       "Usage": {
         "description": "What a model call consumed.\n\nA counter the provider did not report stays `None` rather than becoming zero: a budget\nthat charges for silence is worse than one that knows it does not know.",
         "properties": {
@@ -2290,6 +2659,26 @@
           "output_tokens"
         ],
         "type": "object"
+      },
+      "Verbosity": {
+        "description": "How much prose an answer should carry.",
+        "oneOf": [
+          {
+            "const": "low",
+            "description": "Terse.",
+            "type": "string"
+          },
+          {
+            "const": "medium",
+            "description": "Normal.",
+            "type": "string"
+          },
+          {
+            "const": "high",
+            "description": "Expansive.",
+            "type": "string"
+          }
+        ]
       },
       "VerdictRequest": {
         "description": "What a caller sends to answer a parked call.",
@@ -2482,6 +2871,94 @@
           }
         },
         "summary": "Capabilities, models, and the ABI version."
+      }
+    },
+    "/v1/processes": {
+      "post": {
+        "operationId": "startProcess",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProcessStartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessStartResponse"
+                }
+              }
+            },
+            "description": "The result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "Start a command as a process session, under a sandbox policy."
       }
     },
     "/v1/sessions": {
@@ -2728,6 +3205,94 @@
         "summary": "Close a session. Further calls are refused."
       }
     },
+    "/v1/sessions/{id}/configure": {
+      "post": {
+        "operationId": "configureSession",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfigPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigureResponse"
+                }
+              }
+            },
+            "description": "The result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "Change what a session is doing, without closing it."
+      }
+    },
     "/v1/sessions/{id}/events": {
       "get": {
         "operationId": "events",
@@ -2894,6 +3459,77 @@
         "summary": "One model call. Appends nothing: what you send is what you get."
       }
     },
+    "/v1/sessions/{id}/signal": {
+      "post": {
+        "operationId": "signalProcess",
+        "responses": {
+          "204": {
+            "description": "Done."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "Ask a running process to end."
+      }
+    },
     "/v1/sessions/{id}/state": {
       "post": {
         "operationId": "appendState",
@@ -2973,6 +3609,87 @@
           }
         },
         "summary": "Append messages, or write the application's own opaque state."
+      }
+    },
+    "/v1/sessions/{id}/stdin": {
+      "post": {
+        "operationId": "writeStdin",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StdinRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Done."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "Write to a running process's stdin. Recorded before it is sent."
       }
     },
     "/v1/sessions/{id}/tools": {
@@ -3149,6 +3866,84 @@
           }
         },
         "summary": "Answer a call parked on a human, then run the reference loop on."
+      }
+    },
+    "/v1/sessions/{id}/wait": {
+      "post": {
+        "operationId": "waitProcess",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecOutput"
+                }
+              }
+            },
+            "description": "The result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "Wait for a process to end, and say how it ended."
       }
     }
   },

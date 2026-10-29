@@ -38,17 +38,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = tokio::net::UnixListener::bind(&socket)
         .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { Box::new(error) })?;
 
-    let app = match std::env::var("NUCLEOS_DEPLOYMENT") {
-        // A deployment file is the next slice; until then the daemon is up, describes itself, and
-        // refuses to pretend it has models.
-        Ok(path) => {
-            eprintln!(
-                "nucleosd: deployment files are not implemented yet ({path}); serving /v1/describe"
-            );
-            App::unconfigured()
-        }
-        Err(_) => App::unconfigured(),
-    };
+    // A deployment file is the next slice; until then the environment is the configuration, so a
+    // real model can be served without one.
+    let app = App::from_env()?;
 
     eprintln!("nucleosd listening on unix:{socket}");
     axum::serve(listener, router(Arc::new(app)))

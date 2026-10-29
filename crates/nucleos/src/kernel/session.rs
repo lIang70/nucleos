@@ -40,6 +40,8 @@ pub struct Session {
     pub(crate) workspace: Option<String>,
     /// What commands may touch.
     pub(crate) sandbox: crate::contract::SandboxPolicy,
+    /// The adapter hints in force.
+    pub(crate) hints: crate::contract::Hints,
     /// What this session is for.
     pub(crate) kind: crate::contract::SessionKind,
     /// The process, when this is a process session.
@@ -97,6 +99,30 @@ impl Session {
     #[must_use]
     pub fn process(&self) -> Option<&crate::contract::ProcessState> {
         self.process.as_ref()
+    }
+
+    /// The standing instructions in force.
+    #[must_use]
+    pub fn system(&self) -> Option<&str> {
+        self.system.as_deref()
+    }
+
+    /// How answers are shaped.
+    #[must_use]
+    pub fn params(&self) -> &crate::contract::GenerateParams {
+        &self.params
+    }
+
+    /// The tool allow-list in force. Empty means every registered tool.
+    #[must_use]
+    pub fn tools(&self) -> &[String] {
+        &self.tools
+    }
+
+    /// The adapter hints in force.
+    #[must_use]
+    pub fn hints(&self) -> &crate::contract::Hints {
+        &self.hints
     }
 
     /// What this session's commands may touch.
@@ -166,6 +192,7 @@ impl Session {
             data: std::collections::BTreeMap::new(),
             workspace: None,
             sandbox: crate::contract::SandboxPolicy::default(),
+            hints: crate::contract::Hints::default(),
             kind: crate::contract::SessionKind::Agent,
             process: None,
             routing: crate::contract::Routing::default(),
@@ -245,6 +272,7 @@ impl Session {
             params: self.params.clone(),
             workspace: self.workspace.clone(),
             sandbox: self.sandbox.clone(),
+            hints: self.hints.clone(),
             kind: self.kind,
             process: self.process.clone(),
             data: self.data.clone(),
@@ -282,6 +310,7 @@ impl Session {
             params: snapshot.params,
             workspace: snapshot.workspace,
             sandbox: snapshot.sandbox,
+            hints: snapshot.hints,
             kind: snapshot.kind,
             process: snapshot.process,
             system: snapshot.system,

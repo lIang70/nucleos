@@ -17,8 +17,9 @@ use axum::{Json, Router};
 use nucleos::contract::{ErrorCode, Principal, SessionId, SessionState};
 use nucleos::kernel::{HitlVerdict, Kernel, SessionSpec, StateWrite};
 use nucleos::wire::api::{
-    DescribeResponse, ErrorBody, InferenceRequest, InferenceResponse, SessionView, StartRequest,
-    StartResponse, StateRequest, ToolBatchRequest, ToolBatchResponse, VerdictRequest,
+    DescribeResponse, ErrorBody, InferenceRequest, InferenceResponse, ProcessStartRequest,
+    ProcessStartResponse, SessionView, StartRequest, StartResponse, StateRequest, StdinRequest,
+    ToolBatchRequest, ToolBatchResponse, VerdictRequest,
 };
 use nucleos::wire::openapi;
 use nucleos_agent as agent;
@@ -50,6 +51,73 @@ impl App {
             principal,
             models,
         }
+    }
+
+    /// Serve what the environment describes.
+    ///
+    /// Three variables, because a deployment file is not written yet and a daemon that can only be
+    /// tested with fakes is a daemon nobody runs:
+    ///
+    /// ```text
+    /// NUCLEOS_MODEL_URL    full chat-completions URL
+    /// NUCLEOS_MODEL_NAME   the model to ask for
+    /// NUCLEOS_MODEL_KEY    bearer token, when the endpoint wants one
+    /// NUCLEOS_CONTEXT      context window, default 128000
+    /// ```
+    ///
+    /// Unset means unconfigured: up, describing itself, refusing to pretend it has models.
+    pub fn from_env() -> Result<Self, nucleos::Error> {
+        let Ok(url) = std::env::var("NUCLEOS_MODEL_URL") else {
+            return Ok(Self::unconfigured());
+        };
+        let model = std::env::var("NUCLEOS_MODEL_NAME")
+            .map_err(|_| nucleos::Error::invalid("NUCLEOS_MODEL_NAME is required with a url"))?;
+        let context_window = std::env::var("NUCLEOS_CONTEXT")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(128_000);
+
+        let adapter = nucleos_openai::OpenAi::new(nucleos_openai::Config {
+            url,
+            api_key: std::env::var("NUCLEOS_MODEL_KEY").ok(),
+            model: model.clone(),
+            capability: nucleos_openai::Config::capabilities(context_window, 8_192),
+            options: nucleos::contract::Hints {
+                // Refused rather than silently applied: dropping the oldest items mid-session
+                // would make the provider's view of the conversation differ from the kernel's,
+                // and compaction is the kernel's job, not the transport's.
+                truncation: Some(nucleos::contract::Truncation::Disabled),
+                ..Default::default()
+            },
+            // Derived from the session, not chosen by the application: a cache key that changes per
+            // call bills the same prefix twice.
+            prompt_cache_key: None,
+            include: Vec::new(),
+            safety_identifier: None,
+            // Both are statements about the deployment, so both are variables rather than
+            // guesses: strict mode rejects a schema that is not strict-eligible, and reasoning
+            // effort is rejected by models that do not have it.
+            strict_tools: std::env::var("NUCLEOS_STRICT_TOOLS").is_ok(),
+            supports_reasoning: std::env::var("NUCLEOS_REASONING").is_ok(),
+            timeout: Some(std::time::Duration::from_secs(120)),
+        })?;
+
+        let routing = nucleos::contract::Routing {
+            chain: vec![model.clone()],
+            retries: 1,
+        };
+        let kernel = Kernel::builder()
+            .model(&model, Arc::new(adapter))
+            .store(Arc::new(nucleos::adapter::MemoryStore::new()))
+            .policy(Arc::new(nucleos::adapter::AllowAll))
+            .routing(routing)
+            .build()?;
+
+        Ok(Self::new(
+            Arc::new(kernel),
+            Self::unconfigured().principal,
+            vec![model],
+        ))
     }
 
     /// Serve nothing but `describe`: the daemon is up, no deployment is configured.
@@ -169,6 +237,61 @@ pub const ROUTES: &[Route] = &[
     Route {
         meta: openapi::Route {
             method: "post",
+            path: "/v1/processes",
+            operation: "startProcess",
+            summary: "Start a command as a process session, under a sandbox policy.",
+            request: Some("ProcessStartRequest"),
+            reply: openapi::Reply::Json("ProcessStartResponse"),
+        },
+        build: || post(start_process),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "post",
+            path: "/v1/sessions/{id}/stdin",
+            operation: "writeStdin",
+            summary: "Write to a running process's stdin. Recorded before it is sent.",
+            request: Some("StdinRequest"),
+            reply: openapi::Reply::NoContent,
+        },
+        build: || post(write_stdin),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "post",
+            path: "/v1/sessions/{id}/signal",
+            operation: "signalProcess",
+            summary: "Ask a running process to end.",
+            request: None,
+            reply: openapi::Reply::NoContent,
+        },
+        build: || post(signal_process),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "post",
+            path: "/v1/sessions/{id}/wait",
+            operation: "waitProcess",
+            summary: "Wait for a process to end, and say how it ended.",
+            request: None,
+            reply: openapi::Reply::Json("ExecOutput"),
+        },
+        build: || post(wait_process),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "post",
+            path: "/v1/sessions/{id}/configure",
+            operation: "configureSession",
+            summary: "Change what a session is doing, without closing it.",
+            request: Some("ConfigPatch"),
+            reply: openapi::Reply::Json("ConfigureResponse"),
+        },
+        build: || post(configure),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "post",
             path: "/v1/sessions/{id}/close",
             operation: "closeSession",
             summary: "Close a session. Further calls are refused.",
@@ -278,6 +401,7 @@ async fn view(
         inference_calls: session.inference_calls(),
         pending: session.pending().to_vec(),
         usage: session.usage().clone(),
+        process: session.process().cloned(),
         sandbox: session.sandbox().clone(),
         workspace: session.workspace().cloned(),
     }))
@@ -343,6 +467,122 @@ async fn append(
         .await
         .map_err(|error| ApiError::from_error(&error))?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Start a command as a process session.
+///
+/// The session is created by this call, so the sandbox policy travels with it: a process is the one
+/// thing whose *launch* has to be gated, and the gate needs to see the policy and the argv together.
+async fn start_process(
+    State(app): State<Arc<App>>,
+    Json(request): Json<ProcessStartRequest>,
+) -> Result<Json<ProcessStartResponse>, ApiError> {
+    let kernel = app.kernel()?.clone();
+    let id = SessionId::new(format!(
+        "proc-{:016x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos())
+    ));
+
+    let spec = SessionSpec {
+        kind: nucleos::contract::SessionKind::Process,
+        process: Some(nucleos::contract::ProcessSpec {
+            argv: request.argv,
+            cwd: request.cwd,
+            env: request.env,
+            permissions: request.permissions,
+        }),
+        sandbox: request.sandbox.policy,
+        workspace: request.sandbox.workspace,
+        budget: nucleos::contract::Budget {
+            max_wall_millis: request.timeout_millis,
+            ..Default::default()
+        },
+        credit_tokens: 0,
+        ..SessionSpec::default()
+    };
+
+    let session = kernel
+        .spawn(&app.principal, id, spec)
+        .await
+        .map_err(|error| ApiError::from_error(&error))?;
+
+    let process = session.process().cloned().ok_or_else(|| {
+        ApiError::from_error(&nucleos::Error::internal(
+            "a process session without a process",
+        ))
+    })?;
+    Ok(Json(ProcessStartResponse {
+        session: session.id().as_str().to_owned(),
+        pid: match process.status {
+            nucleos::contract::ProcessStatus::Running { pid } => Some(pid),
+            _ => None,
+        },
+        state: process.status,
+        next_seq: session.next_seq(),
+    }))
+}
+
+async fn write_stdin(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+    Json(request): Json<StdinRequest>,
+) -> Result<StatusCode, ApiError> {
+    let kernel = app.kernel()?.clone();
+    let session = load(&kernel, &app, &id).await?;
+    kernel
+        .write_stdin(&session, &request.chunk)
+        .await
+        .map_err(|error| ApiError::from_error(&error))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn signal_process(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let kernel = app.kernel()?.clone();
+    let session = load(&kernel, &app, &id).await?;
+    kernel
+        .signal(&session)
+        .await
+        .map_err(|error| ApiError::from_error(&error))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn wait_process(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+) -> Result<Json<nucleos::contract::ExecOutput>, ApiError> {
+    let kernel = app.kernel()?.clone();
+    let session = load(&kernel, &app, &id).await?;
+    let output = kernel
+        .wait(&session)
+        .await
+        .map_err(|error| ApiError::from_error(&error))?;
+    Ok(Json(output))
+}
+
+/// Change what a session is doing, without closing it.
+///
+/// The wiring — kind, sandbox, workspace — is not reachable here on purpose: it is decided when the
+/// session opens, and an application that could widen its own sandbox would be the end of the
+/// sandbox.
+async fn configure(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+    Json(patch): Json<nucleos::contract::ConfigPatch>,
+) -> Result<Json<nucleos::wire::api::ConfigureResponse>, ApiError> {
+    let kernel = app.kernel()?.clone();
+    let mut session = load(&kernel, &app, &id).await?;
+    let changed = kernel
+        .configure(&mut session, patch)
+        .await
+        .map_err(|error| ApiError::from_error(&error))?;
+    Ok(Json(nucleos::wire::api::ConfigureResponse {
+        changed: changed.into_iter().map(str::to_owned).collect(),
+    }))
 }
 
 async fn close(

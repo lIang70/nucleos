@@ -107,11 +107,15 @@ policy:
 
 ```text
 crates/
-  nucleos/        contract/ · adapter/ · kernel/ (syscalls) · wire/
-  nucleos-agent/  the reference loop, built on those syscalls
-  nucleosd/       router · error mapping · listener
-schema/           the published JSON Schema, committed
+  nucleos/         contract/ · adapter/ · kernel/ (syscalls) · wire/
+  nucleos-agent/   the reference loop, built on those syscalls
+  nucleos-openai/  one provider adapter: the OpenAI-compatible family
+  nucleosd/        router · error mapping · listener
+openapi/           the published ABI, committed
 ```
+
+`nucleos-openai` exists as its own crate because the kernel must not depend on an HTTP client: the
+kernel owns the mechanism, and a provider's dialect is an adapter like any other.
 
 `nucleos-agent` depends on `nucleos` and nothing depends on `nucleos-agent` except the daemon:
 the loop is the application's, and the kernel must not learn it.

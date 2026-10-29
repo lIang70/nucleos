@@ -123,3 +123,107 @@ async fn every_row_of_the_table_is_a_route_the_router_serves() {
         );
     }
 }
+
+/// A daemon with a kernel that can actually run things: an in-memory store and no policy.
+fn running() -> Arc<App> {
+    use nucleos::adapter::{AllowAll, MemoryStore, Store};
+    let kernel = nucleos::Kernel::builder()
+        .store(Arc::new(MemoryStore::new()) as Arc<dyn Store>)
+        .policy(Arc::new(AllowAll))
+        .build()
+        .unwrap();
+    Arc::new(App::new(
+        Arc::new(kernel),
+        nucleos::contract::Principal {
+            tenant: "acme".to_owned(),
+            subject: "alice".to_owned(),
+        },
+        Vec::new(),
+    ))
+}
+
+#[tokio::test]
+async fn a_process_runs_over_the_abi_and_its_output_is_in_the_stream() {
+    let app = router(running());
+
+    // Danger-full-access because no sandbox mechanism is wired up yet; a stricter policy is
+    // refused rather than silently run unconfined, which the test below proves.
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/processes")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"argv":["sh","-c","printf hi"],"sandbox":{"policy":{"kind":"danger_full_access"}}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let started = body_json(response).await;
+    let session = started["session"].as_str().unwrap().to_owned();
+    assert!(started["pid"].as_u64().is_some());
+
+    // Waiting is how a caller learns the exit code; the output arrives on the event stream.
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/sessions/{session}/wait"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await["exit_code"], 0);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/v1/sessions/{session}/events"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let stream = String::from_utf8_lossy(&bytes);
+    assert!(stream.contains("nucleos.v1.exec_started"), "{stream}");
+    assert!(stream.contains("nucleos.v1.exec_output"), "{stream}");
+    assert!(stream.contains("nucleos.v1.exec_exited"), "{stream}");
+}
+
+#[tokio::test]
+async fn a_policy_without_a_mechanism_is_refused_over_the_abi() {
+    let app = router(running());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/processes")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"argv":["sh","-c","printf hi"],"sandbox":{"policy":{"kind":"read_only"}}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Running unconfined while the policy claims otherwise is worse than refusing.
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let error = body_json(response).await;
+    assert!(
+        error["reason"]
+            .as_str()
+            .unwrap()
+            .contains("danger_full_access")
+    );
+}

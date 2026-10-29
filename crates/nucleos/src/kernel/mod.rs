@@ -8,6 +8,7 @@
 //! retries and its ledger (`route.rs`), the session's state and its checkpoint (`session.rs`),
 //! policy, and the tool set a generation pinned.
 
+pub(crate) mod config;
 pub(crate) mod inference;
 pub(crate) mod lifecycle;
 pub(crate) mod process;
@@ -38,11 +39,9 @@ pub struct InferenceOutcome {
     pub usage: Usage,
 }
 
-use crate::adapter::{
-    Clock, GenerateParams, Model, ModelRegistry, Policy, Store, SystemClock, Tool,
-};
+use crate::adapter::{Clock, Model, ModelRegistry, Policy, Store, SystemClock, Tool};
 use crate::contract::{
-    Budget, Event, Generation, Ledger, Message, Routing, SessionId, SessionState, StopReason, Usage,
+    Event, Generation, Ledger, Message, Routing, SessionId, SessionState, StopReason, Usage,
 };
 use crate::error::{Error, Result};
 use std::collections::BTreeMap;
@@ -51,28 +50,26 @@ use std::sync::Arc;
 /// What a caller asks for when starting or resuming a session.
 #[derive(Debug, Clone, Default)]
 pub struct SessionSpec {
-    /// The route. `None` uses the kernel's default.
-    pub routing: Option<Routing>,
-    /// Standing instructions.
-    pub system: Option<String>,
-    /// The opening messages.
-    pub initial: Vec<Message>,
-    /// Tool names this session may use. Empty means every registered tool.
-    pub tools: Vec<String>,
     /// What this session is for.
     pub kind: crate::contract::SessionKind,
     /// How to start it, when it is a process session.
     pub process: Option<crate::contract::ProcessSpec>,
-    /// How to shape answers.
-    pub params: GenerateParams,
-    /// Where the session's commands run, and the default writable root.
-    pub workspace: Option<String>,
-    /// What its commands may touch. Not a request field: see `SandboxPolicy`.
+    /// What its commands may touch. Not changeable while it runs.
     pub sandbox: crate::contract::SandboxPolicy,
-    /// What the session may consume.
-    pub budget: Budget,
-    /// Tokens granted up front, spent by usage. Zero means "no credit, no model calls".
+    /// Where its commands run.
+    pub workspace: Option<String>,
+    /// Messages to seed the conversation with.
+    pub initial: Vec<Message>,
+    /// Tokens granted up front.
     pub credit_tokens: u64,
+    /// What the session may consume. A limit, not content: raising it is `Credit`, not `configure`.
+    pub budget: crate::contract::Budget,
+    /// The mutable configuration to start from.
+    ///
+    /// A patch rather than a set of fields: it is the same shape [`Kernel::configure`] takes, so a
+    /// session can start in any state it could later be changed into — and there is one place that
+    /// validates a configuration, not two.
+    pub config: crate::contract::ConfigPatch,
 }
 
 /// How a session ended, or where it stopped.

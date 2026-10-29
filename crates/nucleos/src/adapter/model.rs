@@ -52,6 +52,8 @@ pub struct ModelRequest {
     pub tools: Vec<ToolSpec>,
     /// How to shape the answer.
     pub params: GenerateParams,
+    /// The session's hints, for an adapter that has a channel for them.
+    pub hints: crate::contract::Hints,
     /// Why this call is happening.
     pub purpose: Purpose,
 }

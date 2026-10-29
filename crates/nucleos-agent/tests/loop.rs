@@ -12,8 +12,8 @@ use nucleos::adapter::{
     PolicyRequest, Store, Verdict, fake::tool_call_deltas,
 };
 use nucleos::contract::{
-    AttemptOutcome, Budget, ErrorCode, EventKind, PermissionKind, PermissionOption, Principal,
-    Routing, SessionId, SessionState, StopReason,
+    AttemptOutcome, Budget, ConfigPatch, ErrorCode, EventKind, PermissionKind, PermissionOption,
+    Principal, Routing, SessionId, SessionState, StopReason,
 };
 use nucleos::kernel::{HitlVerdict, Kernel, SessionSpec};
 use nucleos::{Error, Result};
@@ -29,10 +29,13 @@ fn principal() -> Principal {
 
 fn spec() -> SessionSpec {
     SessionSpec {
-        routing: Some(Routing {
-            chain: vec!["primary".to_owned()],
-            retries: 0,
-        }),
+        config: ConfigPatch {
+            routing: Some(Routing {
+                chain: vec!["primary".to_owned()],
+                retries: 0,
+            }),
+            ..ConfigPatch::default()
+        },
         credit_tokens: 1_000_000,
         ..SessionSpec::default()
     }
@@ -334,10 +337,13 @@ async fn a_failing_primary_falls_back_and_both_attempts_are_recorded() -> Result
         &principal(),
         SessionId::new("s1"),
         SessionSpec {
-            routing: Some(Routing {
-                chain: vec!["primary".to_owned(), "secondary".to_owned()],
-                retries: 0,
-            }),
+            config: ConfigPatch {
+                routing: Some(Routing {
+                    chain: vec!["primary".to_owned(), "secondary".to_owned()],
+                    retries: 0,
+                }),
+                ..ConfigPatch::default()
+            },
             ..spec()
         },
     )
@@ -373,10 +379,13 @@ async fn an_attempt_that_streamed_is_not_retried() -> Result<()> {
         &principal(),
         SessionId::new("s1"),
         SessionSpec {
-            routing: Some(Routing {
-                chain: vec!["primary".to_owned(), "secondary".to_owned()],
-                retries: 2,
-            }),
+            config: ConfigPatch {
+                routing: Some(Routing {
+                    chain: vec!["primary".to_owned(), "secondary".to_owned()],
+                    retries: 2,
+                }),
+                ..ConfigPatch::default()
+            },
             ..spec()
         },
     )
@@ -401,10 +410,13 @@ async fn an_unknown_route_target_is_refused() {
         &principal(),
         SessionId::new("s1"),
         SessionSpec {
-            routing: Some(Routing {
-                chain: vec!["nobody".to_owned()],
-                retries: 0,
-            }),
+            config: ConfigPatch {
+                routing: Some(Routing {
+                    chain: vec!["nobody".to_owned()],
+                    retries: 0,
+                }),
+                ..ConfigPatch::default()
+            },
             ..spec()
         },
     )

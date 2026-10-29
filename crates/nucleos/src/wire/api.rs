@@ -15,40 +15,29 @@ use std::collections::BTreeMap;
 /// What a caller must send to create a session.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct StartRequest {
-    /// Caller-chosen id. A retried request with the same id resumes instead of creating a
-    /// second session, which is the only way a `POST` survives a network retry.
+    /// Caller-chosen id. A retried request with the same id resumes instead of creating a second
+    /// session, which is the only way a `POST` survives a network retry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
-    /// The route, first name that answers wins. Absent asks for the daemon's default.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model_chain: Option<Vec<String>>,
-    /// Extra attempts per target before falling through.
-    #[serde(default)]
-    pub retries: u32,
-    /// Standing instructions.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub system: Option<String>,
-    /// The opening messages.
-    #[serde(default)]
-    pub initial: Vec<Message>,
-    /// Tool names this session may use. Empty means every registered tool.
-    #[serde(default)]
-    pub tools: Vec<String>,
-    /// How to shape answers.
-    #[serde(default)]
-    pub params: Params,
-    /// Where commands run, and what they may touch.
-    #[serde(default)]
-    pub sandbox: SandboxSettings,
-    /// What the session may consume.
-    #[serde(default)]
-    pub budget: Budget,
-    /// Tokens granted up front, spent by usage. Zero means "no credit, no model calls".
-    #[serde(default)]
-    pub credit_tokens: u64,
     /// Continue an existing session instead of creating one.
     #[serde(default)]
     pub resume: bool,
+    /// Messages to seed the conversation with.
+    #[serde(default)]
+    pub initial: Vec<Message>,
+    /// What the session may consume.
+    #[serde(default)]
+    pub budget: Budget,
+    /// Tokens granted up front.
+    #[serde(default)]
+    pub credit_tokens: u64,
+    /// Where commands run, and what they may touch.
+    #[serde(default)]
+    pub sandbox: SandboxSettings,
+    /// The mutable configuration to start from — the same shape `configure` takes, so a session can
+    /// begin in any state it could later be changed into.
+    #[serde(default)]
+    pub config: crate::contract::ConfigPatch,
 }
 
 impl StartRequest {
@@ -58,9 +47,9 @@ impl StartRequest {
         self.session.clone().unwrap_or_else(|| {
             use std::hash::{Hash, Hasher};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            self.model_chain.hash(&mut hasher);
-            self.system.hash(&mut hasher);
             self.credit_tokens.hash(&mut hasher);
+            self.initial.len().hash(&mut hasher);
+            self.sandbox.workspace.hash(&mut hasher);
             format!("session-{:016x}", hasher.finish())
         })
     }
@@ -68,56 +57,22 @@ impl StartRequest {
 
 impl From<StartRequest> for crate::kernel::SessionSpec {
     fn from(request: StartRequest) -> Self {
-        use crate::adapter::{GenerateParams, ReasoningEffort, TextFormat, ToolChoice};
         Self {
-            routing: request.model_chain.map(|chain| crate::contract::Routing {
-                chain,
-                retries: request.retries,
-            }),
-            system: request.system,
+            // Chosen by the route, not by the body: `/v1/agents` opens an agent session and the
+            // process route opens a process session.
+            kind: crate::contract::SessionKind::Agent,
+            process: None,
+            workspace: request.sandbox.workspace.clone(),
+            sandbox: request.sandbox.policy.clone(),
             initial: request.initial,
-            tools: request.tools,
-            params: GenerateParams {
-                max_output_tokens: request.params.max_output_tokens,
-                temperature: request.params.temperature,
-                top_p: request.params.top_p,
-                stop: request.params.stop,
-                reasoning_effort: match request.params.reasoning_effort.as_deref() {
-                    Some("minimal") => Some(ReasoningEffort::Minimal),
-                    Some("low") => Some(ReasoningEffort::Low),
-                    Some("medium") => Some(ReasoningEffort::Medium),
-                    Some("high") => Some(ReasoningEffort::High),
-                    _ => None,
-                },
-                tool_choice: match request.params.tool_choice.as_deref() {
-                    Some("required") => ToolChoice::Required,
-                    Some("none") => ToolChoice::None,
-                    _ => ToolChoice::Auto,
-                },
-                format: match request.params.format {
-                    None | Some(Format::Text) => TextFormat::Text,
-                    Some(Format::JsonObject) => TextFormat::JsonObject,
-                    Some(Format::JsonSchema { name, schema }) => TextFormat::JsonSchema {
-                        name,
-                        schema_json: schema.to_string(),
-                    },
-                },
-            },
+            credit_tokens: request.credit_tokens,
             budget: crate::contract::Budget {
                 max_steps: request.budget.max_steps,
                 max_tokens: request.budget.max_tokens,
                 max_micros_usd: request.budget.max_micros_usd,
                 max_wall_millis: request.budget.max_wall_millis,
             },
-            credit_tokens: request.credit_tokens,
-            // The policy is the operator's, not the caller's. A request that could name its own
-            // sandbox could name `danger_full_access`.
-            workspace: request.sandbox.workspace.clone(),
-            sandbox: request.sandbox.policy.clone(),
-            // Chosen by the route, not by the body: `/v1/agents` opens an agent session and the
-            // process route opens a process session.
-            kind: crate::contract::SessionKind::Agent,
-            process: None,
+            config: request.config,
         }
     }
 }
@@ -161,6 +116,9 @@ pub struct Params {
     /// `auto`, `required` or `none`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<String>,
+    /// Whether one turn may call several tools at once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parallel_tool_calls: Option<bool>,
     /// `text`, `json_object`, or a JSON Schema object to conform to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<Format>,
@@ -306,6 +264,56 @@ pub struct ExecRequest {
     pub permissions: crate::contract::SandboxPermissions,
 }
 
+/// A command to start as a process session.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ProcessStartRequest {
+    /// The command line. No shell by default: an argv cannot be word-split by accident.
+    pub argv: Vec<String>,
+    /// Where to run it. Absent means the workspace below.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Environment to add.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    /// What to ask for on top of the session's policy.
+    #[serde(default)]
+    pub permissions: crate::contract::SandboxPermissions,
+    /// What its commands may touch. Set here because a process session is created by this call.
+    #[serde(default)]
+    pub sandbox: SandboxSettings,
+    /// A wall-clock ceiling, in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_millis: Option<u64>,
+}
+
+/// What starting a process answered with.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ProcessStartResponse {
+    /// The session that owns it.
+    pub session: String,
+    /// The pid, when the platform gave one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    /// Where it is now.
+    pub state: crate::contract::ProcessStatus,
+    /// The cursor a client reads its output from.
+    pub next_seq: u64,
+}
+
+/// Bytes for a running process's stdin.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct StdinRequest {
+    /// What to write. Not necessarily a whole line.
+    pub chunk: String,
+}
+
+/// What a `configure` call changed.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigureResponse {
+    /// The fields that actually changed, in the order they were applied.
+    pub changed: Vec<String>,
+}
+
 /// What a session looks like from outside.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SessionView {
@@ -321,6 +329,9 @@ pub struct SessionView {
     pub pending: Vec<PendingCall>,
     /// What it has spent.
     pub usage: Usage,
+    /// Where it is, when it is a process session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process: Option<crate::contract::ProcessState>,
     /// What its commands may touch.
     pub sandbox: crate::contract::SandboxPolicy,
     /// Where they run.

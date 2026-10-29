@@ -1,0 +1,27 @@
+[package]
+name = "nucleos-openai"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The OpenAI-compatible model adapter for the nucleos kernel."
+readme = "../../README.md"
+keywords = ["agent", "kernel", "openai", "llm"]
+categories = ["development-tools"]
+
+[dependencies]
+async-trait = { workspace = true }
+base64 = "0.22"
+futures-util = { workspace = true }
+nucleos = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio-stream = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true

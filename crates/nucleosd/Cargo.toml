@@ -14,6 +14,7 @@ categories = ["development-tools"]
 axum = { workspace = true }
 nucleos = { workspace = true }
 nucleos-agent = { workspace = true }
+nucleos-openai = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

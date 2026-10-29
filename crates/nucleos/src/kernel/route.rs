@@ -350,6 +350,7 @@ impl Kernel {
             messages: messages.to_vec(),
             tools: self.tool_specs(session),
             params: session.params.clone(),
+            hints: session.hints.clone(),
             purpose: Purpose::Answer,
         }
     }

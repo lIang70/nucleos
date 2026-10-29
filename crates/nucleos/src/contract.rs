@@ -437,7 +437,7 @@ impl Usage {
 /// `seq` is dense and gap-free, which is what makes it usable as a resume cursor without
 /// a separate acknowledgement protocol. `schema_version` is written alongside the event so
 /// a reader can upcast instead of guessing.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Event {
     /// Monotonic within a session, starting at 0.
     pub seq: u64,
@@ -464,7 +464,7 @@ impl Event {
 /// Events carry the content model rather than copies of its fields — [`ToolCall`] here is
 /// the same type a [`ToolCallPart`] holds — so a live stream and a stored history cannot
 /// disagree about the shape of an answer.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EventKind {
     /// A session state transition, with the reason when it is terminal.
@@ -542,6 +542,14 @@ pub enum EventKind {
         model: String,
         /// Which attempt in the ledger it belongs to.
         attempt_index: u32,
+    },
+    /// The session's mutable configuration changed.
+    ///
+    /// Recorded because a replay has to know which system prompt was in force at turn 42; without
+    /// it, the log would rebuild a conversation that never happened.
+    SessionConfigured {
+        /// What changed, field by field.
+        patch: ConfigPatch,
     },
     /// A field the provider could not honour.
     ///
@@ -662,6 +670,7 @@ impl EventKind {
             Self::ExecOutput { .. } => "nucleos.v1.exec_output",
             Self::ExecStdin { .. } => "nucleos.v1.exec_stdin",
             Self::ExecExited { .. } => "nucleos.v1.exec_exited",
+            Self::SessionConfigured { .. } => "nucleos.v1.session_configured",
             Self::CapabilityDegraded(_) => "nucleos.v1.capability_degraded",
             Self::AttemptFailed { .. } => "nucleos.v1.attempt_failed",
             Self::AwaitingHuman { .. } => "nucleos.v1.awaiting_human",
@@ -855,6 +864,9 @@ pub struct Snapshot {
     pub workspace: Option<String>,
     /// What its commands may touch.
     pub sandbox: SandboxPolicy,
+    /// The adapter hints in force.
+    #[serde(default)]
+    pub hints: Hints,
     /// The application's own state.
     ///
     /// Opaque: the kernel stores it, updates it atomically and restores it, and never reads a
@@ -1083,6 +1095,9 @@ pub struct GenerateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f32>,
     /// Sequences that end the completion.
+    ///
+    /// Not every provider has this — the OpenAI Responses API rejects it outright — so an adapter
+    /// that cannot send it reports a [`Degraded`] rather than dropping it in silence.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stop: Vec<String>,
     /// Reasoning effort, for models that expose one.
@@ -1091,6 +1106,13 @@ pub struct GenerateParams {
     /// How to choose among tools.
     #[serde(default)]
     pub tool_choice: ToolChoice,
+    /// Whether one turn may call several tools at once.
+    ///
+    /// In the contract rather than in an adapter because the *kernel* acts on it: `invoke_tools`
+    /// fans a batch out concurrently. A provider that forbids it and a kernel that does it anyway
+    /// would disagree about what happened in a turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parallel_tool_calls: Option<bool>,
     /// The shape the answer must have.
     #[serde(default)]
     pub format: TextFormat,
@@ -1310,4 +1332,134 @@ impl ProcessState {
             ProcessStatus::Exited { .. } | ProcessStatus::Lost
         )
     }
+}
+
+// ---------------------------------------------------------------------------
+// Hints: the parameters that belong to a session, not to a call
+// ---------------------------------------------------------------------------
+
+/// Preferences an adapter may honour, and must report when it cannot.
+///
+/// Separate from [`GenerateParams`] because these change while a session runs — a conversation
+/// that is filling its window wants less prose, and a review turn wants more detail — and because
+/// they are *hints*: an adapter that has no channel for one reports a [`Degraded`] rather than
+/// failing the call.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Hints {
+    /// How much prose an answer should carry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verbosity: Option<Verbosity>,
+    /// How much of the reasoning to summarise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_summary: Option<Summary>,
+    /// The cost/latency trade this session prefers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<ServiceTier>,
+    /// A ceiling on tool calls in one response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tool_calls: Option<u32>,
+    /// What to do when the conversation does not fit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncation: Option<Truncation>,
+    /// Labels the provider echoes back, up to sixteen.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, String>,
+}
+
+impl Hints {
+    /// A patch that leaves every field `None` changes nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Take every field this patch sets, and keep the rest.
+    #[must_use]
+    pub fn merged(&self, over: &Self) -> Self {
+        Self {
+            verbosity: over.verbosity.or(self.verbosity),
+            reasoning_summary: over.reasoning_summary.or(self.reasoning_summary),
+            service_tier: over.service_tier.or(self.service_tier),
+            max_tool_calls: over.max_tool_calls.or(self.max_tool_calls),
+            truncation: over.truncation.or(self.truncation),
+            metadata: if over.metadata.is_empty() {
+                self.metadata.clone()
+            } else {
+                over.metadata.clone()
+            },
+        }
+    }
+}
+
+/// How much prose an answer should carry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Verbosity {
+    /// Terse.
+    Low,
+    /// Normal.
+    Medium,
+    /// Expansive.
+    High,
+}
+
+/// How much of the reasoning to summarise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Summary {
+    /// The provider decides.
+    Auto,
+    /// Short.
+    Concise,
+    /// Long.
+    Detailed,
+}
+
+/// The cost/latency trade a session prefers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceTier {
+    /// Let the provider decide.
+    Auto,
+    /// The default tier.
+    Default,
+    /// Cheaper, slower.
+    Flex,
+    /// More expensive, faster.
+    Priority,
+}
+
+/// What to do when the conversation does not fit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Truncation {
+    /// Drop the oldest items.
+    Auto,
+    /// Fail instead of dropping silently.
+    Disabled,
+}
+
+/// A partial update to a session's mutable configuration.
+///
+/// The wiring — kind, sandbox, workspace — is not here, because it is decided when the session
+/// opens and is not the application's to change while it runs. Everything in this struct is
+/// content or strategy, and every field is optional: absent means unchanged, `null` (where the
+/// field is doubly optional) means cleared.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigPatch {
+    /// Standing instructions. `Some(None)` clears them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system: Option<Option<String>>,
+    /// Generation parameters. Replaces the whole block, because every field is already optional.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<GenerateParams>,
+    /// Adapter hints. Merged field by field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hints: Option<Hints>,
+    /// The tool allow-list. Empty means every registered tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<String>>,
+    /// The route this session takes. Absent means unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing: Option<Routing>,
 }
