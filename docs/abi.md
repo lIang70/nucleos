@@ -218,11 +218,12 @@ caps what a session remembers having found. A session that can show eight tools 
 discovered thirty, and re-searching for one it used two turns ago is the waste the second cap
 prevents.
 
-`tool_search` is registered by the kernel itself when the catalog exceeds twelve tools, and the
-kernel seeds it to `always`: a catalog whose only door is hidden is a catalog the model can never
-enter, so configuring it away is refused rather than silently obeyed. It ranks the catalog and
-returns names and one-line summaries — never full schemas, which would spend the tokens the search
-exists to save.
+`tool_search` is registered by the kernel itself whenever there is a catalog, and seeded to
+`always`: a catalog whose only door is hidden is a catalog the model can never enter, so configuring
+it away is refused rather than silently obeyed. It is *shown* only when the policy leaves something
+reachable by no other route — a policy of `always` everywhere hides it, because there is then
+nothing to find. It ranks the catalog and returns names and one-line summaries — never full
+schemas, which would spend the tokens the search exists to save.
 
 Exposure is a display concern, not a permission: a tool that is not exposed is still callable by
 name, and execution is gated identically either way. `configure` refuses an `always` entry outside

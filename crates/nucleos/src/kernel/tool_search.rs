@@ -17,9 +17,6 @@ use std::collections::BTreeMap;
 /// The name the model calls. Fixed, because the prompt's description of discovery refers to it.
 pub(crate) const NAME: &str = "tool_search";
 
-/// Below this many tools, the catalog fits in the prompt and search is pure overhead.
-pub(crate) const SEARCH_THRESHOLD: usize = 12;
-
 /// How many hits a call gets when it does not say.
 const DEFAULT_LIMIT: usize = 8;
 
@@ -60,10 +57,6 @@ impl Search {
         }
     }
 
-    /// How many tools are searchable.
-    pub(crate) fn len(&self) -> usize {
-        self.summaries.len()
-    }
 }
 
 #[async_trait]
@@ -207,10 +200,13 @@ mod tests {
         assert!(!text.contains("Fails if it is missing"), "{text}");
     }
 
-    #[test]
-    fn the_search_tool_is_not_in_its_own_catalog() {
+    #[tokio::test]
+    async fn the_search_tool_is_not_in_its_own_catalog() {
         let catalog = Search::new(&[spec("read_file", "Read a file."), spec(NAME, "Search.")]);
-        assert_eq!(catalog.len(), 1);
+        let output = search(&catalog, r#"{"query":"search the catalog"}"#).await;
+
+        // It spends a result on something the model already has, every time it is used.
+        assert!(output.expose.is_empty(), "{output:?}");
     }
 
     #[tokio::test]

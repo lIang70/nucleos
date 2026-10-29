@@ -275,23 +275,23 @@ impl Kernel {
     }
 }
 
-/// Add the built-in discovery tool, if the catalog is big enough for it to pay.
+/// Add the built-in discovery tool.
 ///
 /// Built here rather than registered by a caller, because it has to see the registry: a search
 /// tool that was told about tools by hand would go stale the moment one was added.
+///
+/// Registered whenever there is a catalog, and *shown* only when the session's policy leaves
+/// something the prompt cannot reach without it. A deck of three tools the application chose to
+/// show in full therefore costs no search schema — but that is the policy's doing, not a size
+/// threshold only the kernel knows about.
 fn with_discovery(
     mut tools: BTreeMap<String, Arc<dyn Tool>>,
 ) -> BTreeMap<String, Arc<dyn Tool>> {
-    if tools.contains_key(tool_search::NAME) {
+    if tools.contains_key(tool_search::NAME) || tools.is_empty() {
         return tools;
     }
     let specs: Vec<crate::contract::ToolSpec> = tools.values().map(|tool| tool.spec()).collect();
-    let search = tool_search::Search::new(&specs);
-    // Below a handful of tools, the whole catalog fits in the prompt and search is pure overhead:
-    // one more schema in exchange for a lookup the model does not need.
-    if search.len() > tool_search::SEARCH_THRESHOLD {
-        let tool: Arc<dyn Tool> = Arc::new(search);
-        tools.insert(tool_search::NAME.to_owned(), tool);
-    }
+    let tool: Arc<dyn Tool> = Arc::new(tool_search::Search::new(&specs));
+    tools.insert(tool_search::NAME.to_owned(), tool);
     tools
 }

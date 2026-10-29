@@ -231,11 +231,7 @@ impl Kernel {
     /// How visible a tool is under the session's policy.
     #[must_use]
     pub(crate) fn level(&self, session: &session::Session, name: &str) -> Exposure {
-        if self.discoverable() {
-            session.tool_policy.exposure_of(name)
-        } else {
-            Exposure::Always
-        }
+        session.tool_policy.exposure_of(name)
     }
 
     /// Whether a tool is in the prompt right now, ignoring the per-turn budget.
@@ -305,17 +301,24 @@ impl Kernel {
     /// prompt now; the budget decides how much of that fits. All three, in that order.
     #[must_use]
     pub fn tool_specs(&self, session: &session::Session) -> Vec<crate::contract::ToolSpec> {
+        // The door is shown only when something is behind it. A policy that shows every tool in
+        // full leaves nothing to find, so spending a schema on the way to find it would be paying
+        // for an empty room.
+        let needs_door = self
+            .tools
+            .keys()
+            .filter(|name| self.allowable(session, name))
+            .any(|name| session.tool_policy.exposure_of(name).searchable());
+
         let mut candidates: Vec<(crate::contract::Exposure, u64, crate::contract::ToolSpec)> = self
             .tools
             .iter()
             .filter(|(name, _)| session.tools.is_empty() || session.tools.contains(name))
             .filter_map(|(name, tool)| {
-                // With no search tool registered the catalog is small enough that hiding any of it
-                // only costs a round trip, so the policy is not consulted at all.
-                let exposure = if self.discoverable() {
-                    session.tool_policy.exposure_of(name)
+                let exposure = if *name == super::tool_search::NAME && !needs_door {
+                    crate::contract::Exposure::Hidden
                 } else {
-                    crate::contract::Exposure::Always
+                    session.tool_policy.exposure_of(name)
                 };
                 let last_used = session.discovered.get(name).copied();
                 let shown = match exposure {
@@ -357,7 +360,7 @@ impl Kernel {
         specs
     }
 
-    /// Whether discovery is on: a catalog small enough to show in full does not need it.
+    /// Whether a discovery tool exists at all.
     #[must_use]
     pub fn discoverable(&self) -> bool {
         self.tools.contains_key(super::tool_search::NAME)

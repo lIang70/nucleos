@@ -177,18 +177,69 @@ async fn a_hidden_tool_is_never_in_the_prompt_but_is_still_callable() {
 }
 
 #[tokio::test]
-async fn a_small_catalog_gets_no_search_tool() {
+async fn a_catalog_shown_in_full_costs_no_search_schema() {
     let (kernel, _store) = kernel(2);
-    let session = kernel.open(&principal(), SessionId::new("s1"), spec(&[])).await.unwrap();
+    // The application says: show everything. There is then nothing to find, so the door goes too.
+    let session = kernel
+        .open(
+            &principal(),
+            SessionId::new("s1"),
+            SessionSpec {
+                config: ConfigPatch {
+                    tool_policy: Some(ToolPolicy {
+                        default: Exposure::Always,
+                        ..policy(&[])
+                    }),
+                    ..ConfigPatch::default()
+                },
+                ..SessionSpec::default()
+            },
+        )
+        .await
+        .unwrap();
     let names: Vec<String> = kernel
         .tool_specs(&session)
         .into_iter()
         .map(|spec| spec.name)
         .collect();
 
-    // Three tools fit in a prompt; adding a fourth that only finds the other three is a cost.
     assert!(!names.contains(&"tool_search".to_owned()), "{names:?}");
-    assert_eq!(names.len(), 3);
+    assert_eq!(names.len(), 3, "{names:?}");
+}
+
+#[tokio::test]
+async fn a_hidden_tool_stays_hidden_however_small_the_catalog() {
+    let (kernel, _store) = kernel(1);
+    // Two tools, so nothing about this catalog looks like it needs a policy. It still gets one:
+    // the size of the registry is not a reason to override what the application declared.
+    let session = kernel
+        .open(
+            &principal(),
+            SessionId::new("s1"),
+            SessionSpec {
+                config: ConfigPatch {
+                    tools: Some(vec!["read_file".to_owned(), "inert_00".to_owned()]),
+                    tool_policy: Some(ToolPolicy {
+                        default: Exposure::Always,
+                        exposures: [("inert_00".to_owned(), Exposure::Hidden)]
+                            .into_iter()
+                            .collect(),
+                        ..ToolPolicy::default()
+                    }),
+                    ..ConfigPatch::default()
+                },
+                ..SessionSpec::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let names: Vec<String> = kernel
+        .tool_specs(&session)
+        .into_iter()
+        .map(|spec| spec.name)
+        .collect();
+    assert_eq!(names, ["read_file"], "{names:?}");
 }
 
 #[tokio::test]

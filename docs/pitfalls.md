@@ -361,3 +361,21 @@ absent: it reads as a checked invariant. When generation migration is built, iso
 something the *kernel* derives from how it spawned a source, not something a tool asserts about
 itself.
 
+## 30. No size threshold decides behaviour
+
+**Decision.** The kernel never branches on how many tools are registered. Whether the search tool
+appears follows from the policy alone.
+
+**Why.** An earlier version skipped discovery below twelve tools: no `tool_search`, and the policy
+not consulted at all. That quietly reversed the application's explicit configuration — a tool the
+app declared `hidden` was shown, because the catalog happened to be small — and it made the same
+configuration behave differently in development and in production, where more sources connect.
+
+**The rule underneath.** A kernel may choose a *default*; it may not ignore a value the caller set.
+If a small catalog should not pay for search, the application says so with `default: always`, and
+the search tool disappears for a reason that is written down in the session's own state.
+
+**What it costs.** A three-tool deployment that configures nothing does pay one schema and one round
+trip for search. That is the price of the default being the safe one for scale, and it is visible
+and adjustable — unlike the threshold, which was invisible and not.
+

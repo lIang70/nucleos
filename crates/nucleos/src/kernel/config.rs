@@ -127,6 +127,7 @@ impl Kernel {
         session: &session::Session,
         policy: &crate::contract::ToolPolicy,
     ) -> Result<()> {
+        // Only when a door exists can a policy hide it.
         if self.discoverable() {
             policy.validate(super::tool_search::NAME)?;
         }

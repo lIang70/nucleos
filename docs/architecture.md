@@ -375,10 +375,16 @@ Discovery ranks with BM25 over each tool's name and description. Four rules, eac
 The corpus is a few hundred short documents, so the index is ~300 lines of inverted lists, not a
 search engine: `tantivy` here would be a deployment dependency for a table of contents.
 
-Below twelve registered tools the whole catalog fits in a prompt and `tool_search` is not added at
-all; with no search tool there is no policy either, and every allowed tool is shown. A search tool
-that costs one more schema to find the three beside it is pure overhead, and so is a policy that
-hides tools nothing can find.
+The search tool is shown only when something is behind it: if every allowed tool is `always` or
+`hidden`, nothing is searchable, the door is hidden too, and the prompt carries no schema for a room
+that is empty. That is how a three-tool deployment avoids paying for search — by declaring
+`default: always`, not by the kernel noticing the catalog is small.
+
+There is deliberately **no size threshold**. An earlier version skipped the policy entirely below
+twelve tools, which meant a `hidden` tool was shown whenever the catalog was small and hidden the
+moment a twelfth tool was registered by somebody else. A silent override of an explicit
+configuration is worse than a redundant schema, and the configuration is where the intent already
+lives.
 
 ## 9. Budget is credit
 
