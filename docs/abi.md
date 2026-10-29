@@ -248,7 +248,7 @@ ToolSource {
   name:      string
   transport: oneof { stdio {command, args, env} | http {url, auth} }
   allow:     repeated string     // tool name filters
-  isolation: none | process | vm
+  isolation: none | process | vm        # derived by the daemon, not declared by the source
 }
 ```
 
@@ -320,7 +320,7 @@ stops on empty, never on a short page.
 | `ToolCallStarted` | `tools/call` |
 | `ToolFinished` | `tools/call` result: `content` blocks → `Content.parts`, `isError` → `is_error` |
 | cancel a tool call | `notifications/cancelled` |
-| isolation `process` | server runs as a child process |
+| isolation `process` | the server runs as a child process, so the daemon derives `process` |
 
 Deliberately unsupported in v1: MCP **sampling** and **elicitation**. The daemon does not
 advertise those client capabilities, so a server that needs them must fall back. Adding

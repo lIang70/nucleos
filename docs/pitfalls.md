@@ -357,9 +357,12 @@ exist yet.
 
 **What it cost to keep.** Every tool implementor had to claim a level (the MCP source claimed
 `Process`), and nothing verified the claim. A self-declaration that nobody reads is worse than
-absent: it reads as a checked invariant. When generation migration is built, isolation returns as
-something the *kernel* derives from how it spawned a source, not something a tool asserts about
-itself.
+absent: it reads as a checked invariant.
+
+**Where the concept went.** Generation compatibility still has to compare it — same name, same
+schema, weaker isolation is a silent permission downgrade that every other check passes. It returns
+then, *derived* by the daemon from how it reached the source, and it is not a tool's to declare: a
+tool describing its own isolation is the claim the check was supposed to be verifying.
 
 ## 30. No size threshold decides behaviour
 

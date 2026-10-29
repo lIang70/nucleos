@@ -138,7 +138,6 @@ pub trait Model: Send + Sync {
 
 pub trait Tool: Send + Sync {
     fn spec(&self) -> ToolSpec;
-    fn isolation(&self) -> Isolation;                      // default: none
     async fn invoke(&self, args_json: &str, cx: &ToolCtx<'_>) -> ToolOutput;
 }
 
@@ -289,7 +288,13 @@ an MCP endpoint:
 | `name` | source identity |
 | transport | `stdio` (command) or `http` (URL + auth) |
 | `allow` | which advertised tools are exposed to sessions |
-| `isolation` | `none` / `process` / `vm` |
+
+Isolation is not a field a source declares. It is **derived** by the daemon from how it reached
+the source — a spawned child, an HTTP endpoint, an in-process closure — because that is a fact the
+daemon owns. A source asserting its own isolation would be an unchecked claim dressed as a
+verified one: this design had exactly that field once (`Tool::isolation`), no consumer ever read
+it, and it was removed rather than left to look like a guarantee. The descriptor returns with the
+generation check below, computed rather than declared.
 
 The daemon connects, calls `tools/list`, and snapshots the resulting specs into a
 **generation**. A generation is an immutable set of tool sources:
@@ -303,8 +308,11 @@ G.refcount == 0      → retire, close connections
 Because the set is immutable, compatibility is a pure function of two generations:
 
 - **Compatible** — same tool names, structurally equal input schemas (new *optional*
-  properties allowed), identical isolation descriptor. The session migrates to the latest
-  generation **at its next turn boundary**, recorded as a `generation_migrated` event.
+  properties allowed), and the same derived isolation descriptor. The session migrates to the
+  latest generation **at its next turn boundary**, recorded as a `generation_migrated` event.
+  The isolation term is the one that cannot be dropped: a tool whose name and schema are unchanged
+  but which now runs in-process where it used to run in a sandboxed child is a silent downgrade
+  that every other check passes.
 - **Incompatible** — the session stays pinned to its generation until it ends.
 
 Compatibility is decided by schema structure, not by a version number somebody typed.
