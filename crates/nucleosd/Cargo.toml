@@ -16,6 +16,7 @@ nucleos-proto = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tonic = { workspace = true }
+prost = { workspace = true }
 prost-types = { workspace = true }
 
 [lints]

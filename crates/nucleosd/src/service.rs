@@ -122,12 +122,10 @@ impl pb::kernel_server::Kernel for KernelService {
             .events(&id, request.from_seq)
             .await
             .map_err(|error| status(&error))?;
-        let stream = tokio_stream::iter(
-            events
-                .iter()
-                .map(|event| Ok(translate::event(event)))
-                .collect::<Vec<_>>(),
-        );
+        // Move each event into its wire form rather than collecting a second vector: a replay
+        // window is the whole session, and materialising it twice doubles the peak for nothing.
+        let stream =
+            tokio_stream::iter(events.into_iter().map(|event| Ok(translate::event(&event))));
         Ok(Response::new(Box::pin(stream) as Self::RunStream))
     }
 

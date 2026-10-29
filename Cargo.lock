@@ -445,6 +445,7 @@ version = "0.0.1-preview"
 dependencies = [
  "nucleos",
  "nucleos-proto",
+ "prost",
  "prost-types",
  "tokio",
  "tokio-stream",
