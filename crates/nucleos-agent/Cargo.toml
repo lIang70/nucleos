@@ -1,0 +1,22 @@
+[package]
+name = "nucleos-agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The reference agent loop, built on the nucleos kernel's syscalls."
+readme = "../../README.md"
+keywords = ["agent", "kernel", "loop"]
+categories = ["development-tools"]
+
+[dependencies]
+nucleos = { workspace = true }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+
+[lints]
+workspace = true

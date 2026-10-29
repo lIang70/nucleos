@@ -6,39 +6,43 @@ convenient.
 
 ## 1. Shape
 
-One service, twelve methods, one event stream. The contract lives at the repository root,
-`proto/nucleos/v1/`, because it belongs to every SDK rather than to the Rust crate that
-happens to serve it. The version is in the path, so a breaking change adds
-`proto/nucleos/v2/` and both are served — no schema is ever edited in place.
+JSON over HTTP, with server-sent events for the two streams. The contract is
+`schema/v1/schema.json`, generated from the kernel's own types — see [`wire.md`](wire.md) for the
+encoding rules and why the schema is not a separate type tree.
 
-Six files, split by *reason to change* rather than by size:
-
-| File | Contents | Changes when |
+| Route | Body | Returns |
 | --- | --- | --- |
-| `common.proto` | `Code`, `Error`, `Usage`, `Budget`, `SessionState`, `StopReason`, `Failure` | almost never; the leaf vocabulary |
-| `content.proto` | `Role`, `Message`, `Part`, `ToolUse`, `ToolResult` | the content model changes |
-| `session.proto` | `SessionSpec` and the lifecycle requests | a session request changes |
-| `event.proto` | `Event` and its payloads | **rarely — a diff here is a compatibility review** |
-| `source.proto` | `ToolSource`, transports, `Isolation`, register/reload | tool sourcing changes |
-| `kernel.proto` | the `service` and `Describe` — the table of contents | a method is added |
+| `GET /v1/describe` | — | `DescribeResponse` — version, models, ABI version |
+| `POST /v1/agents` | `StartRequest` | `StartResponse` — runs the reference loop to completion |
+| `POST /v1/sessions` | `StartRequest` | `StartResponse` — opens a session, drives nothing |
+| `GET /v1/sessions/{id}` | — | `SessionView` |
+| `POST /v1/sessions/{id}/inference` | `InferenceRequest` | `InferenceResponse` |
+| `POST /v1/sessions/{id}/tools` | `ToolBatchRequest` | `ToolBatchResponse` |
+| `POST /v1/sessions/{id}/state` | `StateRequest` | `204` |
+| `POST /v1/sessions/{id}/close` | — | `StartResponse` |
+| `POST /v1/sessions/{id}/verdict` | `VerdictRequest` | `StartResponse` — runs the loop on |
+| `GET /v1/sessions/{id}/events?from_seq=` | — | `text/event-stream` of `Event` |
 
-The import graph is `{common, content} ← {session, event}`, `common ← source`, and
-everything `← kernel`. `common` and `content` are leaves: neither imports another file of
-ours, which is what stops the graph from ever needing a cycle. Two consequences worth relying on:
+The machine-readable form of this table is [`openapi/v1/openapi.json`](../openapi/v1/openapi.json):
+`components.schemas` is the JSON Schema this repository already generates, and `paths` is the same
+ten routes with their status codes. It is committed and a test fails when it drifts:
 
-- **protoc enforces the layering for free.** proto3 forbids circular imports, so a schema
-  that reaches upward does not compile — the same discipline as the Rust module graph, and
-  the same reason for it.
-- **An event-only consumer imports `event.proto` and nothing else.** A log replayer or a UI
-  should not be linked against the session control surface it will never call.
+```bash
+NUCLEOS_OPENAPI=1 cargo test -p nucleos --test openapi   # regenerate
+cargo test -p nucleos --test openapi                     # fail if stale
+```
 
-The split follows one rule: **anything referenced from two files belongs below them.**
-That is why `content.proto` exists at all — both a request (the initial messages) and an
-event (a tool result) carry it, so it cannot live inside either.
+Two layers, deliberately:
 
-Splitting files does **not** create independent versions: the compatibility unit is the
-`package`, so `nucleos.v1` is frozen as a whole. File layout is also *not* part of the
-contract — it can be reorganised at any time without touching a single field number.
+- **The driver** (`/v1/agents`, `/v1/sessions/{id}/verdict`) runs the reference loop from
+  `nucleos-agent`. One call, an agent happens.
+- **The syscalls** (`open`, `inference`, `tools`, `state`, `close`) are one turn each, in an
+  order the caller chooses. An application that wants a different loop — plan-execute,
+  verification turns, map-reduce over items, its own sub-agents — calls these and owns the loop.
+
+`inference` takes its messages **in the request** and appends nothing: what you send is what you
+get, and whether the answer enters history is decided by the next `state` call. That is what makes
+a verification turn possible without polluting the transcript.
 
 ```text
 Describe   capabilities and the current generation
@@ -54,34 +58,41 @@ Register   add or update a tool source, producing a new generation
 Deregister remove a tool source
 Sources    list sources, generations, and health
 Reload     apply pending source changes as one generation swap
+
 ```
 
 Session control and source management are separate groups on purpose: one is per-session
 and hot, the other is node-wide and rare. Merging them would make every session call carry
 node-wide authority.
 
-### 1.1 Generated bindings
+### 1.1 The published artefact
 
-One schema, N generators. The schema is **never copied** into a crate or an SDK — a copy is
-a version that can drift, and the drift is only discovered by a client that fails in
-production.
+One document: [`openapi/v1/openapi.json`](../openapi/v1/openapi.json). Its `components.schemas`
+is every message the ABI carries, generated from the kernel's own types; its `paths` is the ten
+routes above. An SDK generates from it and never copies it — a copy is a version that drifts, and
+the drift is discovered by a client failing in production.
 
-| Language | Generated where | Why |
-| --- | --- | --- |---|---|
-| Rust (`nucleos-proto`) | committed to the repo | `cargo publish` packages only the crate directory, so the artefact — not the schema — is what ships |
-| other SDKs | committed or built, following that ecosystem's norm | Go and Python expect generated code checked in; TS builds it |
+```bash
+NUCLEOS_OPENAPI=1 cargo test -p nucleos --test openapi   # regenerate
+cargo test -p nucleos --test openapi                     # fail if stale
+```
 
-The consequence worth stating: **consumers never need `protoc`.** Requiring a compiler
-toolchain before a caller can open a session is a reason not to adopt.
+The default run only reads, so CI fails instead of quietly rewriting the file.
 
-Regeneration runs from the repo root over `proto/`, so adding `v2/` is a directory, not a
-fork of the build.
+Two things it cannot express, both stated rather than hidden:
+
+- **The event stream.** Each `data:` line is an `Event` — the response schema says so — but a
+  generator will not produce a working SSE client. Every other route is generated; this one is
+  hand-written, and the document says how the framing works.
+- **The unix socket.** A socket has no URL, so the servers entry is `/` with the transport
+  described in prose. A `http://localhost` base URL would be a guess that is wrong by default.
 
 ## 2. Sessions
 
 ```text
 StartRequest {
-  spec:      model selection, system prompt, initial input, tool allow-list
+  spec:      route (model chain + retries), generation params, system prompt,
+             initial input, tool allow-list
   budget:    tokens / cost / steps / wall clock
   metadata:  caller-defined labels, opaque to the kernel
   resume:    optional session id — restore and continue instead of creating
@@ -130,9 +141,12 @@ Event {
     state               StateChanged        // created/running/awaiting_*/…
     text_delta          TextDelta           // part_index + text
     reasoning_delta     ReasoningDelta      // part_index + text and/or signature
-    tool_call           ToolCallStarted     // ToolCall + deadline + progress_token
+    tool_call           ToolCallStarted     // index + id + name + deadline
+    tool_call_args      ToolCallArgs        // index + argument fragment
+    degraded            CapabilityDegraded  // a field the provider could not honour
+    attempt_failed      AttemptFailed       // one attempt, with what it cost
     tool_result         ToolFinished
-    usage               Usage               // tokens + cost, one per model call
+    usage               UsageReport         // tokens + cost + purpose + model + attempt
     awaiting_human      AwaitingHuman       // typed PermissionOptions
     budget_exhausted    BudgetExhausted
     failed              Failure
@@ -162,6 +176,16 @@ Rules:
   more text cannot be rendered — a second block is indistinguishable from a continuation.
 - `message_completed` carries the **assembled** message. Deltas are a rendering protocol;
   this is the record, and some content (a reasoning signature) exists only after assembly.
+- `tool_call` is followed by zero or more `tool_call_args`, addressed by `index`. Arguments
+  stream as text because that is what providers send and because a partial object cannot be
+  handed to a tool; the kernel assembles and validates before anything runs. Malformed
+  arguments become a tool result with `is_error`, which the model can read and repair — not a
+  failed turn.
+- `degraded` is emitted when a provider cannot honour a request field. A `tool_choice =
+  REQUIRED` that quietly became `AUTO` is a session behaving differently than it was
+  configured to, and the difference is undiscoverable afterwards unless it is recorded.
+- `attempt_failed` appears inside the stream for the same reason: a retry does not erase the
+  attempt that failed, or the money it spent.
 - A tool result carries content **and** an `is_error` flag. A failure is not a separate
   branch: the error text is content the model reads, and refusing it a place in the content
   model would leave the model with a message it cannot see.
@@ -246,8 +270,9 @@ stops on empty, never on a short page.
   new field.
 - Enum values are added, never renumbered. Unknown values must be tolerated by clients —
   which is why `DESCRIBE` reports the daemon's supported version range.
-- Generators are run by us and the bindings ship in `nucleos-proto`; consumers never need
-  `protoc`.
+- The schema is committed and a test fails when the code and the file disagree. Renaming a
+  serialized field is a breaking change even when the Rust field keeps its name: `#[serde(rename)]`
+  is how a rename stays invisible on the wire.
 
 ## 9. Mapping to MCP
 
@@ -310,7 +335,20 @@ A stream that can be wrong about order is a stream nobody can build a UI on, so:
   after it. No event ever follows a terminal state.
 - Two concurrent `Run` streams never disagree about the order of events they both see.
 
-## 11. Deferred
+## 11. Not served, and why
+
+| Not an endpoint | Why |
+| --- | --- |
+| Stateless model invocation | This is an agent OS, not a gateway. A host that wants a raw model call links the library; see [`architecture.md`](architecture.md) §7. |
+| Embeddings | A tool: an embedding model belongs with the index and the ranking that use it. |
+| Speech to text, text to speech | A tool. Voice output also needs an artifact store the kernel does not have. |
+| Tool-source registration, reload | Tool sources are declared in the daemon's configuration; discovery lands with the MCP client. |
+| Credit, cancel, list | They need an operator surface; `close` exists because a syscall can do it statelessly. |
+
+An endpoint that exists and returns 501 is a contract nobody can rely on, so these are absent
+rather than declared.
+
+## 12. Deferred
 
 | Deferred | Why it is safe to defer |
 | --- | --- |

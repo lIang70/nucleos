@@ -1,6 +1,6 @@
 //! The module graph is one-way, and this test is what makes that true tomorrow.
 //!
-//! `contract → engine → adapter` is asserted twice: once by the order of the `pub mod`
+//! `contract → kernel → adapter` is asserted twice: once by the order of the `pub mod`
 //! declarations, and once by the kernel having no dependency on the wire contract. Both
 //! are cheap to check now and expensive to unwind later — a layer that reaches upward
 //! couples everything above it to everything below.
@@ -13,7 +13,7 @@ use std::path::Path;
 #[test]
 fn modules_are_declared_bottom_up() {
     let lib = read("src/lib.rs");
-    let order: Vec<usize> = ["pub mod adapter;", "pub mod contract;", "pub mod engine;"]
+    let order: Vec<usize> = ["pub mod adapter;", "pub mod contract;", "pub mod kernel;"]
         .iter()
         .map(|needle| {
             lib.find(needle)
@@ -23,7 +23,7 @@ fn modules_are_declared_bottom_up() {
 
     assert!(
         order[0] < order[1] && order[1] < order[2],
-        "modules must be declared contract, engine, adapter — cheapest dependency first"
+        "modules must be declared contract, kernel, adapter — cheapest dependency first"
     );
 }
 
@@ -31,12 +31,16 @@ fn modules_are_declared_bottom_up() {
 /// needs it" is a constraint it would carry forever, so the manifest is the place to stop
 /// it.
 #[test]
-fn kernel_does_not_depend_on_the_wire() {
+fn kernel_does_not_depend_on_a_transport() {
+    // The wire *format* is the kernel's own types now (that is the trade C1 makes). What must
+    // still stay out is the *transport*: a kernel that links a web framework has opinions about
+    // sockets, and a host that embeds it inherits them.
     let manifest = read("Cargo.toml");
-    for forbidden in ["nucleos-proto", "tonic", "prost", "axum"] {
+    for forbidden in ["axum", "hyper", "tower", "tonic", "prost", "nucleos-agent"] {
         assert!(
             !manifest.contains(forbidden),
-            "the kernel must not depend on `{forbidden}`: translation belongs in nucleosd"
+            "the kernel must not depend on `{forbidden}`: transport belongs in nucleosd, \
+and the loop belongs in nucleos-agent"
         );
     }
 }

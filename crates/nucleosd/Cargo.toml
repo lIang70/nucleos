@@ -11,8 +11,18 @@ keywords = ["agent", "kernel", "daemon", "grpc"]
 categories = ["development-tools"]
 
 [dependencies]
+axum = { workspace = true }
 nucleos = { workspace = true }
-nucleos-proto = { workspace = true }
+nucleos-agent = { workspace = true }
+nucleos-mcp = { workspace = true }
+nucleos-openai = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+
+[dev-dependencies]
+tower = { workspace = true }
 
 [lints]
 workspace = true

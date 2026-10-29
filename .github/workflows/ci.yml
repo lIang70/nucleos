@@ -21,22 +21,14 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Contract
-        # proto3 rejects circular imports, so compiling the schema is
-        # also the test that the import graph still runs
-        # common -> {session, event, source} -> kernel.
-        run: |
-          sudo apt-get update && sudo apt-get install -y protobuf-compiler
-          protoc --proto_path=proto --include_imports \
-            --descriptor_set_out=/dev/null \
-            proto/nucleos/v1/kernel.proto
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets
       - name: Test
-        # Includes the layering test: the module graph and the absence of a wire
-        # dependency are gates, not conventions.
+        # Includes the tests that are gates rather than checks: the module graph, the
+        # absence of a transport dependency in the kernel, and the committed schema
+        # matching the code.
         run: cargo test --workspace
       - name: Docs
         run: cargo doc --workspace --no-deps

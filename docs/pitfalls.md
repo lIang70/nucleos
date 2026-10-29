@@ -18,8 +18,8 @@ brought back a file handle that no longer exists".
 
 ## 2. Checkpoints only at turn boundaries
 
-**Decision.** Nothing mid-turn is persisted. The engine never exposes a partially folded
-state.
+**Decision.** Nothing mid-turn is persisted. A driver only writes state at a boundary it
+chose.
 
 **Why.** A checkpoint is a promise: "replay from here is equivalent". That promise is only
 keepable at a boundary where no call is in flight and no result is half-applied.
@@ -84,14 +84,19 @@ identical.
 **Why.** A version number is a human claim, and humans get it wrong. A schema diff is
 machine-checkable and cannot lie about itself.
 
-## 9. The kernel does not know the wire
+## 9. The kernel does not know the transport
 
-**Decision.** `nucleos` has no dependency on `nucleos-proto`. Values that only exist on
-the wire are translated in `nucleosd`.
+**Decision.** The kernel's types *are* the wire format: `contract.rs` derives `JsonSchema` beside
+`Serialize`. What stays out of the kernel is the **transport** — `axum`, `hyper`, `tower`, sockets,
+authentication — and a structural test fails if any of them appears in its manifest.
 
-**Why.** Every abstraction that exists because "the wire needs it" is a constraint the
-kernel will carry forever. Keeping the dependency out is one line in a manifest and a
-structural test; keeping it out later is a refactor.
+**Why the line moved.** It used to run between the kernel and the wire, and the price was a
+623-line translation layer plus a second type tree. JSON has none of protobuf's odd corners
+(`uint64` as a string, `oneof` as `Option`) that made the separation pay for itself, so the
+cheaper line is the one between *what a message is* and *how it travels*.
+
+**What it still buys.** A host that embeds the kernel inherits no web framework, and the
+transport can be replaced without touching a single domain type.
 
 ## 10. No multi-bearer abstraction
 
@@ -132,22 +137,23 @@ incident cannot be trusted.
 ambiguous — the writer cannot know whether a state is settled. Single-writer makes
 "settled" mean "the task is at a boundary".
 
-## 15. The schema's file layout is not the contract
+## 15. The schema is committed, and a test fails when it drifts
 
-**Decision.** Six `.proto` files, split by reason to change; imports run
-`{common, content} ← {session, event}`, `common ← source`, everything `← kernel`.
+**Decision.** `schema/v1/schema.json` is generated from the kernel's types and committed.
+Regeneration is explicit (`NUCLEOS_SCHEMA=1 cargo test -p nucleos --test schema`), and the
+default run only reads — so CI fails instead of quietly rewriting the file.
 
-**Why.** The compatibility unit is the `package` and the field numbers, not the file a
-message sits in. That means the layout is free to reorganise — and it also means splitting
-files buys no independent versioning, which is the thing people expect it to buy.
+**Why.** Under C1 the kernel's serialized shape is a promise to every client, and a promise with
+no artefact is a rumour. The committed schema is what an SDK generates from; the drift test is
+what keeps it honest.
 
-**What it does buy.** proto3 forbids circular imports, so `protoc` fails on a schema that
-reaches upward. The import graph becomes a layering test we did not have to write, and an
-event-only consumer can link `event.proto` without the session control surface.
+**What replaced the compiler.** `protoc` used to reject a circular import and `buf` used to catch
+a breaking change; both are gone. In their place: a `$ref`-resolves test, a duplicate-definition
+test, and the drift test. They are weaker than `buf breaking`, which is why §5 of [`wire.md`] is a
+written rule rather than a tool.
 
-**Failure it prevents.** One 450-line file where a diff that changes an event payload and a
-diff that adds a method look identical to a reviewer, and where nothing stops the event
-vocabulary from depending on session control.
+**Failure it prevents.** A field renamed in Rust that silently renames itself on the wire, and an
+SDK generated from a schema nobody regenerated.
 
 ## 16. A tool result is content, and failure is a flag
 
@@ -217,3 +223,72 @@ and an oversight gets quietly adopted.
 **Where the reason for an adopted shape lives.** In the `.proto` comment beside the field —
 that is where a reader is standing when the question occurs to them. Not in a separate
 document, and not in a list of precedents.
+
+## 20. An OS does not ship a model gateway
+
+**Decision.** No stateless "invoke a model" endpoint. `Generate` was added, argued for, and
+removed.
+
+**Why.** The argument for it — normalization, routing, retries and cost accounting come as one
+package — is an argument about *inside a session*, which is where all four already are. Outside a
+session the same argument becomes a second product with its own scope: once `/generate` exists,
+"why can't it embed?" has no answer except "yet".
+
+**What it would have cost.** Coherence. The honest answer — embeddings are a tool, because an
+embedding model belongs with the index that uses it — stops being sayable.
+
+**The one thing it bought.** Cost attribution for calls a tool makes. That is fixed at the
+smaller scale: [`ToolOutput::usage`] lets a tool report what it spent, and a tool that reports
+nothing stays unreported.
+
+**Failure it prevents.** A kernel whose endpoint list is a roadmap of modalities, each one
+half-implemented.
+
+## 21. A field the provider cannot honour must be reported
+
+**Decision.** `CapabilityDegraded` is emitted whenever a request field could not be carried,
+and the attempt records it too.
+
+**Why.** A `tool_choice = REQUIRED` that quietly became `AUTO` does not fail — it behaves
+differently. The session then looks like a model that will not call tools, and the actual
+cause is two layers below, in a capability nobody checked.
+
+**Failure it prevents.** Debugging a prompt for an hour when the answer was in the adapter.
+
+## 22. Retries belong to whoever keeps the ledger
+
+**Decision.** Routing — chain, retries, fallback — lives in the kernel, and every attempt is
+recorded with its usage.
+
+**Why.** Split the two and one of them lies. A host that retries but does not record makes the
+kernel's total wrong; a kernel that records but does not retry makes the total right and the
+availability poor. One owner, one ledger.
+
+**Failure it prevents.** A bill that does not match the attempts, and a "flaky" provider that
+was never actually retried.
+
+## 23. An attempt that produced content is never retried
+
+**Decision.** A retry or a fallback happens only when the failed attempt emitted nothing. Once
+a text or tool fragment has gone out, the turn fails instead.
+
+**Why.** The fragments are already in the event log, and the log is the record. A retry after a
+partial answer puts two half-answers in one turn's history, and no replay can tell which one the
+model was supposed to be continuing. The cost of a failed turn is one turn; the cost of a
+duplicated history is a transcript nobody can trust.
+
+**What it costs.** A flaky provider that drops mid-stream is not silently papered over. That is
+the point: the failure is visible, and the operator can see which provider dropped.
+
+## 24. Generate a schema from one root, not by merging roots
+
+**Decision.** `nucleos::wire::schema` takes a single `schema_for!(Abi)` and publishes that.
+
+**Why.** Merging a document per type looks equivalent and is not: schemars describes the same
+reachable type twice — once as a root, once as another root's definition — and the two
+descriptions are free to differ in ways nothing reconciles. The first attempt did exactly that
+and died on "two different schemas share the name ToolResult".
+
+**What it also fixed.** A recursive type's root is a `$ref` to its own definition, so inserting it
+as a body collides with the definition already collected. One pass has one version of each type by
+construction, and neither problem exists.

@@ -18,7 +18,7 @@ that line in the wrong place makes everything downstream ambiguous.
 ## 2. Process and trust boundary
 
 ```text
-SDK ──gRPC (Unix socket by default; TCP + TLS optional)──▶ nucleosd
+SDK ──HTTP/JSON + SSE (Unix socket by default; TCP + TLS optional)──▶ nucleosd
                                                             │
                           ┌─────────────────────────────────┤
                           │  authn → Principal{tenant, subject}
@@ -57,6 +57,31 @@ daemon decides what a caller may see; the kernel just answers the query it was g
 - A shared store with a `tenant` column is a deployment choice, and the operator must know
 it is one.
 
+### 2.2 Isolation
+
+Two layers, and the split is the whole design:
+
+| Layer | Who sets it | Where it lives |
+| --- | --- | --- |
+| **Policy** — what a session's commands may touch | the operator | `SessionSpec.sandbox`, carried in the checkpoint |
+| **Permissions** — what one command asks for on top | the caller | a field of that one `exec` |
+
+`SandboxPolicy` is `danger_full_access`, `read_only`, `workspace_write` or `external_sandbox`,
+each with a network flag. `SandboxPermissions` is `use_default`, `require_escalated`, or
+`with_additional_permissions`.
+
+The policy is **not** a request field. A caller that can name its own policy can name
+`danger_full_access`, and a permission slip the untrusted side writes is not a permission model.
+
+Nothing widens without a gate. An escalation becomes `Gated::Exec` — the policy sees the argv, the
+session's policy and what was asked for — and the usual answer applies: allow, deny, or ask a
+human. `with_additional_permissions` only ever adds; there is no field for removing a restriction,
+because narrowing by request would let one command change what a later command may assume.
+
+The mechanism — seatbelt, bwrap with landlock, a Windows restricted token — sits behind the
+`exec` syscall and is never named in the contract. A deployment that runs on none of them still
+has a working `exec`; it just runs with the isolation the platform can give.
+
 ### 2.3 Session identity is `(tenant, session)`
 
 Two tenants may each own a session called `abc`. The kernel's key is the pair; the id is
@@ -69,48 +94,34 @@ see — and the first collision would be a cross-tenant read.
 `tenant` travels on the principal, never on a request field. A request that names its own
 tenant is a request that can name somebody else's.
 
-### 2.2 Isolation
+### 2.4 What the kernel still guarantees
 
-Isolation is a **declared property of a tool source**, enforced by whoever launches it:
+Two properties survive every rearrangement above, because they are correctness rather than
+policy:
 
-| Descriptor | Who enforces it |
-| --- | --- |
-| `none` | Trusted in-process code; nothing to enforce |
-| `process` | The daemon spawns a child (stdio) or connects to one (http); the sandbox is the OS's |
-| `vm` | The daemon launches a VM or a wasm instance |
-
-The kernel records the descriptor, refuses to migrate a session into a generation where it
-changed, and otherwise stays out of it. There is no isolator trait in the kernel, because
-the kernel never performs the isolation — it only refuses to pretend the descriptor is
-free to change.
-
-What the daemon owns, and the kernel does not:
-
-| Concern | What must be true |
-| --- | --- |
-| spawning | one child per `process` source, with a scrubbed environment — no inherited descriptors, no shared `HOME`, no shared temp directory |
-| separation | the agent's runtime and the tool's runtime are physically distinct environments; "the tool inherits the agent's credentials" is the classic incident |
-| deadlines | the deadline is enforced on the **call**, not on the process: graceful terminate, then kill |
-| egress | whatever the operator configured. The kernel has no opinion and no code path for it |
-
-What the kernel does guarantee, because these are correctness properties and not policy:
-
-- **Every tool call resolves** — with a result, a failure, or a timeout. Never with silence.
-- **It resolves against the generation that issued it**, even if a reload landed simultaneously.
-- **A dead tool is an unhealthy source, not a crashed kernel.** The call fails; the session
-  lives and decides what to do with a failure, which is business logic the kernel does not own.
+- **Every call resolves** — with a result, a failure, or a timeout. Never with silence.
+- **A dead tool is an unhealthy source, not a crashed kernel.** The call fails; the session lives
+  and decides what to do with a failure, which is business logic the kernel does not own.
 
 ## 3. Crates
 
 ```text
 crates/
-  nucleos-proto/   generated bindings (committed) — see proto/ for the source
-  nucleos/         contract/ · engine/ · adapter/
-  nucleosd/        listener · authn · translation
-proto/             the ABI contract: nucleos/v1/*.proto
+  nucleos/         contract/ · adapter/ · kernel/ (syscalls) · wire/
+  nucleos-agent/   the reference loop, built on those syscalls
+  nucleos-openai/  one provider adapter: the OpenAI-compatible family
+  nucleosd/        router · error mapping · listener
+openapi/           the published ABI, committed
 ```
 
-The module graph inside `nucleos` is one-way: `contract → engine → adapter → facade`.
+`nucleos-openai` exists as its own crate because the kernel must not depend on an HTTP client: the
+kernel owns the mechanism, and a provider's dialect is an adapter like any other.
+
+`nucleos-agent` depends on `nucleos` and nothing depends on `nucleos-agent` except the daemon:
+the loop is the application's, and the kernel must not learn it.
+
+The module graph inside `nucleos` is one-way: `contract → kernel → adapter`, with `wire` beside
+`contract` because it is the same types plus the HTTP envelopes.
 A single structural test pins it, so a later edit that reaches upward fails CI instead of
 quietly coupling the layers.
 
@@ -120,42 +131,64 @@ Every extension point is a trait. There are five; a sixth needs an argument.
 
 ```rust
 pub trait Model: Send + Sync {
-    fn capability(&self) -> Capability;   // tools? stream? context window?
-    fn invoke(&self, req: &ModelRequest) -> ModelStream;
+    fn capability(&self) -> Capability;                    // tools? required? schema? window?
+    fn count_tokens(&self, request: &ModelRequest) -> Result<u64>;
+    async fn invoke(&self, request: ModelRequest) -> Result<ModelStream>;
 }
 
 pub trait Tool: Send + Sync {
     fn spec(&self) -> ToolSpec;
-    async fn invoke(&self, args: Json, cx: &ToolCtx) -> ToolOutcome;
+    fn isolation(&self) -> Isolation;                      // default: none
+    async fn invoke(&self, args_json: &str, cx: &ToolCtx<'_>) -> ToolOutput;
 }
 
 pub trait Store: Send + Sync {
-    async fn append(&self, sid: SessionId, events: &[Event]) -> Result<()>;
-    async fn snapshot(&self, sid: SessionId) -> Result<Option<Snapshot>>;
-    async fn events_since(&self, sid: SessionId, seq: u64) -> Result<Vec<Event>>;
+    async fn append(&self, session: &SessionId, events: &[Event]) -> Result<()>;
+    async fn snapshot(&self, session: &SessionId) -> Result<Option<Snapshot>>;
+    async fn events_since(&self, session: &SessionId, seq: u64) -> Result<Vec<Event>>;
 }
 
 pub trait Policy: Send + Sync {
-    fn check(&self, call: &ToolCall, who: &Principal) -> Verdict;  // Allow | Deny | AskHuman
+    async fn check(&self, request: PolicyRequest<'_>) -> Verdict;   // Allow | Deny | AskHuman
 }
 
-pub trait Clock: Send + Sync { fn now(&self) -> Instant; }
+pub trait Clock: Send + Sync { fn now_unix_millis(&self) -> u64; }
 ```
 
-`Clock` exists so replay and budget tests are deterministic — wall-clock time is an input,
-not an ambient fact.
+Four of the five are `async`: the kernel is an I/O orchestrator, and a synchronous signature
+would push every implementor toward blocking a runtime worker.
 
-`Tool`'s only production implementation wraps an MCP tool source (§7). The trait stays
-separate so the engine can be tested with a two-line fake.
+Three shapes are deliberate and easy to get wrong:
+
+- **`Tool::invoke` returns no `Result`.** A failed call is content with `is_error` set, because
+  the error text is what the model must read in order to recover. `Err` would leave the model
+  with a failure it cannot see.
+- **`Model::invoke` does return `Result`.** An error there means the call never started; an
+  error *inside* the stream means it started and then failed — which still costs money and
+  still has to be recorded.
+- **`count_tokens` is required, with no default.** A context budget the kernel cannot compute
+  is a budget it cannot enforce, and a built-in "characters divided by four" would be the
+  kernel guessing in exactly the place accuracy matters.
+- **`Clock` reports unix milliseconds, not `Instant`.** Events carry unix milliseconds and
+  `Instant` can neither be serialised nor reconstructed, so a replay could not reproduce one.
+  Time is an input, not an ambient fact.
+
+`Tool`'s only production implementation wraps an MCP tool source (§8). The trait stays
+separate so the kernel can be tested with a two-line fake, and `adapter::fake` ships those
+fakes because a fake only the kernel's tests can reach is a fake every host writes again.
 
 ## 5. Session state machine
 
 ```text
-Created → Running ─┬→ AwaitingTool  ─┐
-                   ├→ AwaitingHuman ─┤   (HITL is a state, not a callback)
-                   ├→ Cancelling ────┴→ Done | Failed | Cancelled
+Created → Running ─┬→ AwaitingTool ──→ AwaitingHuman   (a batch that needs a human)
+                   ├→ AwaitingHuman                    (HITL is a state, not a callback)
+                   ├→ Cancelling ───→ Done | Failed | Cancelled
                    └→ (turn boundary) Checkpoint
 ```
+
+A tool turn asks policy about the whole batch *before* running any of it, so a batch that needs
+a human parks with nothing executed — which is why the edge from `AwaitingTool` to
+`AwaitingHuman` exists.
 
 Three hard constraints:
 
@@ -187,30 +220,66 @@ because the error text is what the model must read to recover. The only restrict
 a tool result's content may not contain another tool call — `Content` and `Part` are
 mutually recursive, so that rule is what keeps the nesting one level deep.
 
-### 6.1 Model selection
+### 6.1 Selection, retries and the ledger
 
-One model per session, chosen by name at `Start` from a table the daemon configures. That
-is the whole of v1's routing.
+A session carries a **route**, not a model name: an ordered chain plus a retry count. The
+kernel walks it — first target, retries against it, then the next — and records every attempt.
 
-Explicitly **not** in v1: fallback chains, per-call model choice, cost-based routing,
-retry-with-a-different-model. Each of them is a policy engine, and a policy engine inside
-the kernel is exactly the thing §1 forbids. The trait has room for a router — a `Model`
-implementation may itself be a router — but the kernel does not grow one.
+```text
+Attempt { index, model, phase, trigger, outcome, usage, duration, degraded[] }
+Ledger  { attempts[], total }
+```
 
-The table is reloadable with the generation set: it is configuration, not state, and a
-session keeps the model it started with.
+Three properties make the ledger usable:
 
-Two properties worth naming, because both are easy to leave implicit and both bite:
+- **A failed attempt that streamed still pays.** Its usage is folded into the total, because
+  dropping it under-reports the bill.
+- **An unreported counter stays unreported.** Adding an unknown as zero is the same lie told
+  more quietly.
+- **The first attempt defines the total, later ones add to it.** A fresh total is
+  zeros-and-unknown, and "nothing recorded yet" is not the same as "a report was missing".
 
-- **A model entry is pinned exactly like a generation.** Reloading the table affects new
-  sessions; a running session keeps the model it started with, and its entry cannot be
-  removed while a session still references it.
-- **Capability is checked at `Start`, not at the first call.** A session that declares
-  tools against a model advertising no tool support is refused at `Start` with `INVALID`.
-  Degrading silently — dropping the tools and hoping the prompt still works — converts a
-  configuration error into a wrong answer nobody can trace.
+Routing lives in the kernel because the alternative is a runtime whose availability is its
+provider's, and because the ledger has to be produced by whoever chose the target. Model
+lookup is a plain registry, not a sixth trait: routing needs lookup, and lookup does not need
+polymorphism.
 
-## 7. Tool sources and generations
+`ToolChoice::Required` belongs to the same story. "The model explained the problem instead of
+calling the tool" is the most common way an agent fails, and forcing a call is the only fix
+that does not involve asking the prompt more nicely.
+
+## 7. Why there is no gateway
+
+`nucleos` is an agent OS, not a model gateway. There is no stateless "invoke a model" endpoint, and
+adding one was a mistake that this section exists to prevent from coming back.
+
+The argument for it was that normalization, routing, retries and cost accounting are one package,
+so a caller who wants one wants all of them. That argument is real — and it is an argument about
+*inside a session*, which is where all four already live. A host that wants a raw model call does
+not need an ABI for it: it links the library.
+
+What a gateway endpoint would cost is not code, it is coherence. Once `/generate` exists, the
+question "why can't it embed?" has no answer except "yet" — and the honest answer, that embeddings
+are a tool, becomes impossible to give.
+
+Three things follow, and they are decisions rather than omissions:
+
+- **Embeddings, speech recognition and speech synthesis are tools.** An embedding model belongs
+  with the index and the ranking function that use it (§11), and speech in or out is a media
+  pipeline, not a decision the kernel makes. A tool source is exactly where a provider-specific
+  pipeline belongs.
+- **A tool may report what it spent.** [`ToolOutput::usage`] is optional: a tool that calls a paid
+  API can say so, and the kernel folds it into the session's usage and the ledger. A tool that
+  reports nothing stays unreported — which is the same rule model usage follows, and the reason
+  the ledger never quietly counts an unknown as zero.
+- **The kernel's own calls are attributed.** A compaction summary is a model call the kernel makes
+  for itself, and `Purpose::Summary` is how its spend is told apart from the answer's.
+
+Cost attribution is the one thing a gateway endpoint would have bought that a tool cannot. Giving
+tools a way to report is the smaller, more honest fix: the kernel attributes what it is told and
+says so when it is told nothing.
+
+## 8. Tool sources and generations## 8. Tool sources and generations
 
 Tools are declared as **sources**, not as definitions pushed through the ABI. A source is
 an MCP endpoint:
@@ -243,7 +312,7 @@ Compatibility is decided by schema structure, not by a version number somebody t
 A mid-turn swap is never allowed. A tool call that has been issued must resolve against
 the generation that issued it.
 
-## 8. Budget is credit
+## 9. Budget is credit
 
 Budget is enforced as flow control, not as a post-hoc check: the caller grants credit,
 each `usage` event spends it, exhaustion drains the session and writes a checkpoint.
@@ -251,14 +320,14 @@ each `usage` event spends it, exhaustion drains the session and writes a checkpo
 | Layer | Enforced by |
 | --- | --- |
 | tokens / cost | credit from the caller, debited per model call |
-| steps | engine, per turn |
-| wall clock | engine, via `Clock` |
+| steps | the driver, per turn |
+| wall clock | the kernel, via `Clock` |
 | policy | `Verdict::Deny` before the tool runs |
 
 The ledger records every attempt — including attempts that failed after streaming a
 partial answer. Under-reporting cost is the one direction nobody forgives.
 
-## 9. Persistence
+## 10. Persistence
 
 ```text
 Store:  events[sid] = [(seq, at, Event)]        append-only
@@ -273,7 +342,7 @@ is evidence), and **resumption** (`Run(from_seq)` needs no extra machinery).
 The cost is event-schema evolution, paid up front: every event carries `schema_version`
 and there is an upcaster table from day one.
 
-## 10. Context management
+## 11. Context management
 
 A session will outlive its model's context window. Three mechanisms, in order of who owns
 them:
@@ -339,7 +408,7 @@ Three properties follow, and none of them survive in-place editing of history:
 The event kind lands with P3 as a **purely additive** change to `nucleos.v1` — a new member
 of the `Event.kind` oneof, no version bump, no field renumbered.
 
-## 11. Telemetry
+## 12. Telemetry
 
 Names are not ours to invent. Attribute names follow the OpenTelemetry GenAI conventions
 (`gen_ai.usage.input_tokens`, `gen_ai.request.model`, `gen_ai.operation.name`), and trace
@@ -353,7 +422,7 @@ The kernel emits rather than exports: it produces events, and the daemon turns t
 spans, metrics and logs. The kernel has no OTLP dependency, and adding one would put network
 I/O on the hot path of every turn.
 
-## 12. Non-goals
+## 13. Non-goals
 
 | Not building | Why |
 | --- | --- |
@@ -361,14 +430,15 @@ I/O on the hot path of every turn.
 | A wire protocol to our own tools | MCP exists; we are a client |
 | Identity, signing, certificates | The daemon's job; the kernel takes `Principal` as data |
 | Cluster placement, supervision, self-healing | A platform concern; the kernel does not know how many nodes exist |
+| A provider-specific parameter bag | One extension hatch is enough; the five parameters every provider has are carried explicitly |
 | Multiple ABI bearers (in-process / child / remote as one abstraction) | The most expensive kind of debt: every interface is forced to the most conservative shape |
 | Live tool swapping inside a turn | Replaced only at turn boundaries |
 | Auto-triggered reload (file watch) | Deferred; reload is explicitly requested |
 
-## 13. Stages
+## 14. Stages
 
 | Stage | Content | Passes when |
 | --- | --- | --- |
-| P1 | contract + engine + in-memory store + one model adapter + one MCP source | a multi-turn session with a tool call runs end to end |
+| P1 | contract + kernel + in-memory store + one model adapter + one MCP source | a multi-turn session with a tool call runs end to end |
 | P2 | SQLite store, checkpoint/restore, credit enforcement | `kill -9` then resume continues the session |
 | P3 | context management: budget, compaction, retrieval references | a session stays coherent past the model's context window |
