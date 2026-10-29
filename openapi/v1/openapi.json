@@ -335,6 +335,14 @@
             },
             "type": "array"
           },
+          "tools": {
+            "default": [],
+            "description": "The tools a session may be given.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "version": {
             "description": "The daemon's version.",
             "type": "string"
