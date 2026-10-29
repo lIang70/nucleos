@@ -500,3 +500,107 @@ async fn the_pool_forgets_what_has_gone_quiet() {
         session.discovered()
     );
 }
+
+#[tokio::test]
+async fn one_enormous_schema_does_not_evict_the_smaller_tools_behind_it() {
+    let store = Arc::new(MemoryStore::new());
+    let bulky: Arc<dyn Tool> = Arc::new(Inert {
+        spec: ToolSpec {
+            // Sorts first among equals, so it is considered before the small one.
+            name: "aaa_bulky".to_owned(),
+            description: "A tool with an enormous schema.".to_owned(),
+            input_schema_json: format!(r#"{{"type":"object","description":"{}"}}"#, "x".repeat(4096)),
+        },
+    });
+    let kernel = Kernel::builder()
+        .model("primary", Arc::new(FakeModel::text(["unused"])))
+        .store(Arc::clone(&store) as Arc<dyn Store>)
+        .policy(Arc::new(AllowAll))
+        .clock(Arc::new(FixedClock::at(0)))
+        .routing(Routing {
+            chain: vec!["primary".to_owned()],
+            retries: 0,
+        })
+        .tool(bulky)
+        .tool(inert("zzz_small", "A tool with a small schema."))
+        .build()
+        .unwrap();
+
+    let mut session = kernel
+        .open(
+            &principal(),
+            SessionId::new("s1"),
+            SessionSpec {
+                config: ConfigPatch {
+                    tool_policy: Some(ToolPolicy {
+                        // Room for the door and one small schema, and nothing near 4 KiB.
+                        budget: nucleos::contract::DefinitionBudget {
+                            max_definitions: 8,
+                            max_bytes: 900,
+                        },
+                        ..policy(&[])
+                    }),
+                    ..ConfigPatch::default()
+                },
+                ..SessionSpec::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    kernel
+        .invoke_tool(&mut session, &call("tool_search", r#"{"query":"tool schema"}"#))
+        .await
+        .unwrap();
+    let names: Vec<String> = kernel
+        .tool_specs(&session)
+        .into_iter()
+        .map(|spec| spec.name)
+        .collect();
+
+    // The oversized schema is skipped, not treated as the end of the list.
+    assert!(names.contains(&"zzz_small".to_owned()), "{names:?}");
+    assert!(!names.contains(&"aaa_bulky".to_owned()), "{names:?}");
+}
+
+#[tokio::test]
+async fn the_event_names_what_reached_the_prompt_not_what_entered_the_pool() {
+    let (kernel, store) = kernel(20);
+    let mut session = kernel
+        .open(
+            &principal(),
+            SessionId::new("s1"),
+            SessionSpec {
+                config: ConfigPatch {
+                    tool_policy: Some(ToolPolicy {
+                        // Exactly one definition: the door takes it, so nothing found can show.
+                        budget: nucleos::contract::DefinitionBudget {
+                            max_definitions: 1,
+                            max_bytes: u64::MAX,
+                        },
+                        ..policy(&[])
+                    }),
+                    ..ConfigPatch::default()
+                },
+                ..SessionSpec::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    kernel
+        .invoke_tool(&mut session, &call("tool_search", r#"{"query":"read a file"}"#))
+        .await
+        .unwrap();
+
+    // It is remembered, and callable by name — but it did not reach the prompt, so no event says
+    // it did.
+    assert!(session.discovered().contains_key("read_file"));
+    let exposed: Vec<&str> = store
+        .recorded(&session.id().clone())
+        .iter()
+        .filter(|event| event.kind.type_name() == "nucleos.v1.tools_exposed")
+        .map(|_| "tools_exposed")
+        .collect();
+    assert!(exposed.is_empty(), "the budget could not fit it: {exposed:?}");
+}

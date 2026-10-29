@@ -162,8 +162,9 @@ impl Kernel {
         duration_millis: u64,
     ) -> Result<()> {
         // Using a tool is the strongest evidence it belongs in the pool: the model reached for it
-        // without searching first, which is what "recently used" is for.
-        if self.allowable(session, &call.name) {
+        // without searching first, which is what "recently used" is for. The search tool itself is
+        // always visible, so giving it a slot would evict a found tool to remember a door.
+        if self.allowable(session, &call.name) && call.name != super::tool_search::NAME {
             session.discovered.insert(call.name.clone(), session.round);
         }
         // A tool that reported a cost is charged for it; one that said nothing is not assumed
@@ -199,26 +200,36 @@ impl Kernel {
     /// should not turn the whole call into an error, and showing a tool that may never run would
     /// provoke a call whose refusal the model cannot explain.
     async fn expose(&self, session: &mut session::Session, names: &[String]) -> Result<()> {
-        let mut added = Vec::new();
+        let before = self.shown(session);
         for name in names {
-            let before = self.visible(session, name);
             // The ceiling decides, not the tool: this is the whole reason exposure is safe. A tool
             // that ranked something forbidden is not an error — it has no session and cannot know.
             if !self.allowable(session, name) || self.level(session, name) == Exposure::Hidden {
                 continue;
             }
             session.discovered.insert(name.clone(), session.round);
-            if !before && self.visible(session, name) {
-                added.push(name.clone());
-            }
         }
         self.trim_pool(session);
+        let after = self.shown(session);
 
+        // What reached the prompt, not what entered the pool. A discovery the budget cannot fit is
+        // still callable by name — the prompt is a view of the pool, not the whole of it — but an
+        // event claiming it entered the prompt would be a second, wrong truth.
+        let added: Vec<String> = after.difference(&before).cloned().collect();
         if !added.is_empty() {
             self.emit(session, EventKind::ToolsExposed { names: added })
                 .await?;
         }
         Ok(())
+    }
+
+    /// The names a prompt would carry right now, budget included.
+    #[must_use]
+    pub fn shown(&self, session: &session::Session) -> std::collections::BTreeSet<String> {
+        self.tool_specs(session)
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect()
     }
 
     /// Whether the ceiling allows a tool at all.
@@ -232,19 +243,6 @@ impl Kernel {
     #[must_use]
     pub(crate) fn level(&self, session: &session::Session, name: &str) -> Exposure {
         session.tool_policy.exposure_of(name)
-    }
-
-    /// Whether a tool is in the prompt right now, ignoring the per-turn budget.
-    #[must_use]
-    pub(crate) fn visible(&self, session: &session::Session, name: &str) -> bool {
-        if !self.allowable(session, name) {
-            return false;
-        }
-        match self.level(session, name) {
-            Exposure::Always => true,
-            Exposure::Direct | Exposure::Deferred => session.discovered.contains_key(name),
-            Exposure::Hidden => false,
-        }
     }
 
     /// Forget what has not been reached recently, and what no longer fits.
@@ -345,12 +343,25 @@ impl Kernel {
         let budget = &session.tool_policy.budget;
         let mut bytes = 0u64;
         let mut specs = Vec::new();
-        for (_, _, spec) in candidates {
-            // Always-tools are admitted even over budget: a prompt with no `tool_search` has no way
-            // back, and a baseline that can be evicted by its own discoveries is not a baseline.
+        for (exposure, _, spec) in candidates {
             let weight = definition_bytes(&spec);
-            if specs.len() >= budget.max_definitions || bytes + weight > budget.max_bytes {
+            // The baseline is admitted whatever the budget says. An application's own `always` set
+            // disappearing because discovery used the room would be the configuration being
+            // ignored by the thing that was supposed to enforce it — and a prompt that loses its
+            // door has no way to ask for it back.
+            if exposure == Exposure::Always {
+                bytes += weight;
+                specs.push(spec);
+                continue;
+            }
+            // The count is monotonic along the sorted order, so the first overflow ends the list.
+            if specs.len() >= budget.max_definitions {
                 break;
+            }
+            // Bytes are not: one enormous schema early in the order would otherwise evict every
+            // smaller tool behind it. Skip this one and keep filling.
+            if bytes + weight > budget.max_bytes {
+                continue;
             }
             bytes += weight;
             specs.push(spec);

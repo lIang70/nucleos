@@ -344,6 +344,34 @@ baseline on turn 40, so every turn ages every entry and `idle_rounds` retires th
 is by exposure rank first, then by staleness: `always` outranks `direct` outranks `deferred`,
 because a baseline that can be evicted by its own discoveries is not a baseline.
 
+#### What a search changes
+
+A search changes exactly one thing: names enter the pool. The search result is content — a line per
+hit, name and summary — and the *display* consequence arrives in the next prompt, because the turn
+being answered was built before the result existed. There is no way around that ordering, and
+pretending otherwise would mean mutating a prompt mid-flight.
+
+The next prompt is then built in four steps, in this order:
+
+1. **ceiling** — drop anything `config.tools` does not allow;
+2. **policy** — `always` is in, `hidden` is out, `direct`/`deferred` are in only while the pool
+   holds them;
+3. **order** — by exposure rank, then most recently reached, then name, so two sessions with the
+   same history build the same prompt;
+4. **budget** — by count, then by bytes.
+
+Two details in step 4 are load-bearing. The baseline is admitted *whatever the budget says*: an
+application's own `always` set vanishing because discovery filled the room would be the
+configuration overridden by the thing meant to enforce it, and a prompt that loses its door cannot
+ask for it back. And a schema that does not fit the byte budget is **skipped, not treated as the
+end of the list** — the order is by rank and recency, not by size, so breaking on the first
+oversized schema would evict every smaller tool behind it.
+
+`tools_exposed` names what reached the prompt, not what entered the pool. The two differ whenever
+the budget is full: a discovered tool that did not fit is still callable by name — the prompt is a
+view of the pool, not the whole of it — but an event claiming it entered the prompt would be a
+second, wrong truth.
+
 `hidden` exists so that "do not advertise this" and "do not allow this" stay separable. A hidden
 tool is still callable by name and still gated; only the prompt forgets it.
 

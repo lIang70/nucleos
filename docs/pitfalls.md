@@ -379,3 +379,30 @@ the search tool disappears for a reason that is written down in the session's ow
 trip for search. That is the price of the default being the safe one for scale, and it is visible
 and adjustable — unlike the threshold, which was invisible and not.
 
+## 31. A schema that does not fit is skipped, not the end of the list
+
+**Decision.** The budget loop `continue`s on a byte overflow and `break`s only on a count overflow.
+
+**Why.** Candidates are ordered by exposure rank and recency, never by size. One tool with a
+gigabyte-scale schema early in that order would otherwise evict every smaller tool behind it — the
+prompt would carry fewer tools than the budget allows, and the cause would be invisible from the
+outside.
+
+**Why the baseline is exempt.** `always` definitions are admitted whatever the budget says. An
+application's declared baseline that disappears because discovery used the room is the configuration
+being overridden by the mechanism meant to enforce it, and a prompt that loses its door has no way
+to ask for it back.
+
+## 32. `tools_exposed` reports the prompt, not the pool
+
+**Decision.** The event carries `shown(after) - shown(before)`, computed after the pool is trimmed
+and the budget applied.
+
+**Why.** The two diverge exactly when the budget is full: a tool enters the pool, and the next
+prompt cannot hold it. Reporting the pool would say the model can see something it cannot, and a
+replay reading that event would reconstruct a prompt that never existed.
+
+**What is still true of the difference.** A discovered tool the prompt omits remains callable by
+name — the prompt is a view of the pool, not the whole of it. That is why the ceiling and the gate,
+not the prompt, are what execution checks.
+
