@@ -4,6 +4,10 @@ The ABI is a permanent commitment. Once a caller depends on a field, that field 
 forever. Every decision below is made to keep the surface small rather than to keep it
 convenient.
 
+> **Wire in transition.** The ABI is moving from gRPC to JSON over HTTP with server-sent events.
+> [`wire.md`](wire.md) defines the target wire and the encoding rules; `proto/` still compiles and
+> the daemon still serves it, until the migration's later steps land.
+
 ## 1. Shape
 
 One service, thirteen methods, two streams. The contract lives at the repository root,

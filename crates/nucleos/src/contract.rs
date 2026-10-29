@@ -7,6 +7,7 @@
 //! The types are deliberately narrower than any provider's vocabulary. A capability that
 //! has no representation here is a capability the kernel does not claim to understand.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -15,7 +16,9 @@ use std::fmt;
 ///
 /// The caller chooses it when resuming, so it is a string rather than an opaque handle.
 /// That makes a retried `Start` idempotent instead of creating a second session.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 pub struct SessionId(String);
 
 impl SessionId {
@@ -44,7 +47,18 @@ impl fmt::Display for SessionId {
 /// one at start and may only move forward at a turn boundary, and only when the two
 /// generations are compatible.
 #[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    JsonSchema,
 )]
 pub struct Generation(pub u64);
 
@@ -56,7 +70,7 @@ pub struct Generation(pub u64);
 ///
 /// The set is the smallest one every provider can express. A provider with a fifth role
 /// maps it onto one of these in its adapter — the kernel does not learn it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     /// Instructions.
@@ -70,7 +84,7 @@ pub enum Role {
 }
 
 /// One turn's worth of content.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Message {
     /// Who produced it.
     pub role: Role,
@@ -82,7 +96,7 @@ pub struct Message {
 }
 
 /// An ordered multimodal payload.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Content {
     /// The parts, in order.
     pub parts: Vec<Part>,
@@ -126,7 +140,7 @@ impl Content {
 /// `audio/*` or `video/*` media type, because the kernel moves those bytes and never
 /// interprets them. A kind is added when the kernel must act differently — not when a
 /// provider can emit something new.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Part {
     /// What it is.
     #[serde(flatten)]
@@ -152,7 +166,7 @@ impl Part {
 }
 
 /// The kind of a [`Part`], and its payload.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PartKind {
     /// Plain text.
@@ -172,14 +186,14 @@ pub enum PartKind {
 }
 
 /// Plain text.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TextPart {
     /// The text.
     pub text: String,
 }
 
 /// An image.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ImagePart {
     /// Where the bytes are.
     pub source: MediaSource,
@@ -190,7 +204,7 @@ pub struct ImagePart {
 /// `url` exists because inlining a large image into an event log is a storage incident: the
 /// log is append-only and replayed, so every byte is paid for on every replay. `data` exists
 /// because a caller with no reachable store must still be able to send one.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MediaSource {
     /// The media type, e.g. `image/png`. Required: bytes without a type are not renderable.
     pub media_type: String,
@@ -199,7 +213,7 @@ pub struct MediaSource {
 }
 
 /// Where media bytes live.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "from", rename_all = "snake_case")]
 pub enum MediaFrom {
     /// A URL to fetch.
@@ -220,7 +234,7 @@ pub enum MediaFrom {
 /// This is also how truncation is expressed. A result too large to store is spilled; the
 /// text keeps a marker and this part keeps the pointer. That is a policy outcome, not an
 /// error.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct FilePart {
     /// Where to find it.
     pub uri: String,
@@ -232,7 +246,7 @@ pub struct FilePart {
 
 /// Structured output. JSON text rather than bytes, because JSON is UTF-8 by definition and
 /// text is what every toolchain can read.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DataPart {
     /// The media type, usually `application/json`.
     pub media_type: String,
@@ -241,21 +255,21 @@ pub struct DataPart {
 }
 
 /// The model asking for a tool.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ToolCallPart {
     /// The call.
     pub call: ToolCall,
 }
 
 /// A tool's answer.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ToolResultPart {
     /// The result.
     pub result: ToolResult,
 }
 
 /// One tool invocation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ToolCall {
     /// The correlation id.
     pub id: String,
@@ -279,7 +293,7 @@ pub struct ToolCall {
 /// One rule constrains the recursion `Content → Part → ToolResult → Content` otherwise
 /// allows: a tool result's content may contain any kind **except** [`PartKind::ToolCall`] or
 /// [`PartKind::ToolResult`]. Nesting is one level deep, and a validator enforces it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ToolResult {
     /// The call this answers.
     pub call_id: String,
@@ -295,7 +309,7 @@ pub struct ToolResult {
 /// reject the next turn when the signature is not returned verbatim. Dropping it turns a
 /// multi-turn session into a failure on turn two. `id` and `source` exist for the same
 /// reason — they are opaque to the kernel and must round-trip.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ReasoningPart {
     /// The reasoning text. May be empty when the provider withholds it.
     pub text: String,
@@ -316,7 +330,7 @@ pub struct ReasoningPart {
 /// The vocabulary is the session's, not a provider's. `AwaitingHuman` is a state rather
 /// than a callback, so a confirmation that arrives three hours later resumes a session
 /// instead of reviving a stack frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionState {
     /// Allocated, spec not yet applied.
@@ -349,7 +363,7 @@ impl SessionState {
 ///
 /// Four layers, all present: a provider's `finish_reason`, the step cap, the wall clock,
 /// and the cost ledger. Each alone can be defeated; together they cannot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {
     /// The model said it was finished and no stop condition fired first.
@@ -378,7 +392,7 @@ pub enum StopReason {
 ///
 /// `None` means unbounded for that dimension, which is a decision the host makes, not a
 /// default the kernel assumes.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Budget {
     /// Turns a session may take.
     pub max_steps: Option<u64>,
@@ -395,7 +409,7 @@ pub struct Budget {
 ///
 /// A counter the provider did not report stays `None` rather than becoming zero: a budget
 /// that charges for silence is worse than one that knows it does not know.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Usage {
     /// Prompt tokens.
     pub input_tokens: u64,
@@ -435,7 +449,7 @@ impl Usage {
 /// `seq` is dense and gap-free, which is what makes it usable as a resume cursor without
 /// a separate acknowledgement protocol. `schema_version` is written alongside the event so
 /// a reader can upcast instead of guessing.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Event {
     /// Monotonic within a session, starting at 0.
     pub seq: u64,
@@ -462,7 +476,7 @@ impl Event {
 /// Events carry the content model rather than copies of its fields — [`ToolCall`] here is
 /// the same type a [`ToolCallPart`] holds — so a live stream and a stored history cannot
 /// disagree about the shape of an answer.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EventKind {
     /// A session state transition, with the reason when it is terminal.
@@ -638,7 +652,7 @@ impl EventKind {
 ///
 /// The kernel *reports* the choice; it never decides that "always" applies. That is policy,
 /// and it belongs to the host.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PermissionOption {
     /// Caller-chosen, returned verbatim in the verdict.
     pub id: String,
@@ -649,7 +663,7 @@ pub struct PermissionOption {
 }
 
 /// The kinds of answer a permission request offers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionKind {
     /// Allow this call.
@@ -664,7 +678,7 @@ pub enum PermissionKind {
 ///
 /// Codes are enums rather than strings because the first caller who compares a string
 /// freezes it forever.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
     /// The request was malformed.
@@ -702,7 +716,7 @@ impl ErrorCode {
 ///
 /// Travels as data. The kernel never authenticates, never verifies a signature, and never
 /// derives a tenant from a request field.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Principal {
     /// The tenant this caller belongs to.
     pub tenant: String,
@@ -711,7 +725,7 @@ pub struct Principal {
 }
 
 /// A tool, declared.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ToolSpec {
     /// The name the model calls.
     pub name: String,
@@ -725,7 +739,7 @@ pub struct ToolSpec {
 ///
 /// Checked at `Start`, never discovered by trial: a model that silently ignores tools, or
 /// silently truncates a prompt, changes the answer without saying so.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Capability {
     /// Whether it accepts tool definitions and emits tool calls.
     pub tools: bool,
@@ -746,7 +760,7 @@ pub struct Capability {
 ///
 /// Declared per tool source and enforced by whoever launches it. The kernel only refuses to
 /// migrate a session into a generation where it changed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Isolation {
     /// Trusted in-process code; nothing to enforce.
@@ -762,7 +776,7 @@ pub enum Isolation {
 /// Part of the snapshot because the wait outlives any process: a session parked on a
 /// confirmation must be resumable tomorrow, and the call it is holding has to come back with
 /// it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PendingCall {
     /// The call that has not run.
     pub call: ToolCall,
@@ -776,7 +790,7 @@ pub struct PendingCall {
 ///
 /// `seq` is the event this snapshot already includes, so recovery is `load(snapshot)` then
 /// `events_since(snapshot.seq + 1)`. Two numbers that must agree, written down once.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Snapshot {
     /// The session it belongs to.
     pub session: SessionId,
@@ -805,7 +819,7 @@ pub struct Snapshot {
 /// The kernel makes calls of its own — a compaction summary is one — so the purpose has to be
 /// first-class: a budget whose summarisation spend is indistinguishable from answer spend is a
 /// budget nobody can explain after the fact.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Purpose {
     /// The answer the caller is waiting for.
@@ -821,7 +835,7 @@ pub enum Purpose {
 ///
 /// A chain rather than a name because the kernel owns retries and fallback: a runtime that
 /// gives up on the first 503 has the availability of its least reliable provider.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Routing {
     /// Candidate models, first that answers wins.
     pub chain: Vec<String>,
@@ -830,7 +844,7 @@ pub struct Routing {
 }
 
 /// Where in a call an attempt happened.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AttemptPhase {
     /// Compiling and checking, before anything was sent.
@@ -842,7 +856,7 @@ pub enum AttemptPhase {
 }
 
 /// What caused an attempt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AttemptTrigger {
     /// The first attempt for the chosen target.
@@ -854,7 +868,7 @@ pub enum AttemptTrigger {
 }
 
 /// How an attempt ended.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum AttemptOutcome {
     /// It answered.
@@ -874,7 +888,7 @@ pub enum AttemptOutcome {
 /// Recorded rather than swallowed: a `tool_choice = Required` that quietly became `Auto` is a
 /// session behaving differently than it was configured to, and the difference is
 /// undiscoverable afterwards.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Degraded {
     /// The request field, e.g. `tool_choice`.
     pub field: String,
@@ -883,7 +897,7 @@ pub struct Degraded {
 }
 
 /// One attempt, recorded whether or not it produced anything.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Attempt {
     /// Position in the ledger.
     pub index: u32,
@@ -904,7 +918,7 @@ pub struct Attempt {
 }
 
 /// Every attempt a call made, and the sum.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Ledger {
     /// In order.
     pub attempts: Vec<Attempt>,
