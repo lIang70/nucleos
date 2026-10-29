@@ -41,5 +41,5 @@ pub use model::{
 };
 pub use policy::{Gated, Policy, PolicyRequest, Verdict};
 pub use registry::ModelRegistry;
-pub use store::Store;
+pub use store::{SessionPage, SessionQuery, Store};
 pub use tool::{Tool, ToolCtx, ToolOutput};

@@ -4,7 +4,27 @@
 //! last event it already includes, so recovery loads the snapshot and asks for everything
 //! *after* it.
 
-use crate::contract::{Event, SessionId, Snapshot};
+use crate::contract::{Event, SessionId, SessionKind, Snapshot};
+
+/// The half of a listing a store can answer.
+#[derive(Debug, Clone, Default)]
+pub struct SessionQuery {
+    /// Only sessions of this kind.
+    pub kind: Option<SessionKind>,
+    /// How many to return.
+    pub limit: usize,
+    /// Continue after this id. Absent starts at the beginning.
+    pub after: Option<SessionId>,
+}
+
+/// One page, and where the next one starts.
+#[derive(Debug, Clone, Default)]
+pub struct SessionPage {
+    /// The ids, in order.
+    pub sessions: Vec<SessionId>,
+    /// Where to continue. Absent means the store had nothing more.
+    pub next: Option<SessionId>,
+}
 use crate::error::Result;
 use async_trait::async_trait;
 
@@ -18,12 +38,12 @@ pub trait Store: Send + Sync {
     /// silently renumbered event makes every later resume cursor wrong.
     async fn append(&self, session: &SessionId, events: &[Event]) -> Result<()>;
 
-    /// Every session the store holds.
+    /// A page of session ids, oldest-first by id.
     ///
     /// Only the store knows what exists; a supervisor knows what is *running*, which is a different
-    /// and smaller set. A listing that has to answer "which exec sessions were created" needs this
-    /// one.
-    async fn sessions(&self) -> Result<Vec<SessionId>>;
+    /// and smaller set. The store answers the cheap half of a listing — filter by kind, order, page
+    /// — because a real store can push that into an index and this one cannot.
+    async fn sessions(&self, query: &SessionQuery) -> Result<SessionPage>;
 
     /// The most recent snapshot, if one was ever written.
     async fn snapshot(&self, session: &SessionId) -> Result<Option<Snapshot>>;

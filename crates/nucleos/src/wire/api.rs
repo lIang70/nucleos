@@ -295,11 +295,14 @@ pub struct ProcessInfo {
     pub process: crate::contract::ProcessState,
 }
 
-/// The processes this node is running.
+/// The processes this node knows about.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct ProcessListResponse {
     /// In session order.
     pub processes: Vec<ProcessInfo>,
+    /// Where to continue. Absent on the last page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_page_token: Option<String>,
 }
 
 /// What starting a process answered with.

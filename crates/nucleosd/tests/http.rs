@@ -330,3 +330,81 @@ async fn the_list_shows_the_exec_sessions_and_says_how_they_ended() {
     // listing — a signalled process has no code.
     assert_eq!(processes[0]["process"]["status"]["output"]["exit_code"], -1);
 }
+
+#[tokio::test]
+async fn the_listing_filters_and_pages_over_the_abi() {
+    let app = router(running());
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/processes")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"argv":["sleep","30"],"sandbox":{"policy":{"kind":"danger_full_access"}}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let session = body_json(response).await["session"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // A filter that matches nothing is an empty page.
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/processes?phase=exited")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        body_json(response).await["processes"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/processes?phase=running&limit=1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let listed = body_json(response).await;
+    assert_eq!(listed["processes"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["processes"][0]["session"], session.as_str());
+    // No second row, so there is no token to continue from.
+    assert!(listed.get("next_page_token").is_none() || listed["next_page_token"].is_null());
+
+    // A phase this build does not know is a client bug, not an empty page.
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/processes?phase=runningg")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let error = body_json(response).await;
+    assert!(
+        error["reason"]
+            .as_str()
+            .unwrap()
+            .contains("pending, running")
+    );
+}

@@ -283,11 +283,13 @@ async fn the_listing_is_durable_and_only_counts_process_sessions() -> nucleos::R
         .open(&principal(), SessionId::new("a1"), SessionSpec::default())
         .await?;
 
-    let listed = kernel.processes().await?;
-    assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].0, id);
+    let listed = kernel
+        .processes(&nucleos::contract::ProcessQuery::default())
+        .await?;
+    assert_eq!(listed.processes.len(), 1);
+    assert_eq!(listed.processes[0].0, id);
     assert!(matches!(
-        listed[0].1.status,
+        listed.processes[0].1.status,
         nucleos::contract::ProcessStatus::Exited { .. }
     ));
 
@@ -302,10 +304,12 @@ async fn the_listing_is_durable_and_only_counts_process_sessions() -> nucleos::R
             retries: 0,
         })
         .build()?;
-    let listed = fresh.processes().await?;
-    assert_eq!(listed.len(), 1);
+    let listed = fresh
+        .processes(&nucleos::contract::ProcessQuery::default())
+        .await?;
+    assert_eq!(listed.processes.len(), 1);
     assert!(matches!(
-        listed[0].1.status,
+        listed.processes[0].1.status,
         nucleos::contract::ProcessStatus::Exited { .. }
     ));
 
@@ -315,7 +319,108 @@ async fn the_listing_is_durable_and_only_counts_process_sessions() -> nucleos::R
     snapshot.process.as_mut().unwrap().status =
         nucleos::contract::ProcessStatus::Running { pid: 1 };
     store.write_snapshot(snapshot).await?;
-    let listed = fresh.processes().await?;
-    assert_eq!(listed[0].1.status, nucleos::contract::ProcessStatus::Lost);
+    let listed = fresh
+        .processes(&nucleos::contract::ProcessQuery::default())
+        .await?;
+    assert_eq!(
+        listed.processes[0].1.status,
+        nucleos::contract::ProcessStatus::Lost
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_page_fills_through_a_phase_filter_and_says_where_to_continue() -> nucleos::Result<()> {
+    let (kernel, _) = kernel();
+    // Three that end, and two that do not, so a filter has something to skip between them.
+    for index in 0..3 {
+        let session = kernel
+            .spawn(
+                &principal(),
+                SessionId::new(format!("done-{index}")),
+                spec(&["sh", "-c", "true"], SandboxPolicy::DangerFullAccess),
+            )
+            .await?;
+        kernel.wait(&session).await?;
+    }
+    let mut running = Vec::new();
+    for index in 0..2 {
+        running.push(
+            kernel
+                .spawn(
+                    &principal(),
+                    SessionId::new(format!("live-{index}")),
+                    spec(&["sleep", "30"], SandboxPolicy::DangerFullAccess),
+                )
+                .await?,
+        );
+    }
+
+    // One page of two, filtered to the ones that ended: the page has to be *filled*, not just
+    // truncated, so the kernel walks the store until it has two rows or runs out.
+    let page = kernel
+        .processes(&nucleos::contract::ProcessQuery {
+            phase: Some(nucleos::contract::ProcessPhase::Exited),
+            limit: 2,
+            after: None,
+        })
+        .await?;
+    assert_eq!(page.processes.len(), 2);
+    assert!(page.next.is_some(), "there is a third");
+
+    // The cursor resumes after the last row examined, so nothing is visited twice and nothing is
+    // skipped.
+    let next = kernel
+        .processes(&nucleos::contract::ProcessQuery {
+            phase: Some(nucleos::contract::ProcessPhase::Exited),
+            limit: 2,
+            after: page.next.clone(),
+        })
+        .await?;
+    assert_eq!(next.processes.len(), 1);
+    assert_eq!(next.next, None, "the third was the last");
+
+    // A cursor that lands between rows of different phases: the page must find the finished ones
+    // after it and skip the running ones, without losing the last row it examined.
+    let tail = kernel
+        .spawn(
+            &principal(),
+            SessionId::new("zzz-done"),
+            spec(&["sh", "-c", "true"], SandboxPolicy::DangerFullAccess),
+        )
+        .await?;
+    kernel.wait(&tail).await?;
+    let after_running = kernel
+        .processes(&nucleos::contract::ProcessQuery {
+            phase: Some(nucleos::contract::ProcessPhase::Exited),
+            limit: 2,
+            after: Some(nucleos::contract::SessionId::new("live-0")),
+        })
+        .await?;
+    assert_eq!(
+        after_running
+            .processes
+            .iter()
+            .map(|(session, _)| session.as_str())
+            .collect::<Vec<_>>(),
+        ["zzz-done"],
+        "the running row between them must be skipped, not duplicated or lost"
+    );
+    assert_eq!(after_running.next, None, "nothing follows the last row");
+
+    // A filter that matches nothing is an empty page, not an error.
+    let none = kernel
+        .processes(&nucleos::contract::ProcessQuery {
+            phase: Some(nucleos::contract::ProcessPhase::Pending),
+            limit: 10,
+            after: None,
+        })
+        .await?;
+    assert!(none.processes.is_empty());
+
+    for session in running {
+        let _ = kernel.signal(&session).await;
+        let _ = kernel.wait(&session).await;
+    }
     Ok(())
 }

@@ -1323,6 +1323,35 @@ pub struct ProcessState {
     pub status: ProcessStatus,
 }
 
+/// Where a process is, without the payload.
+///
+/// A filter asks "which ended?", not "which ended with exit code 3", so the tag is its own type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessPhase {
+    /// No pid yet.
+    Pending,
+    /// Running.
+    Running,
+    /// It ended.
+    Exited,
+    /// It is gone and we do not know how it ended.
+    Lost,
+}
+
+impl ProcessStatus {
+    /// The phase, without the payload.
+    #[must_use]
+    pub fn phase(&self) -> ProcessPhase {
+        match self {
+            Self::Pending => ProcessPhase::Pending,
+            Self::Running { .. } => ProcessPhase::Running,
+            Self::Exited { .. } => ProcessPhase::Exited,
+            Self::Lost => ProcessPhase::Lost,
+        }
+    }
+}
+
 impl ProcessState {
     /// Whether the process has ended, one way or another.
     #[must_use]
@@ -1462,4 +1491,46 @@ pub struct ConfigPatch {
     /// The route this session takes. Absent means unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routing: Option<Routing>,
+}
+
+// ---------------------------------------------------------------------------
+// Listing processes
+// ---------------------------------------------------------------------------
+
+/// What a listing asks for.
+///
+/// A keyset cursor rather than an offset: sessions are created and retired constantly, and an
+/// offset would skip or repeat rows exactly when a process ends — which is the moment a caller is
+/// most likely to be paging.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ProcessQuery {
+    /// Only sessions in this phase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<ProcessPhase>,
+    /// How many to return. Zero asks for the default.
+    #[serde(default)]
+    pub limit: u32,
+    /// Continue after this session id. Absent starts at the beginning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<SessionId>,
+}
+
+impl ProcessQuery {
+    /// The page size this query asks for.
+    #[must_use]
+    pub fn page_size(&self) -> usize {
+        match self.limit {
+            0 => 50,
+            limit => usize::try_from(limit.min(500)).unwrap_or(50),
+        }
+    }
+}
+
+/// One page of a listing.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ProcessPage {
+    /// The sessions in this page, in id order.
+    pub processes: Vec<(SessionId, ProcessState)>,
+    /// Where to continue. Absent means this was the last page.
+    pub next: Option<SessionId>,
 }

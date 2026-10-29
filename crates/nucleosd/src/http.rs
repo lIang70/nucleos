@@ -540,21 +540,61 @@ async fn start_process(
 /// The supervisor's memory, not the store: a session that outlived a restart is absent here and
 /// reports `Lost` in its own view. A durable list needs the store to enumerate sessions, which it
 /// cannot do yet.
+/// Query parameters for the process listing.
+#[derive(Debug, serde::Deserialize)]
+struct ProcessesQuery {
+    /// `pending`, `running`, `exited` or `lost`.
+    #[serde(default)]
+    phase: Option<String>,
+    /// Page size. Zero asks for the default.
+    #[serde(default)]
+    limit: u32,
+    /// Continue after this session id.
+    #[serde(default)]
+    page_token: Option<String>,
+}
+
 async fn list_processes(
     State(app): State<Arc<App>>,
+    Query(query): Query<ProcessesQuery>,
 ) -> Result<Json<ProcessListResponse>, ApiError> {
     let kernel = app.kernel()?.clone();
-    let processes = kernel
-        .processes()
-        .await
-        .map_err(|error| ApiError::from_error(&error))?
-        .into_iter()
-        .map(|(session, process)| ProcessInfo {
-            session: session.as_str().to_owned(),
-            process,
+
+    // A phase this build does not know is a client bug, not an empty page: answering "nothing" to
+    // a misspelled filter is how a caller concludes the feature is broken.
+    let phase = match query.phase.as_deref() {
+        None | Some("") => None,
+        Some("pending") => Some(nucleos::contract::ProcessPhase::Pending),
+        Some("running") => Some(nucleos::contract::ProcessPhase::Running),
+        Some("exited") => Some(nucleos::contract::ProcessPhase::Exited),
+        Some("lost") => Some(nucleos::contract::ProcessPhase::Lost),
+        Some(other) => {
+            return Err(ApiError::from_error(&nucleos::Error::invalid(format!(
+                "unknown phase {other:?}; expected pending, running, exited or lost"
+            ))));
+        }
+    };
+
+    let page = kernel
+        .processes(&nucleos::contract::ProcessQuery {
+            phase,
+            limit: query.limit,
+            after: query.page_token.map(nucleos::contract::SessionId::new),
         })
-        .collect();
-    Ok(Json(ProcessListResponse { processes }))
+        .await
+        .map_err(|error| ApiError::from_error(&error))?;
+
+    Ok(Json(ProcessListResponse {
+        processes: page
+            .processes
+            .into_iter()
+            .map(|(session, process)| ProcessInfo {
+                session: session.as_str().to_owned(),
+                process,
+            })
+            .collect(),
+        next_page_token: page.next.map(|next| next.as_str().to_owned()),
+    }))
 }
 
 async fn write_stdin(

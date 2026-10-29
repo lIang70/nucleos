@@ -416,54 +416,70 @@ async fn reader(
 }
 
 impl Kernel {
-    /// Every process session this node knows about, and where each one is.
+    /// A page of the exec sessions this node knows about, and where each one is.
     ///
-    /// The store says which sessions exist; the supervisor says which are alive. Neither can answer
-    /// alone, and the difference is the `Lost` case: a session in the store that the supervisor has
-    /// never heard of outlived a restart.
-    pub async fn processes(&self) -> Result<Vec<(SessionId, crate::contract::ProcessState)>> {
-        let mut listed = Vec::new();
-        for session in self.store.sessions().await? {
-            let Some(snapshot) = self.store.snapshot(&session).await? else {
-                continue;
-            };
-            if snapshot.kind != crate::contract::SessionKind::Process {
-                continue;
+    /// The store says which sessions exist and answers the cheap half — kind, order, page. The
+    /// supervisor says which are alive. Neither can answer alone: their disagreement *is* the `Lost`
+    /// case, a session in the store that the supervisor has never heard of.
+    ///
+    /// A phase filter is applied here, so a page can be filled from more than one store page. That
+    /// is the price of filtering on a status only the kernel can compute; it is not a price a store
+    /// could pay by indexing.
+    pub async fn processes(
+        &self,
+        query: &crate::contract::ProcessQuery,
+    ) -> Result<crate::contract::ProcessPage> {
+        let page_size = query.page_size();
+        let mut page = crate::contract::ProcessPage::default();
+        let mut after = query.after.clone();
+        let live = self.supervisor.list().await;
+
+        loop {
+            let store_page = self
+                .store
+                .sessions(&crate::adapter::SessionQuery {
+                    kind: Some(crate::contract::SessionKind::Process),
+                    limit: page_size,
+                    after: after.clone(),
+                })
+                .await?;
+
+            let total = store_page.sessions.len();
+            for (position, session) in store_page.sessions.into_iter().enumerate() {
+                let Some(snapshot) = self.store.snapshot(&session).await? else {
+                    continue;
+                };
+                let Some(process) = snapshot.process.clone() else {
+                    continue;
+                };
+                let status = status_of(&session, &process, &live);
+                if query.phase.is_some_and(|phase| phase != status.phase()) {
+                    continue;
+                }
+                page.processes.push((
+                    session.clone(),
+                    crate::contract::ProcessState {
+                        spec: process.spec,
+                        status,
+                    },
+                ));
+                if page.processes.len() >= page_size {
+                    // The cursor is the last row *examined*, not the end of the store's page: a
+                    // page that filled early would otherwise skip every row it never looked at.
+                    page.next = if position + 1 == total {
+                        store_page.next.clone()
+                    } else {
+                        Some(session)
+                    };
+                    return Ok(page);
+                }
             }
-            let Some(process) = snapshot.process.clone() else {
-                continue;
-            };
 
-            // A supervisor entry is the difference between "it exists" and "it is running".
-            let status = match self
-                .supervisor
-                .list()
-                .await
-                .iter()
-                .find(|(id, _)| id == &session)
-            {
-                Some((_, Some(pid))) => crate::contract::ProcessStatus::Running { pid: *pid },
-                Some((_, None)) => crate::contract::ProcessStatus::Pending,
-                None => match process.status {
-                    // The checkpoint recorded an exit: it ended, and we know how.
-                    crate::contract::ProcessStatus::Exited { output } => {
-                        crate::contract::ProcessStatus::Exited { output }
-                    }
-                    // The checkpoint says it was running and the supervisor has never heard of it:
-                    // it outlived the runtime.
-                    _ => crate::contract::ProcessStatus::Lost,
-                },
-            };
-
-            listed.push((
-                session,
-                crate::contract::ProcessState {
-                    spec: process.spec,
-                    status,
-                },
-            ));
+            match store_page.next {
+                Some(next) => after = Some(next),
+                None => return Ok(page),
+            }
         }
-        Ok(listed)
     }
 
     /// Start a process session and the command it runs.
@@ -545,5 +561,28 @@ impl Kernel {
     /// Wait for a process to end, and say how it ended.
     pub async fn wait(&self, session: &Session) -> Result<crate::contract::ExecOutput> {
         self.supervisor.wait(&session.id).await
+    }
+}
+
+/// Where a process is, from the two sources that each know half of it.
+fn status_of(
+    session: &SessionId,
+    process: &crate::contract::ProcessState,
+    live: &[(SessionId, Option<u32>)],
+) -> crate::contract::ProcessStatus {
+    match live.iter().find(|(id, _)| id == session) {
+        Some((_, Some(pid))) => crate::contract::ProcessStatus::Running { pid: *pid },
+        Some((_, None)) => crate::contract::ProcessStatus::Pending,
+        None => match &process.status {
+            // The checkpoint recorded an exit: it ended, and we know how.
+            crate::contract::ProcessStatus::Exited { output } => {
+                crate::contract::ProcessStatus::Exited {
+                    output: output.clone(),
+                }
+            }
+            // It never started, or it outlived the runtime. Either way nothing is running, and
+            // claiming `Pending` would make it look like it is about to.
+            _ => crate::contract::ProcessStatus::Lost,
+        },
     }
 }

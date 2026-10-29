@@ -7,14 +7,14 @@
 
 use crate::adapter::{
     Clock, FinishReason, Gated, Model, ModelDelta, ModelRequest, ModelStream, Policy,
-    PolicyRequest, Store, Tool, ToolCtx, ToolOutput, Verdict,
+    PolicyRequest, SessionPage, SessionQuery, Store, Tool, ToolCtx, ToolOutput, Verdict,
 };
 use crate::contract::{
     Attempt, Capability, Content, Event, Part, PartKind, SessionId, Snapshot, TextPart, ToolSpec,
 };
 use crate::error::{Error, Result};
 use async_trait::async_trait;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 // ---------------------------------------------------------------------------
@@ -318,8 +318,9 @@ pub struct MemoryStore {
 
 #[derive(Debug, Default)]
 struct MemoryState {
-    events: HashMap<String, Vec<Event>>,
-    snapshots: HashMap<String, Snapshot>,
+    // Ordered, so a keyset cursor means something.
+    events: BTreeMap<String, Vec<Event>>,
+    snapshots: BTreeMap<String, Snapshot>,
 }
 
 impl MemoryStore {
@@ -355,13 +356,40 @@ impl Store for MemoryStore {
         Ok(())
     }
 
-    async fn sessions(&self) -> Result<Vec<SessionId>> {
+    async fn sessions(&self, query: &SessionQuery) -> Result<SessionPage> {
         let state = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-        Ok(state
+
+        // The kind lives in the checkpoint, which is where a real store would index it too.
+        let matching: Vec<String> = state
             .events
             .keys()
+            .filter(|session| match &query.after {
+                Some(after) => session.as_str() > after.as_str(),
+                None => true,
+            })
+            .filter(|session| match query.kind {
+                Some(kind) => state
+                    .snapshots
+                    .get(session.as_str())
+                    .is_some_and(|snapshot| snapshot.kind == kind),
+                None => true,
+            })
+            .cloned()
+            .collect();
+
+        let sessions: Vec<SessionId> = matching
+            .iter()
+            .take(query.limit)
             .map(|session| SessionId::new(session.clone()))
-            .collect())
+            .collect();
+        // The cursor is the last id *included*, and it means "continue strictly after this": a
+        // cursor that points one past the page skips the row it names when a caller short-circuits
+        // the page on its own.
+        let next = (matching.len() > query.limit)
+            .then(|| sessions.last().cloned())
+            .flatten();
+
+        Ok(SessionPage { sessions, next })
     }
 
     async fn snapshot(&self, session: &SessionId) -> Result<Option<Snapshot>> {

@@ -1640,8 +1640,15 @@
         "type": "object"
       },
       "ProcessListResponse": {
-        "description": "The processes this node is running.",
+        "description": "The processes this node knows about.",
         "properties": {
+          "next_page_token": {
+            "description": "Where to continue. Absent on the last page.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "processes": {
             "description": "In session order.",
             "items": {
