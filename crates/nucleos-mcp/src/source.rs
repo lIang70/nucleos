@@ -4,17 +4,25 @@
 //! the answers as ordinary [`Tool`]s — which is why a tool from another process needs no special
 //! case in the engine: policy gates it, the ledger counts it, and the event log records it like any
 //! other.
+//!
+//! The protocol itself is [`rmcp`]: version negotiation, cancellation, progress and the rest of the
+//! specification belong to it, not here. What this module owns is the shape the kernel sees.
 
-use crate::client::Client;
 use crate::content;
 use async_trait::async_trait;
 use nucleos::adapter::{Tool, ToolCtx, ToolOutput};
 use nucleos::contract::{Isolation, ToolSpec};
 use nucleos::error::{Error, Result};
-use serde_json::{Value, json};
+use rmcp::ServiceExt;
+use rmcp::model::{CallToolRequestParams, Tool as McpDeclaration};
+use rmcp::service::{RoleClient, RunningService};
+use rmcp::transport::TokioChildProcess;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// One connection to a server, shared by every tool it advertises.
+type Server = RunningService<RoleClient, ()>;
 
 /// How to reach one MCP server.
 #[derive(Debug, Clone)]
@@ -58,53 +66,53 @@ impl McpSource {
         self
     }
 
-    /// Connect, hand it the environment, and ask what it offers.
+    /// Start the server and ask what it offers.
     pub async fn connect(&self) -> Result<Vec<McpTool>> {
-        let client = Arc::new(Client::spawn(&self.command, &self.args, &self.env).await?);
-        let mut tools = Vec::new();
-        let mut cursor: Option<String> = None;
+        let mut command = tokio::process::Command::new(&self.command);
+        command.args(&self.args).envs(&self.env);
 
-        // `tools/list` is paginated, and a server that has more than one page is the normal case for
+        // The transport owns the child: cancelling a call and killing the server are its job, and a
+        // second owner for the pipe is how a client and a transport start disagreeing.
+        let transport = TokioChildProcess::new(command).map_err(|error| {
+            Error::unavailable(format!(
+                "cannot start {:?} for source {:?}: {error}",
+                self.command, self.name
+            ))
+        })?;
+        let server: Arc<Server> = Arc::new(().serve(transport).await.map_err(|error| {
+            Error::unavailable(format!(
+                "source {:?} refused to initialise: {error}",
+                self.name
+            ))
+        })?);
+
+        let mut tools = Vec::new();
+        let mut cursor = None;
+        // `tools/list` is paginated, and a server with more than one page is the normal case for
         // anything generated.
         loop {
-            let params = match &cursor {
-                Some(cursor) => json!({ "cursor": cursor }),
-                None => json!({}),
-            };
-            let page = client.request("tools/list", params).await?;
+            let page = server.list_tools(cursor.clone()).await.map_err(|error| {
+                Error::unavailable(format!(
+                    "source {:?}: cannot list tools: {error}",
+                    self.name
+                ))
+            })?;
 
-            for tool in page
-                .get("tools")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                let Some(name) = tool.get("name").and_then(Value::as_str) else {
-                    continue;
-                };
+            for declaration in &page.tools {
                 tools.push(McpTool {
-                    client: Arc::clone(&client),
-                    spec: ToolSpec {
-                        name: name.to_owned(),
-                        description: tool
-                            .get("description")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_owned(),
-                        // Kept as text: the kernel compares schemas structurally and never
-                        // interprets them.
-                        input_schema_json: tool
-                            .get("inputSchema")
-                            .map(|schema| schema.to_string())
-                            .unwrap_or_else(|| "{}".to_owned()),
-                    },
+                    server: Arc::clone(&server),
+                    spec: spec_of(declaration),
                     timeout: self.call_timeout,
                 });
             }
 
-            match page.get("nextCursor").and_then(Value::as_str) {
-                Some(next) => cursor = Some(next.to_owned()),
-                None => break,
+            match page.next_cursor {
+                Some(next) if !next.is_empty() => {
+                    cursor = Some(
+                        rmcp::model::PaginatedRequestParams::default().with_cursor(Some(next)),
+                    );
+                }
+                _ => break,
             }
         }
 
@@ -118,9 +126,24 @@ impl McpSource {
     }
 }
 
+/// The kernel's view of one declaration.
+fn spec_of(declaration: &McpDeclaration) -> ToolSpec {
+    ToolSpec {
+        name: declaration.name.to_string(),
+        description: declaration
+            .description
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default(),
+        // Kept as text: the kernel compares schemas structurally and never interprets them.
+        input_schema_json: serde_json::Value::Object((*declaration.input_schema).clone())
+            .to_string(),
+    }
+}
+
 /// One tool, executed by the server that advertises it.
 pub struct McpTool {
-    client: Arc<Client>,
+    server: Arc<Server>,
     spec: ToolSpec,
     timeout: Option<Duration>,
 }
@@ -147,8 +170,8 @@ impl Tool for McpTool {
     }
 
     async fn invoke(&self, args_json: &str, cx: &ToolCtx<'_>) -> ToolOutput {
-        let arguments = match serde_json::from_str::<Value>(args_json) {
-            Ok(Value::Object(map)) => Value::Object(map),
+        let arguments = match serde_json::from_str::<serde_json::Value>(args_json) {
+            Ok(serde_json::Value::Object(map)) => map,
             // The kernel validates the JSON before calling, so this is a caller that was not the
             // kernel — and the model still deserves to be told.
             Ok(_) => return ToolOutput::failed("arguments must be a JSON object"),
@@ -157,14 +180,14 @@ impl Tool for McpTool {
             }
         };
 
-        let timeout = self.timeout_for(cx);
-        let request = self.client.request(
-            "tools/call",
-            json!({ "name": self.spec.name, "arguments": arguments }),
+        let call = self.server.call_tool(
+            CallToolRequestParams::new(self.spec.name.clone()).with_arguments(arguments),
         );
 
-        let result = match timeout {
-            Some(timeout) => match tokio::time::timeout(timeout, request).await {
+        let result = match self.timeout_for(cx) {
+            // The transport cancels the request in flight when the future is dropped, which is what
+            // makes this a real timeout rather than a client that stops listening.
+            Some(timeout) => match tokio::time::timeout(timeout, call).await {
                 Ok(result) => result,
                 Err(_) => {
                     return ToolOutput::failed(format!(
@@ -173,7 +196,7 @@ impl Tool for McpTool {
                     ));
                 }
             },
-            None => request.await,
+            None => call.await,
         };
 
         match result {
@@ -187,7 +210,7 @@ impl Tool for McpTool {
             }
             // A protocol error is a failure of the *source*, and the model is told in the only
             // language it reads: content.
-            Err(error) => ToolOutput::failed(error.reason().to_owned()),
+            Err(error) => ToolOutput::failed(error.to_string()),
         }
     }
 }

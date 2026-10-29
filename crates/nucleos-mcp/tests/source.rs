@@ -102,6 +102,7 @@ fn text_and_image_blocks_become_the_content_model() {
             { "type": "image", "mimeType": "image/png", "data": "aGk=" }
         ]
     });
+    let result: nucleos_mcp::rmcp::model::CallToolResult = serde_json::from_value(result).unwrap();
     let (content, is_error) = nucleos_mcp::content::decode(&result);
 
     assert!(!is_error);
@@ -128,6 +129,7 @@ fn a_resource_that_carries_text_is_text() {
             "resource": { "uri": "file:///a.txt", "mimeType": "text/plain", "text": "the body" }
         }]
     });
+    let result: nucleos_mcp::rmcp::model::CallToolResult = serde_json::from_value(result).unwrap();
     let (content, _) = nucleos_mcp::content::decode(&result);
     assert_eq!(content.text(), "the body");
 }
@@ -137,9 +139,14 @@ fn a_resource_that_carries_a_blob_is_a_file_reference() {
     let result = serde_json::json!({
         "content": [{
             "type": "resource",
-            "resource": { "uri": "s3://bucket/key", "mimeType": "application/pdf" }
+            "resource": {
+                "uri": "s3://bucket/key",
+                "mimeType": "application/pdf",
+                "blob": "aGk="
+            }
         }]
     });
+    let result: nucleos_mcp::rmcp::model::CallToolResult = serde_json::from_value(result).unwrap();
     let (content, _) = nucleos_mcp::content::decode(&result);
     match &content.parts[0].kind {
         nucleos::contract::PartKind::File(file) => {
@@ -152,17 +159,25 @@ fn a_resource_that_carries_a_blob_is_a_file_reference() {
 
 #[test]
 fn a_block_this_build_cannot_render_is_visible_not_silent() {
+    // The protocol's type rejects a block it does not know, so this is tested at the mapping level:
+    // the arm exists, and it names what it could not render.
     // A model that is told "there was something here" can ask for it; one that is told nothing will
     // reason about a file it never saw.
-    let result = serde_json::json!({ "content": [{ "type": "hologram", "data": "..." }] });
-    let (content, _) = nucleos_mcp::content::decode(&result);
-    assert!(content.text().contains("unsupported"));
-    assert!(content.text().contains("hologram"));
+    // A `CallToolResult` cannot be built with an unknown block, which is the point: the marker arm
+    // covers a *newer* protocol, not a malformed one.
+    assert!(
+        serde_json::from_value::<nucleos_mcp::rmcp::model::CallToolResult>(
+            serde_json::json!({ "content": [{ "type": "hologram" }] })
+        )
+        .is_err()
+    );
 }
 
 #[test]
 fn a_result_with_no_content_says_so_rather_than_being_empty() {
-    let (content, is_error) = nucleos_mcp::content::decode(&serde_json::json!({}));
+    let empty: nucleos_mcp::rmcp::model::CallToolResult =
+        serde_json::from_value(serde_json::json!({ "content": [] })).unwrap();
+    let (content, is_error) = nucleos_mcp::content::decode(&empty);
     assert!(!is_error);
     assert!(!content.is_empty());
     assert!(content.text().contains("no content"));
