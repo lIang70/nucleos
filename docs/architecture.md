@@ -331,6 +331,33 @@ Because the set is immutable, compatibility is a pure function of two generation
 
 Compatibility is decided by schema structure, not by a version number somebody typed.
 
+#### A source dies, and a tool outlives it
+
+A source is a child process, so it stops: it crashes, someone deploys over it, the host reclaims
+memory. Every tool it advertised stays registered in a generation, and a session may be pinned to
+that generation for days. So the connection lives behind a shared cell that a call can rebuild, and
+the tools keep their identity across the rebuild — otherwise every crash would be a new generation
+and every session in flight would need to migrate.
+
+Three rules make the rebuild safe:
+
+- **The failed call is not retried.** A tool call is not assumed idempotent, and the server may have
+  run it before the pipe broke. The failure is reported as content with the reason, the connection
+  is restored, and the *next* call is the retry — a deliberate one, by whoever can read what
+  happened.
+- **A reconnect may not change the answer.** The tools are pinned at connect time. A server that
+  comes back advertising a different set is refused, because adopting it would leave a generation
+  describing declarations that no longer exist — and the session calling names it was never shown.
+  Changing the set is a new generation, which is a different mechanism.
+- **A source that cannot restart backs off.** Attempts double from 250ms to 30s and are serialised
+  through one mutex, so a source whose binary was moved is not spawned once per call, and two
+  concurrent calls never produce two children. Callers inside the window are told when the next
+  attempt is, rather than being handed a spawn failure they can do nothing with.
+
+The cell also decides what a *failure* is: only a transport-level error means the child is gone. A
+tool that answered with `isError` answered — the model has to read that, and reconnecting over it
+would turn a refusal into a crash report.
+
 A mid-turn swap is never allowed. A tool call that has been issued must resolve against
 the generation that issued it.
 

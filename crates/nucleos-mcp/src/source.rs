@@ -5,6 +5,12 @@
 //! case in the engine: policy gates it, the ledger counts it, and the event log records it like any
 //! other.
 //!
+//! A source is a child process, so it dies: it crashes, someone deploys over it, the host reclaims
+//! memory. A tool whose server is gone must not be a tool that fails forever, so the connection
+//! sits behind a shared cell that a call can rebuild. What a rebuild may **not** do is change the
+//! answer: the tools are pinned, and a server that comes back advertising a different set is a new
+//! source, not a reconnected one — a session was promised these declarations.
+//!
 //! The protocol itself is [`rmcp`]: version negotiation, cancellation, progress and the rest of the
 //! specification belong to it, not here. What this module owns is the shape the kernel sees.
 
@@ -23,6 +29,22 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// One connection to a server, shared by every tool it advertises.
 type Server = RunningService<RoleClient, ()>;
+
+/// How long to wait after the first failed reconnect, doubled on each further failure.
+const BACKOFF_BASE: Duration = Duration::from_millis(250);
+/// The longest a source waits between attempts.
+const BACKOFF_CAP: Duration = Duration::from_secs(30);
+
+/// The connection, and the state of trying to have one.
+struct Link {
+    /// `None` once the child is known to be gone.
+    server: Option<Arc<Server>>,
+    /// Consecutive failed attempts, which is what the backoff is computed from.
+    failures: u32,
+    /// Do not try again before this. A source whose binary was moved would otherwise be spawned
+    /// once per call for as long as the session lasts.
+    retry_after: Option<tokio::time::Instant>,
+}
 
 /// How to reach one MCP server.
 #[derive(Debug, Clone)]
@@ -68,6 +90,32 @@ impl McpSource {
 
     /// Start the server and ask what it offers.
     pub async fn connect(&self) -> Result<Vec<McpTool>> {
+        let (server, specs) = self.spawn().await?;
+        let hub = Arc::new(Hub {
+            source: self.clone(),
+            pinned: specs.clone(),
+            link: tokio::sync::Mutex::new(Link {
+                server: Some(server),
+                failures: 0,
+                retry_after: None,
+            }),
+        });
+
+        Ok(specs
+            .into_iter()
+            .map(|spec| McpTool {
+                hub: Arc::clone(&hub),
+                spec,
+                timeout: self.call_timeout,
+            })
+            .collect())
+    }
+
+    /// Start the child, serve the protocol, and ask what it offers.
+    ///
+    /// Everything that can go wrong with a source happens here, so there is one place that knows a
+    /// source is down.
+    async fn spawn(&self) -> Result<(Arc<Server>, Vec<ToolSpec>)> {
         let mut command = tokio::process::Command::new(&self.command);
         command.args(&self.args).envs(&self.env);
 
@@ -86,7 +134,7 @@ impl McpSource {
             ))
         })?);
 
-        let mut tools = Vec::new();
+        let mut specs = Vec::new();
         let mut cursor = None;
         // `tools/list` is paginated, and a server with more than one page is the normal case for
         // anything generated.
@@ -99,11 +147,7 @@ impl McpSource {
             })?;
 
             for declaration in &page.tools {
-                tools.push(McpTool {
-                    server: Arc::clone(&server),
-                    spec: spec_of(declaration),
-                    timeout: self.call_timeout,
-                });
+                specs.push(spec_of(declaration));
             }
 
             match page.next_cursor {
@@ -116,14 +160,105 @@ impl McpSource {
             }
         }
 
-        if tools.is_empty() {
+        if specs.is_empty() {
             return Err(Error::unavailable(format!(
                 "source {:?} advertises no tools",
                 self.name
             )));
         }
-        Ok(tools)
+        Ok((server, specs))
     }
+}
+
+/// One source's live connection, shared by every tool it advertises.
+///
+/// The cell exists because the tools outlive the process: the kernel registered them in a
+/// generation, and replacing the objects whenever a server restarted would be a new generation on
+/// every crash.
+struct Hub {
+    source: McpSource,
+    /// The declarations the session was promised. A reconnected server has to agree.
+    pinned: Vec<ToolSpec>,
+    link: tokio::sync::Mutex<Link>,
+}
+
+impl Hub {
+    /// The current connection, reconnecting if it is known to be gone.
+    ///
+    /// Serialised through the mutex on purpose: two calls that arrive while the source is down must
+    /// produce one child, not one child each.
+    async fn server(&self) -> Result<Arc<Server>> {
+        let mut link = self.link.lock().await;
+        if let Some(server) = &link.server {
+            return Ok(Arc::clone(server));
+        }
+        if let Some(retry_after) = link.retry_after
+            && tokio::time::Instant::now() < retry_after
+        {
+            return Err(Error::unavailable(format!(
+                "source {:?} is down; next attempt in {}ms",
+                self.source.name,
+                retry_after.saturating_duration_since(tokio::time::Instant::now()).as_millis()
+            )));
+        }
+
+        match self.source.spawn().await {
+            Ok((server, specs)) => {
+                // A server that comes back with different tools is not the source the session was
+                // pinned to: adopting it would make a generation describe declarations that no
+                // longer exist, and the session would call names it was never shown.
+                if specs != self.pinned {
+                    link.failures = link.failures.saturating_add(1);
+                    link.retry_after = Some(backoff(link.failures));
+                    return Err(Error::unavailable(format!(
+                        "source {:?} came back with a different tool set ({} before, {} now); \
+                         that is a new generation, not a reconnect",
+                        self.source.name,
+                        self.pinned.len(),
+                        specs.len()
+                    )));
+                }
+                link.server = Some(Arc::clone(&server));
+                link.failures = 0;
+                link.retry_after = None;
+                Ok(server)
+            }
+            Err(error) => {
+                link.failures = link.failures.saturating_add(1);
+                link.retry_after = Some(backoff(link.failures));
+                Err(error)
+            }
+        }
+    }
+
+    /// Stop using this connection. The next call reconnects.
+    async fn mark_dead(&self) {
+        let mut link = self.link.lock().await;
+        link.server = None;
+    }
+}
+
+/// How long to wait after `failures` consecutive failed attempts.
+fn backoff(failures: u32) -> tokio::time::Instant {
+    // `saturating` shifts would let a long outage overflow into an instant retry, which is the one
+    // outcome backoff exists to prevent.
+    let shift = failures.saturating_sub(1).min(16);
+    let delay = BACKOFF_BASE
+        .saturating_mul(1u32 << shift)
+        .min(BACKOFF_CAP);
+    tokio::time::Instant::now() + delay
+}
+
+/// Whether a failed call means the connection is gone.
+///
+/// A tool that answered with an error is a tool that answered: the model has to read that, and
+/// reconnecting would be treating a refusal as a crash. Only a transport-level failure is evidence
+/// that there is no longer a server.
+fn is_fatal(error: &rmcp::service::ServiceError) -> bool {
+    matches!(
+        error,
+        rmcp::service::ServiceError::TransportSend(_) | rmcp::service::ServiceError::TransportClosed
+    )
 }
 
 /// The kernel's view of one declaration.
@@ -143,7 +278,8 @@ fn spec_of(declaration: &McpDeclaration) -> ToolSpec {
 
 /// One tool, executed by the server that advertises it.
 pub struct McpTool {
-    server: Arc<Server>,
+    /// The connection, which may be replaced under it. This is why a tool survives a crash.
+    hub: Arc<Hub>,
     spec: ToolSpec,
     timeout: Option<Duration>,
 }
@@ -173,7 +309,14 @@ impl Tool for McpTool {
             }
         };
 
-        let call = self.server.call_tool(
+        // Getting the connection is step zero: a source that is down is reported as a source that
+        // is down, not as a tool that failed.
+        let server = match self.hub.server().await {
+            Ok(server) => server,
+            Err(error) => return ToolOutput::failed(error.to_string()),
+        };
+
+        let call = server.call_tool(
             CallToolRequestParams::new(self.spec.name.clone()).with_arguments(arguments),
         );
 
@@ -202,9 +345,27 @@ impl Tool for McpTool {
                     expose: Vec::new(),
                 }
             }
-            // A protocol error is a failure of the *source*, and the model is told in the only
-            // language it reads: content.
-            Err(error) => ToolOutput::failed(error.to_string()),
+            Err(error) => {
+                if is_fatal(&error) {
+                    // The child is gone. Mark it and try to restore the connection now, so the
+                    // *next* call is clean — but do not retry this one: the server may have run the
+                    // call before the pipe broke, and a tool call is not assumed idempotent.
+                    self.hub.mark_dead().await;
+                    return ToolOutput::failed(match self.hub.server().await {
+                        Ok(_) => format!(
+                            "the tool source was lost: {error}; the connection was restored, so                              this call can be retried"
+                        ),
+                        // Why a restart failed is what tells the model whether retrying is
+                        // pointless, so it is not summarized away.
+                        Err(restart) => format!(
+                            "the tool source was lost: {error}; restarting it failed: {restart}"
+                        ),
+                    });
+                }
+                // A protocol error is a failure of the *source*, and the model is told in the only
+                // language it reads: content.
+                ToolOutput::failed(error.to_string())
+            }
         }
     }
 }

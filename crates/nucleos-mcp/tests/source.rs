@@ -90,6 +90,151 @@ async fn a_server_that_is_not_there_is_an_error_at_connect() {
 }
 
 // ---------------------------------------------------------------------------
+// Reconnection
+// ---------------------------------------------------------------------------
+
+/// A fixture whose `echo` dies when it is asked to echo `dying`, and spawns a new child on demand.
+fn dying_fixture(marker: &str) -> McpSource {
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/echo_server.py");
+    let mut source = McpSource::new("echo", "python3")
+        .with_args(["-u", path.to_str().unwrap()])
+        .with_timeout(Duration::from_secs(20));
+    source.env.insert("ECHO_DIE_ON".to_owned(), marker.to_owned());
+    source
+}
+
+fn scratch(name: &str) -> std::path::PathBuf {
+    let directory = std::env::temp_dir().join(format!("nucleos-mcp-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    directory
+}
+
+#[tokio::test]
+async fn a_source_that_crashes_is_back_for_the_next_call() {
+    let tools = dying_fixture("dying").connect().await.unwrap();
+    let tool = &tools[0];
+    let session = SessionId::new("s1");
+
+    // It works, then the child exits without answering.
+    assert!(!tool
+        .invoke("{\"text\":\"first\"}", &ctx(&session, "call-1"))
+        .await
+        .is_error);
+    let crashed = tool.invoke("{\"text\":\"dying\"}", &ctx(&session, "call-2")).await;
+    assert!(crashed.is_error, "a crash is a failure the model can read");
+    assert!(
+        crashed.content.text().contains("source was lost"),
+        "{}",
+        crashed.content.text()
+    );
+
+    // And the next call has a server again: this is the whole point. The failed call is *not*
+    // retried — a tool call is not assumed idempotent — but the source is no longer a corpse.
+    let again = tool.invoke("{\"text\":\"after\"}", &ctx(&session, "call-3")).await;
+    assert!(!again.is_error, "{}", again.content.text());
+    assert_eq!(again.content.text(), "echo: after");
+}
+
+#[tokio::test]
+async fn a_source_that_comes_back_changed_is_refused_rather_than_adopted() {
+    let directory = scratch("changed");
+    let marker = directory.join("extra-tool");
+    let log = directory.join("spawns");
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/echo_server.py");
+
+    // The fixture advertises a second tool only when this file exists, so the restart after the
+    // crash is a different server than the session was promised.
+    let mut source = McpSource::new("echo", "sh")
+        .with_args([
+            "-c".to_owned(),
+            format!(
+                "if [ -f {marker} ]; then export ECHO_EXTRA_TOOL=1; fi; exec python3 -u {script}",
+                marker = marker.display(),
+                script = path.display()
+            ),
+        ])
+        .with_timeout(Duration::from_secs(20));
+    source.env.insert("ECHO_DIE_ON".to_owned(), "dying".to_owned());
+    source
+        .env
+        .insert("ECHO_SPAWN_LOG".to_owned(), log.display().to_string());
+
+    let tools = source.connect().await.unwrap();
+    assert_eq!(tools.len(), 1);
+    let tool = &tools[0];
+    let session = SessionId::new("s1");
+
+    std::fs::write(&marker, "now there are two").unwrap();
+    let crashed = tool.invoke("{\"text\":\"dying\"}", &ctx(&session, "call-1")).await;
+    assert!(crashed.is_error);
+    assert!(
+        crashed.content.text().contains("different tool set"),
+        "a new generation is not a reconnect: {}",
+        crashed.content.text()
+    );
+
+    // And the session's declaration still describes the tool it calls.
+    assert_eq!(tool.spec().name, "echo");
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[tokio::test]
+async fn a_source_that_cannot_restart_is_not_spawned_once_per_call() {
+    let directory = scratch("backoff");
+    let log = directory.join("spawns");
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/echo_server.py");
+
+    // The wrapper dies while running, and refuses to start again: every further attempt is a
+    // spawn that fails, which is the loop backoff exists to break.
+    let marker = directory.join("refuse");
+    let mut source = McpSource::new("echo", "sh")
+        .with_args([
+            "-c".to_owned(),
+            format!(
+                "if [ -f {marker} ]; then exit 3; fi; exec python3 -u {script}",
+                marker = marker.display(),
+                script = path.display()
+            ),
+        ])
+        .with_timeout(Duration::from_secs(20));
+    source.env.insert("ECHO_DIE_ON".to_owned(), "dying".to_owned());
+    source
+        .env
+        .insert("ECHO_SPAWN_LOG".to_owned(), log.display().to_string());
+
+    let tools = source.connect().await.unwrap();
+    let tool = &tools[0];
+    let session = SessionId::new("s1");
+
+    std::fs::write(&marker, "no more").unwrap();
+    let crashed = tool.invoke("{\"text\":\"dying\"}", &ctx(&session, "call-1")).await;
+    assert!(crashed.is_error);
+
+    // The immediate follow-ups are inside the backoff window, and they say so instead of forking.
+    for call in ["call-2", "call-3"] {
+        let output = tool.invoke("{\"text\":\"hi\"}", &ctx(&session, call)).await;
+        assert!(output.is_error);
+        assert!(
+            output.content.text().contains("next attempt in"),
+            "the caller is told the source is down, not given a spawn failure: {}",
+            output.content.text()
+        );
+    }
+    // The wrapper refuses to start, so the server never runs again: one line, from the first start.
+    let spawns = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(
+        spawns.lines().count(),
+        1,
+        "the source is not respawned once per call: {spawns}"
+    );
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+// ---------------------------------------------------------------------------
 // Content mapping
 // ---------------------------------------------------------------------------
 

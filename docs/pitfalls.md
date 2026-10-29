@@ -457,3 +457,32 @@ the one that spawns.
 is the failure this replaced: the deployment believed it had a gate. `"default": "allow"` costs one
 line and is reviewable; forgetfulness costs nothing and is invisible.
 
+## 36. A reconnected source may not change its tools
+
+**Decision.** Tools are pinned at connect time; a restart that advertises a different set is refused
+with "that is a new generation, not a reconnect".
+
+**Why.** A session is pinned to a generation, and the generation describes these declarations. If a
+restart silently adopted a different set, the session would be calling names its prompt never
+offered, and the record would describe tools that no longer exist. Making the failure loud keeps the
+two mechanisms apart: reconnection restores a process, generations change a catalog.
+
+## 37. A crashed call is reported, not retried
+
+**Decision.** A transport failure marks the connection dead, rebuilds it, and returns failure
+content with the reason. The retry, if any, is the model's next call.
+
+**Why.** A tool call is not assumed idempotent, and a closed pipe does not say whether the server ran
+the call first. Silently retrying turns one ambiguous write into two writes — the class of bug where
+the log says one thing and the database says another. The model can read "the connection was
+restored, so this call can be retried" and decide.
+
+## 38. Backoff is part of the source, not of the caller
+
+**Decision.** Failed restarts double a delay from 250ms to 30s, and the window is shared through the
+same mutex that serialises reconnects.
+
+**Why.** Without it, a source whose command was deleted is spawned once per call for the life of the
+session — a fork bomb that looks like an unhealthy tool. Without the mutex, a batch of eight
+concurrent calls to a dead source produces eight children and seven orphans.
+
