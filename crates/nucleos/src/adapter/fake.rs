@@ -277,6 +277,13 @@ impl FakeTool {
         self
     }
 
+    /// Report a cost for every call.
+    #[must_use]
+    pub fn reporting_usage(mut self, usage: crate::contract::Usage) -> Self {
+        self.output = self.output.reporting_usage(usage);
+        self
+    }
+
     /// Replace the whole answer.
     #[must_use]
     pub fn answering(mut self, output: ToolOutput) -> Self {

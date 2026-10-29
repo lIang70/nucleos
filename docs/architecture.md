@@ -237,29 +237,38 @@ polymorphism.
 calling the tool" is the most common way an agent fails, and forcing a call is the only fix
 that does not involve asking the prompt more nicely.
 
-## 7. The gateway
+## 7. Why there is no gateway
 
-`Generate` is the same call path as a session's model call, exposed without a session:
-stateless, nothing written to the event log, a one-off call that cannot pollute `List`.
+`nucleos` is an agent OS, not a model gateway. There is no stateless "invoke a model" endpoint, and
+adding one was a mistake that this section exists to prevent from coming back.
 
-It exists because normalization, routing, retries and cost accounting are one package. A
-caller who wants any of them wants all of them, and the alternative is every host writing its
-own model client against its own provider's quirks.
+The argument for it was that normalization, routing, retries and cost accounting are one package,
+so a caller who wants one wants all of them. That argument is real — and it is an argument about
+*inside a session*, which is where all four already live. A host that wants a raw model call does
+not need an ABI for it: it links the library.
 
-Two rules keep it from becoming a free tier:
+What a gateway endpoint would cost is not code, it is coherence. Once `/generate` exists, the
+question "why can't it embed?" has no answer except "yet" — and the honest answer, that embeddings
+are a tool, becomes impossible to give.
 
-- **A per-call ceiling is required in spirit.** `max_micros_usd` travels with the request. A
-  gateway with no per-call limit is a cost leak with an API, and the caller who forgets is
-  exactly the caller who needed it.
-- **Policy gates it like anything else.** The gate has a second question — `Model { model,
-  purpose }` — for the same trait. A runtime that gates tools but not model calls has a policy
-  with a hole where the spend is.
+Three things follow, and they are decisions rather than omissions:
 
-The stream carries the same vocabulary as the event log — `TextDelta`, `ToolCallStarted`,
-`UsageReport`, `CapabilityDegraded` are the same messages — so one renderer serves both and
-the two surfaces cannot drift.
+- **Embeddings, speech recognition and speech synthesis are tools.** An embedding model belongs
+  with the index and the ranking function that use it (§11), and speech in or out is a media
+  pipeline, not a decision the kernel makes. A tool source is exactly where a provider-specific
+  pipeline belongs.
+- **A tool may report what it spent.** [`ToolOutput::usage`] is optional: a tool that calls a paid
+  API can say so, and the kernel folds it into the session's usage and the ledger. A tool that
+  reports nothing stays unreported — which is the same rule model usage follows, and the reason
+  the ledger never quietly counts an unknown as zero.
+- **The kernel's own calls are attributed.** A compaction summary is a model call the kernel makes
+  for itself, and `Purpose::Summary` is how its spend is told apart from the answer's.
 
-## 8. Tool sources and generations
+Cost attribution is the one thing a gateway endpoint would have bought that a tool cannot. Giving
+tools a way to report is the smaller, more honest fix: the kernel attributes what it is told and
+says so when it is told nothing.
+
+## 8. Tool sources and generations## 8. Tool sources and generations
 
 Tools are declared as **sources**, not as definitions pushed through the ABI. A source is
 an MCP endpoint:

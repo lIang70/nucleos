@@ -538,6 +538,11 @@ pub enum EventKind {
         duration_millis: u64,
         /// The result — the same value that enters history.
         result: ToolResult,
+        /// What the tool reported it spent, when it reported anything.
+        ///
+        /// Absent is not zero: a tool that says nothing has not said it was free.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<Usage>,
     },
     /// One model call's consumption, debited whether or not the answer was usable.
     Usage {

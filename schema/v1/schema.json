@@ -551,6 +551,17 @@
             "result": {
               "$ref": "#/$defs/ToolResult",
               "description": "The result — the same value that enters history."
+            },
+            "usage": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Usage"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What the tool reported it spent, when it reported anything.\n\nAbsent is not zero: a tool that says nothing has not said it was free."
             }
           },
           "required": [

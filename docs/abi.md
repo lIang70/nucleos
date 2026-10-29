@@ -38,7 +38,6 @@ Deregister remove a tool source
 Sources    list sources, generations, and health
 Reload     apply pending source changes as one generation swap
 
-Generate   invoke a model directly, without a session (see §11)
 ```
 
 Session control and source management are separate groups on purpose: one is per-session
@@ -284,9 +283,6 @@ alternative gets chosen accidentally by the first implementation.
 | A `PermissionOption` id the kernel did not offer | `INVALID`. The verdict names an option that was presented, or it is a client bug. |
 | Nobody answers an `AwaitingHuman` | Apply `default_if_unanswered`, which is a refusal. Silence is never approval. |
 | `List` with a `page_token` from an older page set | The token stays valid; it is a key, not an index. `INVALID` only if it cannot be decoded at all. |
-| `Generate` naming a model `Describe` never listed | `NOT_FOUND`, with the known names in `details`. |
-| `Generate` without a ceiling and the daemon has no default | `INVALID`. Silence is not a budget. |
-| `Generate` whose tool arguments never assemble into JSON | The stream finishes with a `tool_call` whose arguments failed to parse, and the caller runs nothing. The kernel does not invent a call. |
 | `Run` before `Start` | `NOT_FOUND`. A stream is a view of a session, and there is nothing to view yet. |
 | `Describe` on an empty daemon | Succeeds with `generation = 0` and no models. A health check must not need a session. |
 | `Deregister` a source a pinned session still uses | Allowed. The source stays alive until the last session on its generation ends; new sessions simply never see it. |
@@ -311,28 +307,18 @@ A stream that can be wrong about order is a stream nobody can build a UI on, so:
   after it. No event ever follows a terminal state.
 - Two concurrent `Run` streams never disagree about the order of events they both see.
 
-## 11. The gateway
+## 11. Not served, and why
 
-`Generate` exposes the kernel's model call path without a session. Stateless on purpose: no
-session is created, nothing enters the event log, and a one-off call cannot pollute `List`.
+| Not an endpoint | Why |
+| --- | --- |
+| Stateless model invocation | This is an agent OS, not a gateway. A host that wants a raw model call links the library; see [`architecture.md`](architecture.md) §7. |
+| Embeddings | A tool: an embedding model belongs with the index and the ranking that use it. |
+| Speech to text, text to speech | A tool. Voice output also needs an artifact store the kernel does not have. |
+| Tool-source registration, reload | Tool sources are declared in the daemon's configuration; discovery lands with the MCP client. |
+| Credit, cancel, close, list | They need a session table and live handles the daemon does not hold yet. |
 
-It exists because normalization, routing, retries and cost accounting are one package. A
-caller who wants any of them wants all of them — and the alternative is every host writing its
-own client against its own provider's quirks.
-
-Three rules:
-
-- **A per-call ceiling travels with the request.** A gateway with no per-call limit is a cost
-  leak with an API, and the caller who forgets is exactly the caller who needed it.
-- **Policy gates it.** The same trait answers a second question — is this *model call* allowed
-  — with the principal, an absent session, and the purpose. A runtime that gates tools but not
-  model calls has a policy with a hole where the spend is.
-- **The stream speaks the session's vocabulary.** `TextDelta`, `ToolCallStarted`,
-  `CapabilityDegraded`, `UsageReport` are the same messages the event stream carries, so one
-  renderer serves both surfaces and they cannot drift.
-
-`GenerateFinished` carries the whole `Ledger`, so a caller learns what it spent even when the
-call failed.
+An endpoint that exists and returns 501 is a contract nobody can rely on, so these are absent
+rather than declared.
 
 ## 12. Deferred
 

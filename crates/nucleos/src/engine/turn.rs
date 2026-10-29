@@ -217,6 +217,12 @@ impl Kernel {
         output: ToolOutput,
         duration_millis: u64,
     ) -> Result<()> {
+        // A tool that reported a cost is charged for it; one that said nothing is not assumed
+        // free. The ledger's rule is the same one model usage follows.
+        if let Some(usage) = &output.usage {
+            session.usage.add(usage);
+            session.credit_tokens = session.credit_tokens.saturating_sub(usage.total_tokens());
+        }
         let result = ToolResult {
             call_id: call.id.clone(),
             content: output.content,
@@ -227,6 +233,7 @@ impl Kernel {
             EventKind::ToolFinished {
                 duration_millis,
                 result: result.clone(),
+                usage: output.usage,
             },
         )
         .await?;

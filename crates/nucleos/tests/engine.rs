@@ -169,6 +169,73 @@ async fn malformed_arguments_never_reach_the_tool() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn a_tool_that_reports_a_cost_is_charged_for_it() -> Result<()> {
+    let store = Arc::new(MemoryStore::new());
+    let kernel = Kernel::builder()
+        .model(
+            "primary",
+            Arc::new(FakeModel::with_script(vec![
+                tool_call_deltas("call-1", "read_file", "{}"),
+                vec![ModelDelta::Finished {
+                    reason: nucleos::adapter::FinishReason::Stop,
+                }],
+            ])),
+        )
+        .tool(Arc::new(
+            FakeTool::new("read_file", "contents").reporting_usage(nucleos::Usage {
+                input_tokens: 0,
+                output_tokens: 0,
+                micros_usd: Some(250),
+            }),
+        ))
+        .store(Arc::clone(&store) as Arc<dyn nucleos::adapter::Store>)
+        .policy(Arc::new(AllowAll))
+        .clock(Arc::new(FixedClock::at(0)))
+        .build()
+        .unwrap();
+
+    let id = SessionId::new("s1");
+    kernel.start(&principal(), id.clone(), spec()).await?;
+
+    // A tool that calls a paid API can say what it cost, and the kernel attributes it. The
+    // alternative — a gateway endpoint so the kernel could make the call itself — was a second
+    // product, not a fix.
+    let charged = store
+        .recorded(&id)
+        .into_iter()
+        .find_map(|event| match event.kind {
+            EventKind::ToolFinished { usage, .. } => usage,
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(charged.micros_usd, Some(250));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_tool_that_reports_nothing_is_not_assumed_free() -> Result<()> {
+    let (kernel, store) = kernel(FakeModel::with_script(vec![
+        tool_call_deltas("call-1", "read_file", "{}"),
+        vec![ModelDelta::Finished {
+            reason: nucleos::adapter::FinishReason::Stop,
+        }],
+    ]));
+    let id = SessionId::new("s1");
+    kernel.start(&principal(), id.clone(), spec()).await?;
+
+    let usage = store
+        .recorded(&id)
+        .into_iter()
+        .find_map(|event| match event.kind {
+            EventKind::ToolFinished { usage, .. } => Some(usage),
+            _ => None,
+        })
+        .flatten();
+    assert!(usage.is_none(), "silence is not a zero, it is an absence");
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Stop conditions
 // ---------------------------------------------------------------------------

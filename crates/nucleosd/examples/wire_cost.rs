@@ -37,6 +37,7 @@ fn tool_result() -> k::Event {
                 content: k::Content::new([k::Part::new(k::PartKind::Text(k::TextPart { text }))]),
                 is_error: false,
             },
+            usage: None,
         },
         meta: BTreeMap::new(),
     }

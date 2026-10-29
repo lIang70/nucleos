@@ -224,17 +224,25 @@ and an oversight gets quietly adopted.
 that is where a reader is standing when the question occurs to them. Not in a separate
 document, and not in a list of precedents.
 
-## 20. A gateway needs a per-call ceiling
+## 20. An OS does not ship a model gateway
 
-**Decision.** `Generate` carries `max_micros_usd`; a call without one is refused unless the
-daemon configured a default.
+**Decision.** No stateless "invoke a model" endpoint. `Generate` was added, argued for, and
+removed.
 
-**Why.** Exposing model invocation over an ABI turns the daemon into a gateway, and a gateway
-with no per-call limit is a cost leak with an API. The caller who forgets the limit is exactly
-the caller who needed it — that is not an argument for trusting them.
+**Why.** The argument for it — normalization, routing, retries and cost accounting come as one
+package — is an argument about *inside a session*, which is where all four already are. Outside a
+session the same argument becomes a second product with its own scope: once `/generate` exists,
+"why can't it embed?" has no answer except "yet".
 
-**Failure it prevents.** A loop in somebody's script, a weekend, and a number nobody can
-explain on Monday.
+**What it would have cost.** Coherence. The honest answer — embeddings are a tool, because an
+embedding model belongs with the index that uses it — stops being sayable.
+
+**The one thing it bought.** Cost attribution for calls a tool makes. That is fixed at the
+smaller scale: [`ToolOutput::usage`] lets a tool report what it spent, and a tool that reports
+nothing stays unreported.
+
+**Failure it prevents.** A kernel whose endpoint list is a roadmap of modalities, each one
+half-implemented.
 
 ## 21. A field the provider cannot honour must be reported
 

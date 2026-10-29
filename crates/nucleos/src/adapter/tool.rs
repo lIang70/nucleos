@@ -1,6 +1,6 @@
 //! Tools, and the shape a tool source has to speak.
 
-use crate::contract::{Content, Isolation, Part, PartKind, SessionId, TextPart, ToolSpec};
+use crate::contract::{Content, Isolation, Part, PartKind, SessionId, TextPart, ToolSpec, Usage};
 use async_trait::async_trait;
 
 /// One tool, behind the only interface the kernel has.
@@ -49,6 +49,16 @@ pub struct ToolOutput {
     pub content: Content,
     /// Whether the call failed.
     pub is_error: bool,
+    /// What the call cost, when the tool knows.
+    ///
+    /// A tool that calls a paid API can say so, and the kernel folds it into the session's spend
+    /// and its ledger. A tool that reports nothing stays unreported — the same rule model usage
+    /// follows, and the reason the ledger never quietly counts an unknown as zero.
+    ///
+    /// Money a tool spends without saying so is money the kernel cannot attribute. That is a
+    /// limitation of the design, not an oversight: the alternative was a gateway endpoint, which
+    /// would have been a second product.
+    pub usage: Option<Usage>,
 }
 
 impl ToolOutput {
@@ -58,6 +68,7 @@ impl ToolOutput {
         Self {
             content,
             is_error: false,
+            usage: None,
         }
     }
 
@@ -77,6 +88,14 @@ impl ToolOutput {
         Self {
             content: Content::new([Part::new(PartKind::Text(TextPart { text: text.into() }))]),
             is_error: true,
+            usage: None,
         }
+    }
+
+    /// Declare what this call cost.
+    #[must_use]
+    pub fn reporting_usage(mut self, usage: Usage) -> Self {
+        self.usage = Some(usage);
+        self
     }
 }
