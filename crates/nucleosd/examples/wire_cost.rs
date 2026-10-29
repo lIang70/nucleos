@@ -74,9 +74,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // A driver appends one event at a time today. That is the number to keep an eye on, because
-    // a durable store turns it into one transaction per event.
+    // a durable store turns it into one transaction per event — so the store measured here is the
+    // real one, not a stand-in that would flatter the number.
     let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-    let store = nucleos::adapter::MemoryStore::new();
+    let store = nucleos_sqlite::SqliteStore::in_memory()?;
     let session = k::SessionId::new("s1");
     runtime.block_on(async {
         let start = Instant::now();

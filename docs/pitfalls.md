@@ -409,3 +409,28 @@ replay reading that event would reconstruct a prompt that never existed.
 name — the prompt is a view of the pool, not the whole of it. That is why the ceiling and the gate,
 not the prompt, are what execution checks.
 
+## 33. A fake in the production crate becomes the deployment
+
+**Decision.** The test doubles live in `nucleos-testkit`, a crate no binary depends on. The store
+is `nucleos-sqlite`, the same implementation in a test as in production, with `in_memory()` as the
+only difference. `AllowAll` and `DenyAll` stay in the kernel, because they are policies with a
+meaning rather than substitutes for one.
+
+**Why.** The daemon had reached for `MemoryStore` and `AllowAll` — the fakes — as its actual
+configuration. Nothing in the build said so: `POST /v1/sessions` succeeded, and the session was gone
+after a restart, which from the caller's side is indistinguishable from data loss. A crate boundary
+makes that mistake a compile error instead of a silent one.
+
+**What it costs.** `in_memory()` opens a real database, so a test that assumed `MemoryStore`'s
+leniency finds out sooner. That is the point: the store rejects a sequence gap, refuses a snapshot
+claiming more events than the log holds, and does it identically in both places.
+
+## 34. The store is the deployment, so it is tested as one
+
+**Decision.** `SqliteStore` is exercised by reopening the file: a kernel writes a turn, the process
+holding it is dropped, a second kernel on the same path loads the session.
+
+**Why.** Durability is not a property a unit test of `append` can observe. The failure it prevents
+is the one that made this change necessary — a store that answers every call and keeps nothing —
+and the only way to see it is to stop pretending the process stays alive.
+

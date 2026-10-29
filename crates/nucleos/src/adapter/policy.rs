@@ -85,3 +85,37 @@ pub enum Verdict {
         options: Vec<PermissionOption>,
     },
 }
+
+/// A policy that allows everything.
+///
+/// The name is a warning: a deployment that never replaces this has no policy, and its
+/// deny-by-default claim is a sentence in a document.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AllowAll;
+
+#[async_trait]
+impl Policy for AllowAll {
+    async fn check(&self, _request: PolicyRequest<'_>) -> Verdict {
+        Verdict::Allow
+    }
+}
+
+/// A policy that refuses everything, for testing the refusal path.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DenyAll;
+
+#[async_trait]
+impl Policy for DenyAll {
+    async fn check(&self, request: PolicyRequest<'_>) -> Verdict {
+        let what = match request.subject {
+            Gated::Tool { call } => call.name.clone(),
+            Gated::Model { model, .. } => model.to_owned(),
+            Gated::Exec { argv, .. } => argv.join(" "),
+        };
+        Verdict::Deny {
+            code: crate::contract::ErrorCode::Denied,
+            reason: format!("{what} is not available"),
+        }
+    }
+}
+

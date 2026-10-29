@@ -5,7 +5,7 @@
 //!
 //! Regenerate with `NUCLEOS_OPENAPI=1 cargo test -p nucleosd --test openapi`.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use nucleos::wire::openapi;
 use nucleosd::http::openapi_routes;

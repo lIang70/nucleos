@@ -173,8 +173,18 @@ Three shapes are deliberate and easy to get wrong:
   Time is an input, not an ambient fact.
 
 `Tool`'s only production implementation wraps an MCP tool source (§8). The trait stays
-separate so the kernel can be tested with a two-line fake, and `adapter::fake` ships those
-fakes because a fake only the kernel's tests can reach is a fake every host writes again.
+separate so the kernel can be tested with a two-line double.
+
+That double lives in `nucleos-testkit`, which no binary depends on. It used to live in
+`nucleos::adapter::fake`, in the production crate, and the daemon ended up *running* it: an
+in-memory store and an allow-everything policy shipped as the deployment. A fake in the crate
+everything links is a fake one `use` away from being the product, and nothing in a build says which.
+
+Two of the five adapters now ship with a real implementation instead: `SystemClock`, because
+reading the time is not a decision, and `nucleos-sqlite`'s store, because a test that runs against a
+different store than production is a test of a store nobody deploys. The policies `AllowAll` and
+`DenyAll` stay in the kernel crate because "nothing is gated" and "everything is refused" are
+answers, not stand-ins — and the daemon states which one it is using.
 
 ## 5. Session state machine
 

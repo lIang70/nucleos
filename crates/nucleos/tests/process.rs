@@ -4,9 +4,11 @@
 //! two faces do not mix; and a process that outlived the runtime is reported as lost rather than
 //! as still running.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use nucleos::adapter::{AllowAll, FakeModel, FixedClock, MemoryStore, Store};
+use nucleos::adapter::{AllowAll, Store};
+use nucleos_sqlite::SqliteStore;
+use nucleos_testkit::{FakeModel, FixedClock};
 use nucleos::contract::{
     ErrorCode, Principal, ProcessSpec, ProcessState, ProcessStatus, Routing, SandboxPermissions,
     SandboxPolicy, SessionId, SessionKind,
@@ -21,8 +23,8 @@ fn principal() -> Principal {
     }
 }
 
-fn kernel() -> (Kernel, Arc<MemoryStore>) {
-    let store = Arc::new(MemoryStore::new());
+fn kernel() -> (Kernel, Arc<SqliteStore>) {
+    let store = Arc::new(SqliteStore::in_memory().expect("an in-memory database"));
     let kernel = Kernel::builder()
         .model("primary", Arc::new(FakeModel::text(["unused"])))
         .store(Arc::clone(&store) as Arc<dyn Store>)

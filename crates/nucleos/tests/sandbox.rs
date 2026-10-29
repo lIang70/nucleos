@@ -4,9 +4,11 @@
 //! checkpoint — a policy that resets on reload is not a policy. Second, that the only thing a
 //! single command may say is "more": `WithAdditionalPermissions` widens, it never narrows.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use nucleos::adapter::{AllowAll, FakeModel, FixedClock, MemoryStore, Store};
+use nucleos::adapter::{AllowAll, Store};
+use nucleos_sqlite::SqliteStore;
+use nucleos_testkit::{FakeModel, FixedClock};
 use nucleos::contract::Routing;
 use nucleos::contract::{
     AdditionalPermissions, Principal, SandboxPermissions, SandboxPolicy, SessionId, SessionState,
@@ -78,7 +80,7 @@ fn widening_is_additive_on_the_wire() {
 
 #[tokio::test]
 async fn the_policy_is_session_state_and_survives_a_checkpoint() -> nucleos::Result<()> {
-    let store = Arc::new(MemoryStore::new());
+    let store = Arc::new(SqliteStore::in_memory().expect("an in-memory database"));
     let kernel = Kernel::builder()
         .model("primary", Arc::new(FakeModel::text(["unused"])))
         .store(Arc::clone(&store) as Arc<dyn Store>)

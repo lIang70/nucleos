@@ -4,13 +4,13 @@
 //! using the fakes as the cheapest way to state them. When a real adapter disagrees with one
 //! of these, the trait was wrong, not the test.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use nucleos::Result;
-use nucleos::adapter::{
-    AllowAll, Clock, DenyAll, EchoModel, FakeModel, FakeTool, FinishReason, FixedClock, Gated,
-    MemoryStore, Model, ModelDelta, ModelRegistry, ModelRequest, Policy, PolicyRequest, Store,
-    Tool, ToolChoice, ToolCtx, Verdict, fake::tool_call_deltas,
+use nucleos::adapter::{AllowAll, Clock, DenyAll, FinishReason, Gated, Model, ModelDelta, ModelRegistry, ModelRequest, Policy, PolicyRequest, Store, Tool, ToolChoice, ToolCtx, Verdict};
+use nucleos_sqlite::SqliteStore;
+use nucleos_testkit::{
+    EchoModel, FakeModel, FakeTool, FixedClock, tool_call_deltas,
 };
 use nucleos::contract::{
     Attempt, AttemptOutcome, AttemptPhase, AttemptTrigger, Content, ErrorCode, Event, EventKind,
@@ -289,7 +289,7 @@ async fn a_failed_tool_answers_with_content_not_an_error() {
 
 #[tokio::test]
 async fn a_store_rejects_a_gap_rather_than_renumbering() -> Result<()> {
-    let store = MemoryStore::new();
+    let store = SqliteStore::in_memory().expect("an in-memory database");
     let session = SessionId::new("s1");
 
     store.append(&session, &[event(&session, 0)]).await?;
@@ -307,7 +307,7 @@ async fn a_store_rejects_a_gap_rather_than_renumbering() -> Result<()> {
 
 #[tokio::test]
 async fn events_since_is_inclusive() -> Result<()> {
-    let store = MemoryStore::new();
+    let store = SqliteStore::in_memory().expect("an in-memory database");
     let session = SessionId::new("s1");
     store
         .append(
@@ -326,7 +326,7 @@ async fn events_since_is_inclusive() -> Result<()> {
 
 #[tokio::test]
 async fn a_store_refuses_an_event_belonging_to_another_session() -> Result<()> {
-    let store = MemoryStore::new();
+    let store = SqliteStore::in_memory().expect("an in-memory database");
     let mine = SessionId::new("s1");
     let theirs = SessionId::new("s2");
 
@@ -337,7 +337,7 @@ async fn a_store_refuses_an_event_belonging_to_another_session() -> Result<()> {
 
 #[tokio::test]
 async fn a_snapshot_cannot_claim_more_than_the_log_holds() -> Result<()> {
-    let store = MemoryStore::new();
+    let store = SqliteStore::in_memory().expect("an in-memory database");
     let session = SessionId::new("s1");
     store.append(&session, &[event(&session, 0)]).await?;
 
@@ -373,7 +373,7 @@ async fn a_snapshot_cannot_claim_more_than_the_log_holds() -> Result<()> {
 
 #[tokio::test]
 async fn a_valid_snapshot_round_trips() -> Result<()> {
-    let store = MemoryStore::new();
+    let store = SqliteStore::in_memory().expect("an in-memory database");
     let session = SessionId::new("s1");
     store.append(&session, &[event(&session, 0)]).await?;
 

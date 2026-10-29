@@ -3,7 +3,7 @@
 //! Every payload below was captured from the live endpoint. That is the point of this file: the
 //! event names, the flat tool shape and `call_id`-not-`id` are things a document skim gets wrong.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use nucleos::adapter::{
     FinishReason, ModelDelta, ModelRequest, ReasoningEffort, TextFormat, ToolChoice,

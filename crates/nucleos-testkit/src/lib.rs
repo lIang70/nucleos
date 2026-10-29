@@ -1,20 +1,23 @@
-//! Fakes with no dependencies.
+//! Test doubles, for hosts and for this workspace's own tests.
 //!
-//! They exist so every kernel test can run without a network, a socket, a process or a
-//! sleeping clock — and so that a host has something to start from before it writes a real
-//! adapter. They are part of the public API on purpose: a fake that only the kernel's own
-//! tests can reach is a fake every host re-implements.
+//! They exist so a kernel test can run without a network, a socket, a process or a sleeping
+//! clock. They are a separate crate rather than a module behind a feature flag, so that nothing
+//! here can reach a deployed binary: a fake in the production crate is one `use` away from being
+//! the deployment.
+//!
+//! What is *not* here is as deliberate. A policy that allows everything is a real policy with a
+//! real meaning, and it lives in `nucleos::adapter`; the store is SQLite, the same code path in a
+//! test as in production, and it lives in `nucleos-sqlite`. Only things whose whole purpose is to
+//! stand in for something real are in this crate.
 
-use crate::adapter::{
-    Clock, FinishReason, Gated, Model, ModelDelta, ModelRequest, ModelStream, Policy,
-    PolicyRequest, SessionPage, SessionQuery, Store, Tool, ToolCtx, ToolOutput, Verdict,
-};
-use crate::contract::{
-    Attempt, Capability, Content, Event, Part, PartKind, SessionId, Snapshot, TextPart, ToolSpec,
-};
-use crate::error::{Error, Result};
 use async_trait::async_trait;
-use std::collections::BTreeMap;
+use nucleos::adapter::{
+    Clock, FinishReason, Model, ModelDelta, ModelRequest, ModelStream, Tool, ToolCtx, ToolOutput,
+};
+use nucleos::contract::{
+    Attempt, Capability, Content, Part, PartKind, TextPart, ToolSpec,
+};
+use nucleos::error::Result;
 use std::sync::{Arc, Mutex};
 
 // ---------------------------------------------------------------------------
@@ -279,7 +282,7 @@ impl FakeTool {
 
     /// Report a cost for every call.
     #[must_use]
-    pub fn reporting_usage(mut self, usage: crate::contract::Usage) -> Self {
+    pub fn reporting_usage(mut self, usage: nucleos::contract::Usage) -> Self {
         self.output = self.output.reporting_usage(usage);
         self
     }
@@ -304,188 +307,6 @@ impl Tool for FakeTool {
 }
 
 // ---------------------------------------------------------------------------
-// Store
-// ---------------------------------------------------------------------------
-
-/// An in-memory event log.
-///
-/// It enforces the same rules a durable store must: no gaps, no rewrites, and a snapshot that
-/// never claims to include more than the log holds.
-#[derive(Debug, Default, Clone)]
-pub struct MemoryStore {
-    inner: Arc<Mutex<MemoryState>>,
-}
-
-#[derive(Debug, Default)]
-struct MemoryState {
-    // Ordered, so a keyset cursor means something.
-    events: BTreeMap<String, Vec<Event>>,
-    snapshots: BTreeMap<String, Snapshot>,
-}
-
-impl MemoryStore {
-    /// An empty store.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-#[async_trait]
-impl Store for MemoryStore {
-    async fn append(&self, session: &SessionId, events: &[Event]) -> Result<()> {
-        let mut state = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-        let log = state.events.entry(session.as_str().to_owned()).or_default();
-        let mut expected = u64::try_from(log.len()).unwrap_or(u64::MAX);
-        for event in events {
-            if event.session != *session {
-                return Err(Error::invalid(format!(
-                    "event for {} appended to {session}",
-                    event.session
-                )));
-            }
-            if event.seq != expected {
-                return Err(Error::invalid(format!(
-                    "event seq {} does not continue the log at {expected}",
-                    event.seq
-                )));
-            }
-            expected = expected.saturating_add(1);
-        }
-        log.extend_from_slice(events);
-        Ok(())
-    }
-
-    async fn sessions(&self, query: &SessionQuery) -> Result<SessionPage> {
-        let state = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-
-        // The kind lives in the checkpoint, which is where a real store would index it too.
-        let matching: Vec<String> = state
-            .events
-            .keys()
-            .filter(|session| match &query.after {
-                Some(after) => session.as_str() > after.as_str(),
-                None => true,
-            })
-            .filter(|session| match query.kind {
-                Some(kind) => state
-                    .snapshots
-                    .get(session.as_str())
-                    .is_some_and(|snapshot| snapshot.kind == kind),
-                None => true,
-            })
-            .cloned()
-            .collect();
-
-        let sessions: Vec<SessionId> = matching
-            .iter()
-            .take(query.limit)
-            .map(|session| SessionId::new(session.clone()))
-            .collect();
-        // The cursor is the last id *included*, and it means "continue strictly after this": a
-        // cursor that points one past the page skips the row it names when a caller short-circuits
-        // the page on its own.
-        let next = (matching.len() > query.limit)
-            .then(|| sessions.last().cloned())
-            .flatten();
-
-        Ok(SessionPage { sessions, next })
-    }
-
-    async fn snapshot(&self, session: &SessionId) -> Result<Option<Snapshot>> {
-        let state = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-        Ok(state.snapshots.get(session.as_str()).cloned())
-    }
-
-    async fn write_snapshot(&self, snapshot: Snapshot) -> Result<()> {
-        // Delegates so that the validation rule has exactly one implementation.
-        self.store_snapshot(snapshot)
-    }
-
-    async fn events_since(&self, session: &SessionId, seq: u64) -> Result<Vec<Event>> {
-        let state = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-        Ok(state
-            .events
-            .get(session.as_str())
-            .map(|log| {
-                log.iter()
-                    .filter(|event| event.seq >= seq)
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default())
-    }
-}
-
-impl MemoryStore {
-    /// Every event appended for a session. For assertions, not for the kernel.
-    #[must_use]
-    pub fn recorded(&self, session: &SessionId) -> Vec<Event> {
-        let state = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-        state
-            .events
-            .get(session.as_str())
-            .cloned()
-            .unwrap_or_default()
-    }
-
-    fn store_snapshot(&self, snapshot: Snapshot) -> Result<()> {
-        let mut state = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-        let log_len = state
-            .events
-            .get(snapshot.session.as_str())
-            .map_or(0, Vec::len);
-        if usize::try_from(snapshot.seq).unwrap_or(usize::MAX) >= log_len {
-            return Err(Error::invalid(format!(
-                "snapshot claims seq {} but the log holds {log_len} events",
-                snapshot.seq
-            )));
-        }
-        state
-            .snapshots
-            .insert(snapshot.session.as_str().to_owned(), snapshot);
-        Ok(())
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Policy
-// ---------------------------------------------------------------------------
-
-/// A policy that allows everything.
-///
-/// The name is a warning: a deployment that never replaces this has no policy, and its
-/// deny-by-default claim is a sentence in a document.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct AllowAll;
-
-#[async_trait]
-impl Policy for AllowAll {
-    async fn check(&self, _request: PolicyRequest<'_>) -> Verdict {
-        Verdict::Allow
-    }
-}
-
-/// A policy that refuses everything, for testing the refusal path.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct DenyAll;
-
-#[async_trait]
-impl Policy for DenyAll {
-    async fn check(&self, request: PolicyRequest<'_>) -> Verdict {
-        let what = match request.subject {
-            Gated::Tool { call } => call.name.clone(),
-            Gated::Model { model, .. } => model.to_owned(),
-            Gated::Exec { argv, .. } => argv.join(" "),
-        };
-        Verdict::Deny {
-            code: crate::contract::ErrorCode::Denied,
-            reason: format!("{what} is not available"),
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
 
@@ -497,9 +318,9 @@ pub fn text_content(text: impl Into<String>) -> Content {
 
 /// A ledger holding one successful attempt, for tests.
 #[must_use]
-pub fn one_attempt(model: &str) -> crate::contract::Ledger {
-    use crate::contract::{AttemptOutcome, AttemptPhase, AttemptTrigger, Usage};
-    let mut ledger = crate::contract::Ledger::default();
+pub fn one_attempt(model: &str) -> nucleos::contract::Ledger {
+    use nucleos::contract::{AttemptOutcome, AttemptPhase, AttemptTrigger, Usage};
+    let mut ledger = nucleos::contract::Ledger::default();
     ledger.record(Attempt {
         index: 0,
         model: model.to_owned(),

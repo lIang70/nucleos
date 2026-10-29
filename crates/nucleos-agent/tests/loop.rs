@@ -4,13 +4,14 @@
 //! stop where it says it stops, does the ledger count what it says it counts, does a parked
 //! session come back.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use async_trait::async_trait;
 use nucleos::adapter::{
-    AllowAll, FakeModel, FakeTool, FixedClock, Gated, MemoryStore, Model, ModelDelta, Policy,
-    PolicyRequest, Store, Verdict, fake::tool_call_deltas,
+    AllowAll, Gated, Model, ModelDelta, Policy, PolicyRequest, Store, Verdict,
 };
+use nucleos_sqlite::SqliteStore;
+use nucleos_testkit::{FakeModel, FakeTool, FixedClock, tool_call_deltas};
 use nucleos::contract::{
     AttemptOutcome, Budget, ConfigPatch, ErrorCode, EventKind, PermissionKind, PermissionOption,
     Principal, Routing, SessionId, SessionState, StopReason,
@@ -41,8 +42,8 @@ fn spec() -> SessionSpec {
     }
 }
 
-fn kernel(model: FakeModel) -> (Kernel, Arc<MemoryStore>) {
-    let store = Arc::new(MemoryStore::new());
+fn kernel(model: FakeModel) -> (Kernel, Arc<SqliteStore>) {
+    let store = Arc::new(SqliteStore::in_memory().expect("an in-memory database"));
     let kernel = Kernel::builder()
         .model("primary", Arc::new(model))
         .tool(Arc::new(FakeTool::new("read_file", "contents")))
@@ -58,9 +59,11 @@ fn kernel(model: FakeModel) -> (Kernel, Arc<MemoryStore>) {
     (kernel, store)
 }
 
-fn kinds(store: &MemoryStore, session: &SessionId) -> Vec<&'static str> {
+async fn kinds(store: &SqliteStore, session: &SessionId) -> Vec<&'static str> {
     store
-        .recorded(session)
+        .events_since(session, 0)
+        .await
+        .unwrap()
         .iter()
         .map(|event| event.kind.type_name())
         .collect()
@@ -81,7 +84,7 @@ async fn a_single_turn_session_answers_and_checkpoints() -> Result<()> {
     assert_eq!(outcome.stop, Some(StopReason::Completed));
     assert!(outcome.is_closed());
 
-    let seen = kinds(&store, &id);
+    let seen = kinds(&store, &id).await;
     assert_eq!(
         seen,
         vec![
@@ -123,7 +126,7 @@ async fn a_tool_call_runs_and_the_model_answers_afterwards() -> Result<()> {
     let outcome = agent::start(&kernel, &principal(), id.clone(), spec()).await?;
 
     assert_eq!(outcome.state, SessionState::Closed);
-    let seen = kinds(&store, &id);
+    let seen = kinds(&store, &id).await;
     assert!(seen.contains(&"nucleos.v1.tool_call_started"));
     assert!(seen.contains(&"nucleos.v1.tool_call_args"));
     assert!(seen.contains(&"nucleos.v1.tool_finished"));
@@ -161,7 +164,7 @@ async fn malformed_arguments_never_reach_the_tool() -> Result<()> {
     agent::start(&kernel, &principal(), id.clone(), spec()).await?;
 
     let result = store
-        .recorded(&id)
+        .events_since(&id, 0).await.unwrap()
         .into_iter()
         .find_map(|event| match event.kind {
             EventKind::ToolFinished { result, .. } => Some(result),
@@ -175,7 +178,7 @@ async fn malformed_arguments_never_reach_the_tool() -> Result<()> {
 
 #[tokio::test]
 async fn a_tool_that_reports_a_cost_is_charged_for_it() -> Result<()> {
-    let store = Arc::new(MemoryStore::new());
+    let store = Arc::new(SqliteStore::in_memory().expect("an in-memory database"));
     let kernel = Kernel::builder()
         .model(
             "primary",
@@ -206,7 +209,7 @@ async fn a_tool_that_reports_a_cost_is_charged_for_it() -> Result<()> {
     // alternative — a gateway endpoint so the kernel could make the call itself — was a second
     // product, not a fix.
     let charged = store
-        .recorded(&id)
+        .events_since(&id, 0).await.unwrap()
         .into_iter()
         .find_map(|event| match event.kind {
             EventKind::ToolFinished { usage, .. } => usage,
@@ -229,7 +232,7 @@ async fn a_tool_that_reports_nothing_is_not_assumed_free() -> Result<()> {
     agent::start(&kernel, &principal(), id.clone(), spec()).await?;
 
     let usage = store
-        .recorded(&id)
+        .events_since(&id, 0).await.unwrap()
         .into_iter()
         .find_map(|event| match event.kind {
             EventKind::ToolFinished { usage, .. } => Some(usage),
@@ -268,7 +271,7 @@ async fn the_step_cap_stops_a_session_that_would_loop() -> Result<()> {
 
     assert_eq!(outcome.state, SessionState::Closed);
     assert_eq!(outcome.stop, Some(StopReason::Steps));
-    assert!(kinds(&store, &id).contains(&"nucleos.v1.budget_exhausted"));
+    assert!(kinds(&store, &id).await.contains(&"nucleos.v1.budget_exhausted"));
     Ok(())
 }
 
@@ -289,7 +292,7 @@ async fn no_credit_means_no_model_call() -> Result<()> {
     .await?;
 
     assert_eq!(outcome.stop, Some(StopReason::Tokens));
-    let seen = kinds(&store, &id);
+    let seen = kinds(&store, &id).await;
     assert!(!seen.contains(&"nucleos.v1.text_delta"), "no call ran");
     Ok(())
 }
@@ -319,7 +322,7 @@ async fn a_truncated_answer_stops_with_the_token_reason() -> Result<()> {
 
 #[tokio::test]
 async fn a_failing_primary_falls_back_and_both_attempts_are_recorded() -> Result<()> {
-    let store = Arc::new(MemoryStore::new());
+    let store = Arc::new(SqliteStore::in_memory().expect("an in-memory database"));
     let kernel = Kernel::builder()
         .model("primary", Arc::new(Broken))
         .model(
@@ -364,7 +367,7 @@ async fn a_failing_primary_falls_back_and_both_attempts_are_recorded() -> Result
 
 #[tokio::test]
 async fn an_attempt_that_streamed_is_not_retried() -> Result<()> {
-    let store = Arc::new(MemoryStore::new());
+    let store = Arc::new(SqliteStore::in_memory().expect("an in-memory database"));
     let kernel = Kernel::builder()
         .model("primary", Arc::new(StreamsThenFails))
         .model("secondary", Arc::new(FakeModel::text(["second answer"])))
@@ -432,7 +435,7 @@ async fn an_unknown_route_target_is_refused() {
 
 #[tokio::test]
 async fn a_denied_tool_answers_with_content_and_the_turn_continues() -> Result<()> {
-    let store = Arc::new(MemoryStore::new());
+    let store = Arc::new(SqliteStore::in_memory().expect("an in-memory database"));
     let kernel = Kernel::builder()
         .model(
             "primary",
@@ -456,7 +459,7 @@ async fn a_denied_tool_answers_with_content_and_the_turn_continues() -> Result<(
     // A refusal is content the model reads, not a failed turn: the session keeps going.
     assert_eq!(outcome.state, SessionState::Closed);
     let refusal = store
-        .recorded(&SessionId::new("s1"))
+        .events_since(&SessionId::new("s1"), 0).await.unwrap()
         .into_iter()
         .find_map(|event| match event.kind {
             EventKind::ToolFinished { result, .. } => Some(result),
@@ -469,7 +472,7 @@ async fn a_denied_tool_answers_with_content_and_the_turn_continues() -> Result<(
 
 #[tokio::test]
 async fn a_gated_call_parks_the_session_and_a_verdict_resumes_it() -> Result<()> {
-    let store = Arc::new(MemoryStore::new());
+    let store = Arc::new(SqliteStore::in_memory().expect("an in-memory database"));
     let model = FakeModel::with_script(vec![
         tool_call_deltas("call-1", "read_file", "{}"),
         vec![ModelDelta::Text {
@@ -515,7 +518,7 @@ async fn a_gated_call_parks_the_session_and_a_verdict_resumes_it() -> Result<()>
 #[tokio::test]
 async fn a_verdict_for_an_option_that_was_never_offered_is_refused() -> Result<()> {
     let (kernel, _) = {
-        let store = Arc::new(MemoryStore::new());
+        let store = Arc::new(SqliteStore::in_memory().expect("an in-memory database"));
         let kernel = Kernel::builder()
             .model(
                 "primary",

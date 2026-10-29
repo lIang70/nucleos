@@ -5,9 +5,11 @@
 //! A tool can ask for anything; the kernel intersects with the ceiling, records the widening as an
 //! event, and the gate in front of execution does not move.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use nucleos::adapter::{AllowAll, FakeModel, FixedClock, MemoryStore, Store, Tool, ToolCtx, ToolOutput};
+use nucleos::adapter::{AllowAll, Store, Tool, ToolCtx, ToolOutput};
+use nucleos_sqlite::SqliteStore;
+use nucleos_testkit::{FakeModel, FixedClock};
 use nucleos::contract::{
     ConfigPatch, DiscoveryPolicy, Exposure, Principal, Routing, SessionId, ToolPolicy, ToolSpec,
 };
@@ -48,8 +50,8 @@ impl Tool for Inert {
 }
 
 /// A catalog of `count` tools, plus discovery once it crosses the threshold.
-fn kernel(count: usize) -> (Kernel, Arc<MemoryStore>) {
-    let store = Arc::new(MemoryStore::new());
+fn kernel(count: usize) -> (Kernel, Arc<SqliteStore>) {
+    let store = Arc::new(SqliteStore::in_memory().expect("an in-memory database"));
     let mut builder = Kernel::builder()
         .model("primary", Arc::new(FakeModel::text(["unused"])))
         .store(Arc::clone(&store) as Arc<dyn Store>)
@@ -292,7 +294,9 @@ async fn a_search_widens_exposure_and_records_it() {
 
     // And the pool is in the record, because a replay has to know what turn 42 could see.
     let kinds: Vec<&str> = store
-        .recorded(&session.id().clone())
+        .events_since(&session.id().clone(), 0)
+        .await
+        .unwrap()
         .iter()
         .map(|event| event.kind.type_name())
         .collect();
@@ -503,7 +507,7 @@ async fn the_pool_forgets_what_has_gone_quiet() {
 
 #[tokio::test]
 async fn one_enormous_schema_does_not_evict_the_smaller_tools_behind_it() {
-    let store = Arc::new(MemoryStore::new());
+    let store = Arc::new(SqliteStore::in_memory().expect("an in-memory database"));
     let bulky: Arc<dyn Tool> = Arc::new(Inert {
         spec: ToolSpec {
             // Sorts first among equals, so it is considered before the small one.
@@ -597,7 +601,9 @@ async fn the_event_names_what_reached_the_prompt_not_what_entered_the_pool() {
     // it did.
     assert!(session.discovered().contains_key("read_file"));
     let exposed: Vec<&str> = store
-        .recorded(&session.id().clone())
+        .events_since(&session.id().clone(), 0)
+        .await
+        .unwrap()
         .iter()
         .filter(|event| event.kind.type_name() == "nucleos.v1.tools_exposed")
         .map(|_| "tools_exposed")

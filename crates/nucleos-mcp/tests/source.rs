@@ -4,7 +4,7 @@
 //! subprocess over real pipes, because the parts that go wrong in an MCP client are the framing, the
 //! dispatch of responses to waiters, and the handshake ordering — none of which a mock would catch.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use nucleos::adapter::{Tool, ToolCtx};
 use nucleos::contract::SessionId;

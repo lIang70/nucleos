@@ -15,6 +15,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{MethodRouter, get, post};
 use axum::{Json, Router};
 use nucleos::contract::{ErrorCode, Principal, SessionId, SessionState};
+use nucleos_sqlite::SqliteStore;
 use nucleos::kernel::{HitlVerdict, Kernel, SessionSpec, StateWrite};
 use nucleos::wire::api::{
     DescribeResponse, ErrorBody, InferenceRequest, InferenceResponse, ProcessInfo,
@@ -137,9 +138,23 @@ impl App {
             chain: vec![model.clone()],
             retries: 1,
         };
+        // A file, not a hash map: a session that survives `kill -9` is the property this daemon
+        // exists to provide, and an in-memory store makes every restart look like data loss to the
+        // caller. `NUCLEOS_STORE` names the file; `:memory:` is available for a throwaway run and
+        // is the one place a restart is allowed to forget.
+        let path = std::env::var("NUCLEOS_STORE").unwrap_or_else(|_| "nucleos.db".to_owned());
+        let store = if path == ":memory:" {
+            eprintln!("NUCLEOS_STORE=:memory: sessions do not survive this process");
+            SqliteStore::in_memory()?
+        } else {
+            SqliteStore::open(&path)?
+        };
         let mut builder = Kernel::builder()
             .model(&model, Arc::new(adapter))
-            .store(Arc::new(nucleos::adapter::MemoryStore::new()))
+            .store(Arc::new(store))
+            // No policy engine yet, and saying so beats implying one: every tool call is allowed,
+            // including a process launch. A deployment that needs a gate supplies one; this line is
+            // the whole of the current answer.
             .policy(Arc::new(nucleos::adapter::AllowAll))
             .routing(routing);
         for tool in tools {

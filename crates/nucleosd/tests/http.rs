@@ -3,7 +3,7 @@
 //! What matters here is the edge: an unconfigured daemon must describe itself and refuse to
 //! pretend, and a failure must come back as the one error body every endpoint shares.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -124,11 +124,11 @@ async fn every_row_of_the_table_is_a_route_the_router_serves() {
     }
 }
 
-/// A daemon with a kernel that can actually run things: an in-memory store and no policy.
+/// A daemon with a kernel that can actually run things: the real store, in memory, and no policy.
 fn running() -> Arc<App> {
-    use nucleos::adapter::{AllowAll, MemoryStore, Store};
+    use nucleos::adapter::AllowAll;
     let kernel = nucleos::Kernel::builder()
-        .store(Arc::new(MemoryStore::new()) as Arc<dyn Store>)
+        .store(Arc::new(nucleos_sqlite::SqliteStore::in_memory().unwrap()))
         .policy(Arc::new(AllowAll))
         .build()
         .unwrap();

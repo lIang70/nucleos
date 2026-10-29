@@ -20,6 +20,8 @@ tokio = { workspace = true }
 tokio-stream = { workspace = true }
 
 [dev-dependencies]
+nucleos-sqlite = { path = "../nucleos-sqlite" }
+nucleos-testkit = { path = "../nucleos-testkit" }
 tokio = { workspace = true }
 
 [lints]

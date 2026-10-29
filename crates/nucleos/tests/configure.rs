@@ -4,9 +4,11 @@
 //! replay knows which system prompt was in force at turn 42), and the tool allow-list only narrows
 //! (so an application cannot route around the generation it is pinned to).
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use nucleos::adapter::{AllowAll, FakeModel, FixedClock, MemoryStore, Store};
+use nucleos::adapter::{AllowAll, Store};
+use nucleos_sqlite::SqliteStore;
+use nucleos_testkit::{FakeModel, FixedClock};
 use nucleos::contract::{
     ConfigPatch, ErrorCode, EventKind, GenerateParams, Hints, Principal, Routing, ServiceTier,
     SessionId, StopReason, Verbosity,
@@ -21,8 +23,8 @@ fn principal() -> Principal {
     }
 }
 
-fn kernel() -> (Kernel, Arc<MemoryStore>) {
-    let store = Arc::new(MemoryStore::new());
+fn kernel() -> (Kernel, Arc<SqliteStore>) {
+    let store = Arc::new(SqliteStore::in_memory().expect("an in-memory database"));
     let kernel = Kernel::builder()
         .model("primary", Arc::new(FakeModel::text(["unused"])))
         .model("cheap", Arc::new(FakeModel::text(["unused"])))
@@ -38,9 +40,11 @@ fn kernel() -> (Kernel, Arc<MemoryStore>) {
     (kernel, store)
 }
 
-fn kinds(store: &MemoryStore, id: &SessionId) -> Vec<&'static str> {
+async fn kinds(store: &SqliteStore, id: &SessionId) -> Vec<&'static str> {
     store
-        .recorded(id)
+        .events_since(id, 0)
+        .await
+        .unwrap()
         .iter()
         .map(|event| event.kind.type_name())
         .collect()
@@ -67,7 +71,7 @@ async fn a_change_is_recorded_and_survives_a_reload() -> nucleos::Result<()> {
     assert_eq!(changed, vec!["system"]);
     // A replay has to know which system prompt was in force at this point; without the event the
     // log rebuilds a conversation that never happened.
-    assert!(kinds(&store, &id).contains(&"nucleos.v1.session_configured"));
+    assert!(kinds(&store, &id).await.contains(&"nucleos.v1.session_configured"));
 
     let reloaded = kernel.load(&principal(), &id).await?;
     assert_eq!(
@@ -308,7 +312,7 @@ async fn an_empty_patch_changes_nothing_and_records_nothing() -> nucleos::Result
     let mut session = kernel
         .open(&principal(), id.clone(), SessionSpec::default())
         .await?;
-    let before = store.recorded(&id).len();
+    let before = store.events_since(&id, 0).await.unwrap().len();
 
     let changed = kernel
         .configure(&mut session, ConfigPatch::default())
@@ -316,7 +320,7 @@ async fn an_empty_patch_changes_nothing_and_records_nothing() -> nucleos::Result
 
     assert!(changed.is_empty());
     assert_eq!(
-        store.recorded(&id).len(),
+        store.events_since(&id, 0).await.unwrap().len(),
         before,
         "an empty patch is not an event"
     );

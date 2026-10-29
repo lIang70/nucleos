@@ -22,11 +22,15 @@
 //!   database, a remote service — and a synchronous signature pushes implementors toward
 //!   blocking a runtime worker.
 //!
-//! [`fake`] holds a no-dependency implementation of each, because a fake only the kernel's
-//! own tests can reach is a fake every host writes again.
+//! Two of these ship with an implementation rather than only a trait: [`SystemClock`], because
+//! reading the time is not a decision, and [`policy::AllowAll`] / [`policy::DenyAll`], because
+//! "no policy configured" and "refuse everything" are real answers rather than stand-ins.
+//!
+//! Nothing else does. A test double in this crate is one `use` away from being the deployment, so
+//! the doubles live in `nucleos-testkit`, which no binary depends on, and the store lives in
+//! `nucleos-sqlite`, where a test and a deployment run the same code.
 
 pub mod clock;
-pub mod fake;
 pub mod model;
 pub mod policy;
 pub mod registry;
@@ -34,12 +38,11 @@ pub mod store;
 pub mod tool;
 
 pub use clock::{Clock, SystemClock};
-pub use fake::{AllowAll, DenyAll, EchoModel, FakeModel, FakeTool, FixedClock, MemoryStore};
 pub use model::{
     FinishReason, GenerateParams, Model, ModelDelta, ModelRequest, ModelStream, ReasoningEffort,
     TextFormat, ToolChoice,
 };
-pub use policy::{Gated, Policy, PolicyRequest, Verdict};
+pub use policy::{AllowAll, DenyAll, Gated, Policy, PolicyRequest, Verdict};
 pub use registry::ModelRegistry;
 pub use store::{SessionPage, SessionQuery, Store};
 pub use tool::{Tool, ToolCtx, ToolOutput};

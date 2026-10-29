@@ -6,9 +6,11 @@
 //! No sandbox mechanism is wired up yet, so everything here runs under `danger_full_access` — and
 //! one test proves that anything stricter is *refused* rather than silently run unconfined.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use nucleos::adapter::{AllowAll, FakeModel, FixedClock, MemoryStore, Store};
+use nucleos::adapter::{AllowAll, Store};
+use nucleos_sqlite::SqliteStore;
+use nucleos_testkit::{FakeModel, FixedClock};
 use nucleos::contract::{
     ErrorCode, EventKind, ExecStream, Principal, ProcessSpec, SandboxPolicy, SessionId, SessionKind,
 };
@@ -23,8 +25,8 @@ fn principal() -> Principal {
     }
 }
 
-fn kernel() -> (Kernel, Arc<MemoryStore>) {
-    let store = Arc::new(MemoryStore::new());
+fn kernel() -> (Kernel, Arc<SqliteStore>) {
+    let store = Arc::new(SqliteStore::in_memory().expect("an in-memory database"));
     let kernel = Kernel::builder()
         .model("primary", Arc::new(FakeModel::text(["unused"])))
         .store(Arc::clone(&store) as Arc<dyn Store>)
@@ -51,20 +53,24 @@ fn spec(argv: &[&str], sandbox: SandboxPolicy) -> SessionSpec {
     }
 }
 
-fn kinds(store: &MemoryStore, id: &SessionId) -> Vec<&'static str> {
+async fn kinds(store: &SqliteStore, id: &SessionId) -> Vec<&'static str> {
     store
-        .recorded(id)
+        .events_since(id, 0)
+        .await
+        .unwrap()
         .iter()
         .map(|event| event.kind.type_name())
         .collect()
 }
 
 /// The supervisor writes from its own tasks, so output can land a moment after the exit.
-fn output_text(store: &MemoryStore, id: &SessionId) -> String {
+async fn output_text(store: &SqliteStore, id: &SessionId) -> String {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let text: String = store
-            .recorded(id)
+            .events_since(id, 0)
+        .await
+        .unwrap()
             .iter()
             .filter_map(|event| match &event.kind {
                 EventKind::ExecOutput { chunk, .. } => Some(chunk.clone()),
@@ -118,7 +124,9 @@ async fn the_exit_event_carries_the_summary_and_leaves_the_text_in_the_stream()
     kernel.wait(&session).await?;
 
     let exit = store
-        .recorded(&id)
+        .events_since(&id, 0)
+        .await
+        .unwrap()
         .into_iter()
         .find_map(|event| match event.kind {
             EventKind::ExecExited { output } => Some(output),
@@ -149,10 +157,10 @@ async fn a_command_runs_and_its_output_lands_in_the_log() -> nucleos::Result<()>
     let output = kernel.wait(&session).await?;
     assert_eq!(output.exit_code, 0);
 
-    let seen = kinds(&store, &id);
+    let seen = kinds(&store, &id).await;
     assert!(seen.contains(&"nucleos.v1.exec_started"), "{seen:?}");
     assert!(seen.contains(&"nucleos.v1.exec_exited"), "{seen:?}");
-    assert_eq!(output_text(&store, &id), "hi");
+    assert_eq!(output_text(&store, &id).await, "hi");
     Ok(())
 }
 
@@ -199,8 +207,8 @@ async fn stdin_reaches_the_process_and_is_recorded() -> nucleos::Result<()> {
     let output = kernel.wait(&session).await?;
 
     assert_eq!(output.exit_code, 0);
-    assert!(kinds(&store, &id).contains(&"nucleos.v1.exec_stdin"));
-    assert_eq!(output_text(&store, &id), "hello");
+    assert!(kinds(&store, &id).await.contains(&"nucleos.v1.exec_stdin"));
+    assert_eq!(output_text(&store, &id).await, "hello");
     Ok(())
 }
 
@@ -245,7 +253,9 @@ async fn stderr_is_a_separate_stream() -> nucleos::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let streams: Vec<ExecStream> = store
-            .recorded(&id)
+            .events_since(&id, 0)
+        .await
+        .unwrap()
             .iter()
             .filter_map(|event| match &event.kind {
                 EventKind::ExecOutput { stream, .. } => Some(*stream),

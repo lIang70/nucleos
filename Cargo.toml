@@ -5,6 +5,8 @@ members = [
     "crates/nucleos-agent",
     "crates/nucleos-mcp",
     "crates/nucleos-openai",
+    "crates/nucleos-sqlite",
+    "crates/nucleos-testkit",
     "crates/nucleosd",
 ]
 
