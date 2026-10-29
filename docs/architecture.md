@@ -495,69 +495,88 @@ and there is an upcaster table from day one.
 
 ## 11. Context management
 
-A session will outlive its model's context window. Three mechanisms, in order of who owns
-them:
+A session outlives its model's context window. Three mechanisms, and the split between them is the
+design:
 
-| Mechanism | Owner | What it does |
+| Mechanism | Owner | Why there |
 | --- | --- | --- |
-| **budget** | kernel | counts tokens against the window; refuses a turn that cannot fit |
-| **compaction** | kernel | at a turn boundary, replaces a span of history with a summary event |
-| **page-in** | a tool | retrieves text the compaction dropped, when the model asks |
+| **measure and refuse** | kernel | it is the only place holding the window, the reserve and the prompt at once, and a silent truncation is banned |
+| **compaction** | the caller | it is editing the caller's message list, and there are many strategies |
+| **page-in** | a tool | an index, an embedding model and a ranking function belong in a tool |
 
-The split is the point. The kernel only does what must be exact — counting and replacing
-history in a way that replays. Retrieval is a tool, because a tool is where an embedding
-model, an index and a ranking function belong.
+The reasoning behind the middle row is worth stating, because the obvious design is wrong. The
+kernel does not assemble prompts: `inference(session, messages)` takes the conversation from the
+caller. Compaction *is* editing that list, so a kernel that compacted would be rewriting data it does
+not own — and it would have to pick one strategy, in a place where summarising, sliding windows,
+tool-result eviction, importance marking and retrieval all exist and fail differently.
+
+So the kernel does the part that must be exact, and only that.
 
 ### 11.1 What must fit
 
 ```text
-prompt_tokens + max_output_tokens <= context_window
+prompt_tokens + completion_reserve <= context_window
 ```
 
-The window comes from the model's capability declaration and `max_output_tokens` from the
-session's budget. Both are inputs, neither is discovered by trial and error: a provider
-that silently truncates is a provider that silently changes the answer.
+Checked before the call, by `count_tokens` — the one method on the model contract that had never
+been called, while this section claimed the check existed. The reserve is the request's
+`max_output_tokens` when it sets one, and the model's declared maximum otherwise.
 
-A session whose *first* turn cannot fit even with empty history fails at `Start`. Failing
-on every turn forever is not a policy, it is a bug with a schedule.
+Three refusals, each for a failure that is otherwise silent:
 
-### 11.2 Compaction
+- **Over the window** — the turn fails with `Invalid`. The caller compacts or lowers the reserve.
+  Sending it anyway is a provider that truncates, which changes the answer without saying so.
+- **No declared window** — refused rather than treated as unlimited. "No stated limit" cannot mean
+  "send anything"; that is the same truncation, moved one layer down.
+- **A counting failure** — fails the turn. A budget the kernel cannot compute is a budget it cannot
+  enforce, and `count_tokens` is required by the contract for exactly this.
 
-Trigger: the next prompt would not fit, and there is history to drop.
+The check runs inside the route, so a fallback model with a larger window still gets its chance —
+the prompt did not fit *that* model, which is a fact about one target, not about the call.
 
-Policy, written down so it can be tested rather than inferred from behaviour:
+### 11.2 Compaction is the caller's
 
-- the system prompt is never compacted;
-- the first user message is never compacted — it is the intent;
-- the most recent N turns stay verbatim (config, default 4);
-- everything between them is replaced by one summary, produced by one model call.
+The kernel offers no summariser, no window policy, no "recent N turns". What it offers is a way to
+say what happened:
 
-The summary is a model call: it consumes budget, it is charged, and it can fail. A failed
-compaction stops the session with `StopReason::Tokens`. Pretending a smaller prompt is
-equivalent is how a session starts being confidently wrong about its own past.
+```rust
+kernel.compact(&mut session, replaced_from, replaced_to, summary)
+```
+
+That appends `history_compacted` and does nothing else. The span addresses the messages the caller
+passed, and the summary is what the model was given instead. An empty or backwards span is refused:
+a caller reporting that it dropped nothing is reporting a bug, and a log entry saying so would be
+worse than the error.
+
+What this buys, for one event: a replay can reconstruct the prompt the model actually saw. Without
+it, the log says one thing and the request said another, and an auditor cannot tell compaction from
+a bug.
+
+What it costs, stated plainly: **the kernel no longer promises that a long conversation keeps
+running.** Its promise is "you are told, not truncated" — a session whose caller never compacts ends
+at `StopReason::Tokens`. A kernel that answered one question for everyone would be answering it
+wrongly for most.
 
 ### 11.3 Page-in
 
-The summary carries **artifact handles**, not text: markers naming the spans it replaced. A
+The summary may carry **artifact handles** rather than text: markers naming the spans it replaced. A
 `recall` tool resolves a handle back to the original text.
 
-That is the whole mechanism. The result arrives as an ordinary tool result, so it enters
-history on the normal path — no kernel special case, no hidden state, and a model that is
-wrong about needing it has simply made a recoverable mistake.
+That is the whole mechanism, and it belongs to the caller as well. The result arrives as an ordinary
+tool result, so it enters history on the normal path — no kernel special case, no hidden state, and a
+model that is wrong about needing it has made a recoverable mistake.
 
 ### 11.4 Why the log is never edited
 
-Compaction **adds** an event; it never rewrites or deletes one. The event says, in effect:
-"when constructing a prompt, treat the events in `[a, b)` as this summary".
-
-Three properties follow, and none of them survive in-place editing of history:
+Compaction **adds** an event; it never rewrites or deletes one. Three properties follow, and none of
+them survive in-place editing:
 
 - the event log stays append-only, so it stays replayable;
 - the `seq` space stays dense, so a resume cursor still works;
-- an auditor can see what the model was actually told, and what was dropped to make room.
+- an auditor can see what the model was told, and what was dropped to make room.
 
-The event kind lands with P3 as a **purely additive** change to `nucleos.v1` — a new member
-of the `Event.kind` oneof, no version bump, no field renumbered.
+The kernel's own copy of the conversation is the record; the prompt is a view of it. That is why a
+caller's compaction changes the view without touching the log.
 
 ## 12. Telemetry
 

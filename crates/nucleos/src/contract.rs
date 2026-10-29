@@ -543,6 +543,23 @@ pub enum EventKind {
         /// Which attempt in the ledger it belongs to.
         attempt_index: u32,
     },
+    /// The caller replaced a span of history with a summary when it built a prompt.
+    ///
+    /// Recorded, not performed: *what* to drop is the caller's decision — there are many strategies
+    /// and they fail differently — but the log has to explain why a prompt did not contain the
+    /// messages the log does. Without this event, a replay reconstructs a prompt the model never
+    /// saw, and an auditor cannot tell compaction from a bug.
+    ///
+    /// The span addresses messages by their position in the history the caller passed, and the
+    /// summary is the text that replaced them; the originals stay in the log untouched.
+    HistoryCompacted {
+        /// The first position replaced, counting from the oldest message kept.
+        replaced_from: u32,
+        /// One past the last position replaced.
+        replaced_to: u32,
+        /// What the model was given instead.
+        summary: String,
+    },
     /// Tools became visible to the model.
     ///
     /// Recorded because a replay has to know which tools the model could see at turn 42 — the same
@@ -678,6 +695,7 @@ impl EventKind {
             Self::ExecOutput { .. } => "nucleos.v1.exec_output",
             Self::ExecStdin { .. } => "nucleos.v1.exec_stdin",
             Self::ExecExited { .. } => "nucleos.v1.exec_exited",
+            Self::HistoryCompacted { .. } => "nucleos.v1.history_compacted",
             Self::ToolsExposed { .. } => "nucleos.v1.tools_exposed",
             Self::SessionConfigured { .. } => "nucleos.v1.session_configured",
             Self::CapabilityDegraded(_) => "nucleos.v1.capability_degraded",

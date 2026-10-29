@@ -486,3 +486,26 @@ same mutex that serialises reconnects.
 session — a fork bomb that looks like an unhealthy tool. Without the mutex, a batch of eight
 concurrent calls to a dead source produces eight children and seven orphans.
 
+## 39. Compaction is not a kernel feature
+
+**Decision.** The kernel measures a prompt and refuses one that cannot fit. It does not summarise,
+window, evict or rank. `compact` records what the caller did; it never performs it.
+
+**Why.** The kernel never assembles prompts — `inference` takes the message list from the caller — so
+compaction is editing data the kernel does not own. Strategies differ in ways that matter: a summary
+loses detail but keeps intent, a sliding window keeps detail and loses intent, evicting tool results
+keeps both and loses evidence. A kernel that picked one would be wrong for most callers, and it would
+have to charge a model call it did not decide to spend.
+
+**What the kernel still owes.** Two things a caller cannot do for itself: `count_tokens` before the
+call (the contract method that existed while nothing called it), and a `history_compacted` event so
+that a replay reconstructs the prompt the model saw rather than the history the log happens to hold.
+
+## 40. A model with no declared window is not unlimited
+
+**Decision.** `context_window == 0` fails the turn.
+
+**Why.** The alternative is to treat "no stated limit" as "send anything", which is the silent
+truncation the check exists to prevent — just attributed to the provider instead of the kernel. A
+limit that cannot be shown to hold is not a limit.
+

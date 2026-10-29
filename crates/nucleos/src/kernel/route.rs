@@ -212,6 +212,37 @@ impl Kernel {
         Err(last_error.unwrap_or_else(|| Error::unavailable("no model could be reached")))
     }
 
+    /// Refuse a prompt the model cannot take.
+    ///
+    /// `prompt + output <= window`, with the completion reserve taken from the request when it says
+    /// so and from the model's declaration otherwise.
+    fn measure(&self, model: &Arc<dyn Model>, request: &ModelRequest) -> Result<()> {
+        let capability = model.capability();
+        let window = u64::from(capability.context_window);
+        if window == 0 {
+            // A model that declares no window is one nothing here can hold to a limit. Treating that
+            // as "unlimited" would be the silent truncation this check exists to prevent, so it is
+            // a refusal to run rather than a guess.
+            return Err(Error::invalid(
+                "the model declares no context window, so a prompt cannot be shown to fit",
+            ));
+        }
+        let prompt = model.count_tokens(request)?;
+        let reserve = u64::from(
+            request
+                .params
+                .max_output_tokens
+                .unwrap_or(capability.max_output_tokens),
+        );
+        if prompt.saturating_add(reserve) > window {
+            return Err(Error::invalid(format!(
+                "the prompt is {prompt} tokens and the completion reserve is {reserve}, over a \
+                 window of {window}; the caller has to compact or raise the budget"
+            )));
+        }
+        Ok(())
+    }
+
     /// One call, streaming its deltas into events as they arrive.
     async fn invoke_once(
         &self,
@@ -222,6 +253,13 @@ impl Kernel {
         attempt_index: u32,
     ) -> Result<Ending> {
         let request = self.build_request(session, messages);
+
+        // What must fit, before anything is spent: a provider that silently truncates changes the
+        // answer without saying so, so the refusal happens here, where the window and the prompt are
+        // both in hand. This is the only thing the kernel may decide about context — *what* to drop
+        // is the caller's, because the caller is the one who assembled this list.
+        self.measure(model, &request)?;
+
         let mut stream = match model.invoke(request).await {
             Ok(stream) => stream,
             Err(error) => {

@@ -768,6 +768,38 @@
             "type": "object"
           },
           {
+            "description": "The caller replaced a span of history with a summary when it built a prompt.\n\nRecorded, not performed: *what* to drop is the caller's decision — there are many strategies\nand they fail differently — but the log has to explain why a prompt did not contain the\nmessages the log does. Without this event, a replay reconstructs a prompt the model never\nsaw, and an auditor cannot tell compaction from a bug.\n\nThe span addresses messages by their position in the history the caller passed, and the\nsummary is the text that replaced them; the originals stay in the log untouched.",
+            "properties": {
+              "kind": {
+                "const": "history_compacted",
+                "type": "string"
+              },
+              "replaced_from": {
+                "description": "The first position replaced, counting from the oldest message kept.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "replaced_to": {
+                "description": "One past the last position replaced.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "summary": {
+                "description": "What the model was given instead.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "replaced_from",
+              "replaced_to",
+              "summary"
+            ],
+            "type": "object"
+          },
+          {
             "description": "Tools became visible to the model.\n\nRecorded because a replay has to know which tools the model could see at turn 42 — the same\nreason `session_configured` exists, and the same failure if it did not.",
             "properties": {
               "kind": {
