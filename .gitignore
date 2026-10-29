@@ -1,4 +1,52 @@
-/target
-**/*.rs.bk
-*.pdb
-.DS_Store
+# Whitelist. Everything is ignored unless a rule below allows it.
+#
+# The reason is the file next to this one: a `.env` holding a real API key sat untracked in the
+# working tree, one `git add -A` away from being published. A blacklist has to predict every name
+# worth hiding; a whitelist has to name only what belongs.
+#
+# The cost is real and worth stating: a new top-level file, or a new kind of file inside a crate,
+# is invisible until a rule names it. Add the rule rather than `git add -f`.
+*
+*/
+
+# Directories must be re-included for git to descend into them. Their contents stay ignored:
+# `*` matches every file inside, and nothing below allows them wholesale.
+!*/
+
+# The repository's own files.
+!/.gitignore
+!/.github/
+!/.github/**
+!/Cargo.toml
+!/Cargo.lock
+!/rust-toolchain.toml
+!/README.md
+!/LICENSE
+!/docs/
+!/docs/**
+!/openapi/
+!/openapi/**
+
+# Per crate: the manifest, the sources, the tests, the examples. Nothing else — a crate's
+# `target/`, a stray `.env` or a scratch file are not source.
+!/crates/
+!/crates/*/
+!/crates/*/Cargo.toml
+!/crates/*/src/
+!/crates/*/src/**
+!/crates/*/tests/
+!/crates/*/tests/**
+!/crates/*/examples/
+!/crates/*/examples/**
+
+# Denies come last because the last matching rule wins. These are never allowed, wherever they
+# sit, including inside a source directory.
+/target/
+crates/*/target/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.keystore
