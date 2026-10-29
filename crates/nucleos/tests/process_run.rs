@@ -8,7 +8,7 @@
 
 #![allow(clippy::unwrap_used)]
 
-use nucleos::adapter::{AllowAll, FixedClock, MemoryStore, Store};
+use nucleos::adapter::{AllowAll, FakeModel, FixedClock, MemoryStore, Store};
 use nucleos::contract::{
     ErrorCode, EventKind, ExecStream, Principal, ProcessSpec, SandboxPolicy, SessionId, SessionKind,
 };
@@ -26,9 +26,14 @@ fn principal() -> Principal {
 fn kernel() -> (Kernel, Arc<MemoryStore>) {
     let store = Arc::new(MemoryStore::new());
     let kernel = Kernel::builder()
+        .model("primary", Arc::new(FakeModel::text(["unused"])))
         .store(Arc::clone(&store) as Arc<dyn Store>)
         .policy(Arc::new(AllowAll))
         .clock(Arc::new(FixedClock::at(0)))
+        .routing(nucleos::contract::Routing {
+            chain: vec!["primary".to_owned()],
+            retries: 0,
+        })
         .build()
         .unwrap();
     (kernel, store)
@@ -256,5 +261,61 @@ async fn stderr_is_a_separate_stream() -> nucleos::Result<()> {
         );
         std::thread::sleep(Duration::from_millis(10));
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_listing_is_durable_and_only_counts_process_sessions() -> nucleos::Result<()> {
+    let (kernel, store) = kernel();
+    let id = SessionId::new("p1");
+    let session = kernel
+        .spawn(
+            &principal(),
+            id.clone(),
+            spec(&["sh", "-c", "printf hi"], SandboxPolicy::DangerFullAccess),
+        )
+        .await?;
+    kernel.wait(&session).await?;
+
+    // An agent session exists in the same store and must not appear: the question is "which exec
+    // sessions were created", not "which sessions exist".
+    kernel
+        .open(&principal(), SessionId::new("a1"), SessionSpec::default())
+        .await?;
+
+    let listed = kernel.processes().await?;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].0, id);
+    assert!(matches!(
+        listed[0].1.status,
+        nucleos::contract::ProcessStatus::Exited { .. }
+    ));
+
+    // The listing is durable: a kernel that has never seen the process still knows it ran.
+    let fresh = Kernel::builder()
+        .model("primary", Arc::new(FakeModel::text(["unused"])))
+        .store(Arc::clone(&store) as Arc<dyn Store>)
+        .policy(Arc::new(AllowAll))
+        .clock(Arc::new(FixedClock::at(0)))
+        .routing(nucleos::contract::Routing {
+            chain: vec!["primary".to_owned()],
+            retries: 0,
+        })
+        .build()?;
+    let listed = fresh.processes().await?;
+    assert_eq!(listed.len(), 1);
+    assert!(matches!(
+        listed[0].1.status,
+        nucleos::contract::ProcessStatus::Exited { .. }
+    ));
+
+    // And a checkpoint that says "running" with no supervisor entry is a session that outlived the
+    // runtime: the honest answer is `Lost`, not "running".
+    let mut snapshot = store.snapshot(&id).await?.unwrap();
+    snapshot.process.as_mut().unwrap().status =
+        nucleos::contract::ProcessStatus::Running { pid: 1 };
+    store.write_snapshot(snapshot).await?;
+    let listed = fresh.processes().await?;
+    assert_eq!(listed[0].1.status, nucleos::contract::ProcessStatus::Lost);
     Ok(())
 }

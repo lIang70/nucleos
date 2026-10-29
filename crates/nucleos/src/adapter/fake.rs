@@ -355,6 +355,15 @@ impl Store for MemoryStore {
         Ok(())
     }
 
+    async fn sessions(&self) -> Result<Vec<SessionId>> {
+        let state = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        Ok(state
+            .events
+            .keys()
+            .map(|session| SessionId::new(session.clone()))
+            .collect())
+    }
+
     async fn snapshot(&self, session: &SessionId) -> Result<Option<Snapshot>> {
         let state = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         Ok(state.snapshots.get(session.as_str()).cloned())

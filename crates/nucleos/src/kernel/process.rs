@@ -351,7 +351,27 @@ async fn supervise(
     let mut summary = output.clone();
     summary.stdout.text.clear();
     summary.stderr.text.clear();
-    let _ = log.append(EventKind::ExecExited { output: summary }).await;
+    let _ = log
+        .append(EventKind::ExecExited {
+            output: summary.clone(),
+        })
+        .await;
+    // Close the session here, not in the request path: the process ended, and a session that stays
+    // `open` for a command that is gone is a session nobody can list honestly.
+    let _ = log
+        .append(EventKind::StateChanged {
+            state: crate::contract::SessionState::Closed,
+            stop: Some(crate::contract::StopReason::Completed),
+        })
+        .await;
+    if let Ok(Some(mut snapshot)) = log.store.snapshot(&log.session).await {
+        snapshot.state = crate::contract::SessionState::Closed;
+        snapshot.seq = log.seq.load(Ordering::SeqCst).saturating_sub(1);
+        if let Some(process) = snapshot.process.as_mut() {
+            process.status = crate::contract::ProcessStatus::Exited { output: summary };
+        }
+        let _ = log.store.write_snapshot(snapshot).await;
+    }
     let _ = exited.send(output);
 }
 
@@ -396,25 +416,45 @@ async fn reader(
 }
 
 impl Kernel {
-    /// The process sessions this node is running, and where each one is.
+    /// Every process session this node knows about, and where each one is.
     ///
-    /// Not a durable list: it is the supervisor's memory, so it answers "what is running now". A
-    /// session that outlived a restart is absent here and says `Lost` in its own view — which is
-    /// the honest pair of answers, and the reason this is not called a list of sessions.
+    /// The store says which sessions exist; the supervisor says which are alive. Neither can answer
+    /// alone, and the difference is the `Lost` case: a session in the store that the supervisor has
+    /// never heard of outlived a restart.
     pub async fn processes(&self) -> Result<Vec<(SessionId, crate::contract::ProcessState)>> {
         let mut listed = Vec::new();
-        for (session, pid) in self.supervisor.list().await {
+        for session in self.store.sessions().await? {
             let Some(snapshot) = self.store.snapshot(&session).await? else {
                 continue;
             };
-            let Some(process) = snapshot.process else {
+            if snapshot.kind != crate::contract::SessionKind::Process {
+                continue;
+            }
+            let Some(process) = snapshot.process.clone() else {
                 continue;
             };
-            let status = match pid {
-                Some(pid) => crate::contract::ProcessStatus::Running { pid },
-                // Held by the supervisor with no pid yet: between `spawn` and the child.
-                None => crate::contract::ProcessStatus::Pending,
+
+            // A supervisor entry is the difference between "it exists" and "it is running".
+            let status = match self
+                .supervisor
+                .list()
+                .await
+                .iter()
+                .find(|(id, _)| id == &session)
+            {
+                Some((_, Some(pid))) => crate::contract::ProcessStatus::Running { pid: *pid },
+                Some((_, None)) => crate::contract::ProcessStatus::Pending,
+                None => match process.status {
+                    // The checkpoint recorded an exit: it ended, and we know how.
+                    crate::contract::ProcessStatus::Exited { output } => {
+                        crate::contract::ProcessStatus::Exited { output }
+                    }
+                    // The checkpoint says it was running and the supervisor has never heard of it:
+                    // it outlived the runtime.
+                    _ => crate::contract::ProcessStatus::Lost,
+                },
             };
+
             listed.push((
                 session,
                 crate::contract::ProcessState {

@@ -18,6 +18,13 @@ pub trait Store: Send + Sync {
     /// silently renumbered event makes every later resume cursor wrong.
     async fn append(&self, session: &SessionId, events: &[Event]) -> Result<()>;
 
+    /// Every session the store holds.
+    ///
+    /// Only the store knows what exists; a supervisor knows what is *running*, which is a different
+    /// and smaller set. A listing that has to answer "which exec sessions were created" needs this
+    /// one.
+    async fn sessions(&self) -> Result<Vec<SessionId>>;
+
     /// The most recent snapshot, if one was ever written.
     async fn snapshot(&self, session: &SessionId) -> Result<Option<Snapshot>>;
 

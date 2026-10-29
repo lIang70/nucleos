@@ -229,7 +229,7 @@ async fn a_policy_without_a_mechanism_is_refused_over_the_abi() {
 }
 
 #[tokio::test]
-async fn the_list_shows_what_is_running_and_forgets_what_ended() {
+async fn the_list_shows_the_exec_sessions_and_says_how_they_ended() {
     let app = router(running());
 
     // Empty to begin with: an empty list is an answer, not an error.
@@ -284,7 +284,8 @@ async fn the_list_shows_what_is_running_and_forgets_what_ended() {
     assert_eq!(processes[0]["process"]["status"]["status"], "running");
     assert!(processes[0]["process"]["status"]["pid"].as_u64().is_some());
 
-    // Ending it removes it from the list: this is memory, not the log.
+    // Ending it does not remove it: the list is the store, and an exec session that ran is a fact
+    // worth keeping. What changes is the status.
     let _ = app
         .clone()
         .oneshot(
@@ -297,6 +298,7 @@ async fn the_list_shows_what_is_running_and_forgets_what_ended() {
         .await
         .unwrap();
     let _ = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -306,4 +308,25 @@ async fn the_list_shows_what_is_running_and_forgets_what_ended() {
         )
         .await
         .unwrap();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/processes")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let listed = body_json(response).await;
+    let processes = listed["processes"].as_array().unwrap();
+    assert_eq!(
+        processes.len(),
+        1,
+        "an exec session that ran is still a fact"
+    );
+    assert_eq!(processes[0]["process"]["status"]["status"], "exited");
+    // Killed by a signal: `-1`, because the platform gave no exit status. Not a failure of the
+    // listing — a signalled process has no code.
+    assert_eq!(processes[0]["process"]["status"]["output"]["exit_code"], -1);
 }
