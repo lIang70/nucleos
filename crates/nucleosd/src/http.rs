@@ -85,8 +85,11 @@ pub struct App {
     /// Behind a lock because a reload replaces it: it describes the *current* generation, and a
     /// snapshot taken at start-up would go on describing a set nobody is pinned to any more.
     tools: std::sync::RwLock<Vec<String>>,
-    /// The source a reload reconnects, when the deployment configured one.
-    source: Option<nucleos_mcp::McpSource>,
+    /// The MCP servers this deployment runs.
+    ///
+    /// Behind a lock because a source is added by request: the set is state, and the tool generation it
+    /// produces is derived from it.
+    sources: tokio::sync::RwLock<crate::sources::SourceSet>,
     /// What this daemon has done since it started.
     metrics: crate::metrics::Metrics,
     /// Who may call, and who each caller is.
@@ -113,7 +116,7 @@ impl App {
             principal,
             models: std::sync::RwLock::new(models),
             tools: std::sync::RwLock::new(Vec::new()),
-            source: None,
+            sources: tokio::sync::RwLock::new(crate::sources::SourceSet::default()),
             admins: None,
             system: None,
             root: None,
@@ -140,11 +143,29 @@ impl App {
         self.tokens.as_ref()
     }
 
-    /// Remember the tool source, so `POST /v1/tools/reload` has something to reconnect.
+    /// Adopt the sources this deployment runs.
     #[must_use]
-    pub fn with_source(mut self, source: nucleos_mcp::McpSource) -> Self {
-        self.source = Some(source);
+    pub fn with_sources(self, sources: crate::sources::SourceSet) -> Self {
+        // Contended only if another task is already using the set, which at construction it is not.
+        if let Ok(mut current) = self.sources.try_write() {
+            *current = sources;
+        }
         self
+    }
+
+    /// The sources. `tokio`'s lock rather than `std`'s: adding a source connects a process, so the
+    /// guard is held across an `await`, and a `std` guard there would make every handler's future
+    /// non-`Send`.
+    #[must_use]
+    pub fn sources(&self) -> &tokio::sync::RwLock<crate::sources::SourceSet> {
+        &self.sources
+    }
+
+    /// Replace the advertised tool list, after a generation was published.
+    pub fn set_tools(&self, tools: Vec<String>) {
+        if let Ok(mut current) = self.tools.write() {
+            *current = tools;
+        }
     }
 
     /// Advertise the tools that were discovered, so a caller can see what it may ask for.
@@ -200,27 +221,11 @@ impl App {
         );
         let stored = crate::configure::stored_models(&system)?;
 
-        // One source, from one variable: a deployment file is the next slice, and a daemon that
-        // cannot run a real tool is a daemon nobody can test against.
+        // Sources are rows in the system store, written by `nucleos sources add`. What the daemon
+        // connects here is what a previous run was told to run; a server that will not start is a
+        // warning and a missing tool, not a refusal to boot.
         let mut tools: Vec<Arc<dyn nucleos::adapter::Tool>> = Vec::new();
         let mut discovered: Vec<String> = Vec::new();
-        let mut configured_source: Option<nucleos_mcp::McpSource> = None;
-        if let Ok(spec) = std::env::var("NUCLEOS_MCP") {
-            let (name, command) = spec.split_once('=').ok_or_else(|| {
-                nucleos::Error::invalid("NUCLEOS_MCP must be `name=command args…`")
-            })?;
-            let mut parts = command.split_whitespace();
-            let command = parts
-                .next()
-                .ok_or_else(|| nucleos::Error::invalid("NUCLEOS_MCP names no command"))?;
-            let source = nucleos_mcp::McpSource::new(name.trim(), command).with_args(parts);
-            use nucleos::adapter::Tool as _;
-            for tool in source.connect().await? {
-                discovered.push(tool.spec().name);
-                tools.push(Arc::new(tool));
-            }
-            configured_source = Some(source);
-        }
 
         // Two files with two lifecycles: configuration is versioned and kept, sessions are pruned.
         // Both are named inside one root, so a second instance on this host is one more `--root`.
@@ -233,6 +238,15 @@ impl App {
                 ))
             })?;
         let store = SqliteStore::open(layout.session_store())?;
+        let sources = crate::sources::SourceSet::load(&system).await?;
+        for source in sources.views() {
+            tracing::info!(
+                event = "source_loaded",
+                source = %source.name,
+                tools = source.tools.len(),
+            );
+            discovered.extend(source.tools);
+        }
         // Tokens come from the store, not from the environment: a deployment's callers are state, and
         // state has one writer. A deployment with none is the socket-permissions case, which the
         // authenticator answers by itself rather than by a variable somebody sets.
@@ -282,6 +296,9 @@ impl App {
             })?;
             builder = builder.model(&model.name, Arc::new(adapter));
         }
+        for tool in sources.tools() {
+            tools.push(tool);
+        }
         for tool in tools {
             builder = builder.tool(tool);
         }
@@ -295,12 +312,10 @@ impl App {
             layout.root.clone(),
             Arc::new(nucleos::adapter::SystemClock),
         )
+        .with_sources(sources)
         .with_tools(discovered)
         .with_tokens(tokens);
-        Ok(match configured_source {
-            Some(source) => app.with_source(source),
-            None => app,
-        })
+        Ok(app)
     }
 
     /// Serve nothing but `describe`: the daemon is up, no deployment is configured.
@@ -314,7 +329,7 @@ impl App {
             },
             models: std::sync::RwLock::new(Vec::new()),
             tools: std::sync::RwLock::new(Vec::new()),
-            source: None,
+            sources: tokio::sync::RwLock::new(crate::sources::SourceSet::default()),
             tokens: None,
             admins: None,
             system: None,
@@ -525,6 +540,39 @@ pub const ROUTES: &[Route] = &[
             reply: openapi::Reply::Json("PutResponse"),
         },
         build: || put(crate::configure::put_policy),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "get",
+            path: "/v1/sources",
+            operation: "listSources",
+            summary: "The MCP servers this deployment runs, and the tools each contributes.",
+            request: None,
+            reply: openapi::Reply::Json("SourceListResponse"),
+        },
+        build: || get(crate::sources::list_sources),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "post",
+            path: "/v1/sources",
+            operation: "addSource",
+            summary: "Add or replace a tool source, publishing a new generation.",
+            request: Some("SourceRequest"),
+            reply: openapi::Reply::Json("SourceView"),
+        },
+        build: || post(crate::sources::post_source),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "delete",
+            path: "/v1/sources/{name}",
+            operation: "removeSource",
+            summary: "Remove a tool source, publishing a new generation without its tools.",
+            request: None,
+            reply: openapi::Reply::Json("SourceListResponse"),
+        },
+        build: || delete(crate::sources::delete_source),
     },
     Route {
         meta: openapi::Route {
@@ -853,27 +901,21 @@ async fn metrics(State(app): State<Arc<App>>) -> Json<MetricsResponse> {
 /// are pinned to; sessions that start from now on get this one.
 async fn reload(State(app): State<Arc<App>>) -> Result<Json<ReloadResponse>, ApiError> {
     let kernel = app.kernel()?.clone();
-    let source = app.source.as_ref().ok_or_else(|| {
-        ApiError::from_error(&nucleos::Error::unavailable(
-            "no tool source is configured: `NUCLEOS_MCP` names one, and a reload reconnects it",
-        ))
-    })?;
+    // Scoped: a read guard held across the reconnect below would make this handler's future
+    // non-`Send`, and the whole route would stop compiling.
+    let configured = !app.sources().read().await.views().is_empty();
+    if !configured {
+        return Err(ApiError::from_error(&nucleos::Error::unavailable(
+            "no tool source is configured: add one with `nucleos sources add`",
+        )));
+    }
 
     let before = app.tools_now();
-    let tools: Vec<Arc<dyn nucleos::adapter::Tool>> = source
-        .connect()
-        .await
-        .map_err(|error| ApiError::from_error(&error))?
-        .into_iter()
-        .map(|tool| Arc::new(tool) as Arc<dyn nucleos::adapter::Tool>)
-        .collect();
-
-    let names: Vec<String> = tools.iter().map(|tool| tool.spec().name).collect();
-    let generation = kernel
-        .publish(tools)
-        .map_err(|error| ApiError::from_error(&error))?;
+    let reconnected = app.sources().write().await.reconnect().await;
+    let generation = crate::sources::publish(&app, &kernel).await?;
     app.metrics().reloaded();
 
+    let names = app.tools_now();
     let added: Vec<String> = names
         .iter()
         .filter(|name| !before.contains(name))
@@ -887,13 +929,11 @@ async fn reload(State(app): State<Arc<App>>) -> Result<Json<ReloadResponse>, Api
     tracing::info!(
         event = "tools_reloaded",
         generation = generation.0,
+        sources = reconnected,
         tools = names.len(),
         added = ?added,
         removed = ?removed,
     );
-    if let Ok(mut current) = app.tools.write() {
-        *current = names.clone();
-    }
 
     Ok(Json(ReloadResponse {
         generation: generation.0,

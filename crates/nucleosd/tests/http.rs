@@ -430,71 +430,30 @@ async fn the_listing_filters_and_pages_over_the_abi() {
 }
 
 #[tokio::test]
-async fn a_reload_publishes_a_new_generation_and_names_what_changed() {
-    use nucleos_mcp::McpSource;
-
-    // One fixture, shared with the MCP crate's own tests rather than copied: two copies of a fake
-    // server is two things that drift.
+async fn a_source_is_added_by_request_and_its_tools_are_published() {
+    let (app, key, key_id) = governable().await;
     let script = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../nucleos-mcp/tests/fixtures/echo_server.py"
     );
-    let source = McpSource::new("echo", "python3").with_args(["-u", script]);
-    let tools: Vec<Arc<dyn nucleos::adapter::Tool>> = source
-        .connect()
-        .await
-        .unwrap()
-        .into_iter()
-        .map(|tool| Arc::new(tool) as Arc<dyn nucleos::adapter::Tool>)
-        .collect();
-    let names: Vec<String> = tools.iter().map(|tool| tool.spec().name).collect();
 
-    let mut builder = nucleos::Kernel::builder()
-        .model("primary", Arc::new(nucleos_testkit::FakeModel::text(["unused"])))
-        .store(Arc::new(nucleos_sqlite::SqliteStore::in_memory().unwrap()))
-        .policy(Arc::new(nucleos::adapter::AllowAll))
-        .clock(Arc::new(nucleos_testkit::FixedClock::at(0)))
-        .routing(nucleos::contract::Routing {
-            chain: vec!["primary".to_owned()],
-            retries: 0,
-        });
-    for tool in tools {
-        builder = builder.tool(tool);
-    }
-    let kernel = Arc::new(builder.build().unwrap());
-    let before = kernel.generation();
+    let (status, added) = signed(
+        &app,
+        &key,
+        &key_id,
+        "POST",
+        "/v1/sources",
+        &format!(
+            r#"{{"name":"echo","command":"python3","args":["-u","{script}"]}}"#
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{added}");
+    // Connected before it was acknowledged: a source that answers 200 and contributes nothing is a
+    // change the operator cannot tell from a broken server.
+    assert_eq!(added["tools"], serde_json::json!(["echo"]));
 
-    let app = Arc::new(
-        App::new(
-            Arc::clone(&kernel),
-            nucleos::contract::Principal {
-                tenant: "acme".to_owned(),
-                subject: "alice".to_owned(),
-            },
-            vec!["primary".to_owned()],
-        )
-        .with_tools(names.clone())
-        .with_source(source),
-    );
-
-    let response = router(Arc::clone(&app))
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/tools/reload")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = body_json(response).await;
-    assert_eq!(body["tools"], serde_json::json!(["echo"]));
-    assert_eq!(body["added"], serde_json::json!([]), "the same server");
-    assert!(body["generation"].as_u64().unwrap() > before.0);
-
-    // `Describe` reports the generation new sessions are pinned to, so a caller can tell which set
-    // it is talking to.
+    // Publish happened as part of the request, so the tools are visible without a reload.
     let described = body_json(
         router(Arc::clone(&app))
             .oneshot(
@@ -508,11 +467,50 @@ async fn a_reload_publishes_a_new_generation_and_names_what_changed() {
             .unwrap(),
     )
     .await;
-    assert_eq!(described["generation"], body["generation"]);
+    assert_eq!(described["tools"], serde_json::json!(["echo"]));
+
+    // And removing it publishes a generation without them.
+    let (status, list) = signed(&app, &key, &key_id, "DELETE", "/v1/sources/echo", "").await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    assert_eq!(list["sources"], serde_json::json!([]));
+
+    let described = body_json(
+        router(Arc::clone(&app))
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/describe")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(described["tools"], serde_json::json!([]));
 }
 
 #[tokio::test]
-async fn a_reload_without_a_source_says_so() {
+async fn a_source_that_cannot_start_fails_the_request_rather_than_being_stored() {
+    let (app, key, key_id) = governable().await;
+    let (status, error) = signed(
+        &app,
+        &key,
+        &key_id,
+        "POST",
+        "/v1/sources",
+        r#"{"name":"broken","command":"definitely-not-a-real-command"}"#,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{error}");
+    // Stored anyway, it would fail on every boot instead of once, in front of the caller who asked.
+    let (_, list) = signed(&app, &key, &key_id, "GET", "/v1/sources", "").await;
+    assert_eq!(list["sources"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn a_reload_with_no_sources_says_what_to_do() {
     let response = router(running())
         .oneshot(
             Request::builder()
@@ -527,7 +525,10 @@ async fn a_reload_without_a_source_says_so() {
     // Not a silent no-op: a reload that did nothing is a caller believing it deployed something.
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let error = body_json(response).await;
-    assert!(error["reason"].as_str().unwrap().contains("NUCLEOS_MCP"));
+    assert!(
+        error["reason"].as_str().unwrap().contains("nucleos sources add"),
+        "{error}"
+    );
 }
 
 // ---------------------------------------------------------------------------

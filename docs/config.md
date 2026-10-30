@@ -16,9 +16,11 @@ Built, today:
   half goes to the keychain (or `--key-out` for a machine with no login session), the bootstrap policy
   written into the system store, and the client's socket discovery file. The daemon reads that policy
   instead of a file, so a fresh deployment needs no `NUCLEOS_POLICY` at all.
-- **The mutation surface**: `PUT /v1/policy`, `GET|POST /v1/models`, `DELETE /v1/models/{name}`, each
-  behind a signature, through `Kernel::check_config`, applied to the running kernel, stored, and
-  appended to the deployment's history. Models added this way survive a restart.
+- **The mutation surface**: `PUT /v1/policy`, `GET|POST /v1/models`, `DELETE /v1/models/{name}`,
+  `GET|POST /v1/sources`, `DELETE /v1/sources/{name}`, `GET|POST /v1/tokens`, `DELETE /v1/tokens/{id}`
+  — each behind a signature, through `Kernel::check_config`, applied to the running kernel, stored, and
+  appended to the deployment's history. Everything added this way survives a restart, and no
+  environment variable configures any of it.
 - **Signed requests, and one endpoint to use them on.** `GET /v1/config` is the first
   administrator-authenticated route, and `nucleos config` is the first command that presents the key
   `init` created. The canonical form, the header, and the verifier share one definition
@@ -431,11 +433,12 @@ Each step is useful on its own, and none of them requires the next.
 
    *Still missing:* the remote half — signed requests, and the ABI that carries them (§8). Until it
    exists, `init` creates an identity that nothing yet presents.
-4. **Configuration ABI — partly done.** `/v1/config` (read), `PUT /v1/policy`, `GET|POST /v1/models`,
-   `DELETE /v1/models/{name}`. Each change is gated by `check_config`, applied to the running kernel,
-   stored, and appended to a history table in the **system store** — not to the session event log,
-   because a deployment that prunes session data must not prune its own audit trail, which is the
-   reason the two databases are separate. Still missing: `sources`, `tokens`, `admin_keys`.
+4. **Configuration ABI — done except `admin_keys`.** `/v1/config`, policy, models, sources and tokens.
+   Each change is gated by `check_config`, applied to the running kernel, stored, and appended to a
+   history table in the **system store** — not to the session event log, because a deployment that
+   prunes session data must not prune its own audit trail, which is the reason the two databases are
+   separate. A source additionally publishes a generation, which is why adding one is a tool change
+   that does not disturb a session mid-call.
 5. **CLI** — a thin client: send the request, print the event that was recorded.
 6. **Ed25519 signatures — done.** `KeyPair::sign_request` and the daemon's `Verifier`, with a
    canonical form defined once:

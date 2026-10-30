@@ -204,6 +204,44 @@ pub struct DescribeResponse {
     pub generation: u64,
 }
 
+/// An MCP server to run.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SourceRequest {
+    /// The name a listing and a removal use.
+    pub name: String,
+    /// The command that starts it.
+    pub command: String,
+    /// Its arguments.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Extra environment, for a server that needs one.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+}
+
+/// A source, as the daemon reports it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SourceView {
+    /// Its name.
+    pub name: String,
+    /// The command that starts it.
+    pub command: String,
+    /// Its arguments.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// The tools it currently advertises.
+    #[serde(default)]
+    pub tools: Vec<String>,
+}
+
+/// The sources this deployment runs.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SourceListResponse {
+    /// In the order they were added.
+    #[serde(default)]
+    pub sources: Vec<SourceView>,
+}
+
 /// A token to issue.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct TokenIssueRequest {

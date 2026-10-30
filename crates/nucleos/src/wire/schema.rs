@@ -52,6 +52,12 @@ pub struct Abi {
     pub model_request: api::ModelRequest,
     /// One model, as reported.
     pub model_view: api::ModelView,
+    /// `POST /v1/sources`.
+    pub source_request: api::SourceRequest,
+    /// One source, as reported.
+    pub source_view: api::SourceView,
+    /// `GET /v1/sources`.
+    pub source_list_response: api::SourceListResponse,
     /// `POST /v1/tokens`.
     pub token_issue_request: api::TokenIssueRequest,
     /// What issuing returns, once.

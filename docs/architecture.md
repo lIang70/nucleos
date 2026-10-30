@@ -370,8 +370,17 @@ says so when it is told nothing.
 
 ## 8. Tool sources and generations
 
-Tools are declared as **sources**, not as definitions pushed through the ABI. A source is
-an MCP endpoint:
+Tools are declared as **sources**, not as definitions pushed through the ABI. A source is an MCP
+endpoint, and `POST /v1/sources` is how one exists: it connects the server, discovers what it
+advertises, stores the command, and **publishes a generation**. Removing a source publishes another.
+Both are signed, gated by `check_config(…, "sources")`, and recorded — a source is configuration.
+
+A source that will not start at boot is a warning and a missing tool, not a refusal: sessions pinned to
+older generations keep working, and an operator can fix the server without the deployment being down.
+Adding one *by request* is the opposite — the caller is waiting, so a failed connection fails the
+request rather than becoming a row that fails on every boot.
+
+| Field | Meaning |
 
 | Field     | Meaning                                        |
 | --------- | ---------------------------------------------- |
@@ -868,7 +877,10 @@ Fourteen of the fifteen environment variables are gone, and the pattern of their
 | `NUCLEOS_ROOT`, `NUCLEOS_SOCKET` | `--root`, `--socket` — a deployment's filesystem is a fact about where it runs |
 | `NUCLEOS_LOG` | `--log <directive>` |
 
-What remains is `NUCLEOS_MCP`, scheduled for the same treatment once `POST /v1/sources` exists.
+| `NUCLEOS_MCP` | `nucleos sources add`, a row in the system store |
+
+**No environment variable configures the daemon.** What is left in the process environment is what the
+operating system puts there (`PATH`, `TMPDIR`), not a setting anyone chose.
 
 The rule the removals share: **a variable is a second source, and the second source is always the one
 nobody rotates.** Where a value has one home, an upgrade can change its default; where it has two, the

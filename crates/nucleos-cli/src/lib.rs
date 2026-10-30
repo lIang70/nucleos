@@ -17,6 +17,7 @@ pub mod config;
 pub mod init;
 pub mod models;
 pub mod remote;
+pub mod sources;
 pub mod tokens;
 
 pub use init::{Done, Options, run};

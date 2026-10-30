@@ -9,6 +9,7 @@ pub mod configure;
 pub mod http;
 pub mod layout;
 pub mod metrics;
+pub mod sources;
 pub mod telemetry;
 
 pub use http::{App, router};

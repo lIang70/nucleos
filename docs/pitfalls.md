@@ -966,3 +966,18 @@ says so and names `nucleos init`.
 readable — the first thing a broken deployment has to tell you is why it broke, and a setting it cannot
 read yet is not a setting. A flag is in the unit file, in `ps`, and in the deployment's revision history.
 
+## 69. A source that fails to start is a warning at boot and a failure by request
+
+**Decision.** `SourceSet::load` logs a source that will not start and skips it; `add` fails the request
+if the server does not come up.
+
+**Why the asymmetry.** At boot, nobody is waiting. Refusing to start because one MCP server is down
+turns a missing tool into an outage, and the sessions pinned to older generations would keep working
+anyway. By request, somebody *is* waiting: storing a source that cannot start moves the failure to
+every future boot, where it is read by whoever reads logs at 3am instead of by the person who typed the
+command.
+
+**What both share.** A source is never stored before it has started at least once, so the stored list is
+a list of servers that exist. The tools are discovered rather than stored, for the same reason: a stored
+tool list is a cache that goes stale the moment the server is upgraded.
+
