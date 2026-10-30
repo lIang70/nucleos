@@ -27,6 +27,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
+nucleos-cli = { path = "../nucleos-cli" }
 nucleos-testkit = { path = "../nucleos-testkit" }
 tower = { workspace = true }
 

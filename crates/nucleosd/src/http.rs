@@ -32,6 +32,13 @@ use tokio_stream::StreamExt;
 /// The ABI version this daemon speaks.
 pub const ABI_VERSION: &str = "v1";
 
+/// Where `nucleos init` writes the policy the daemon enforces.
+///
+/// The same string as [`nucleos_cli::init::POLICY_KEY`], and duplicated rather than depended on: the
+/// daemon must not link the CLI to learn a key name. The pair is held together by a test on each side
+/// rather than by a shared import, which is the cheaper of the two ways to keep them in step.
+pub const POLICY_KEY: &str = "config/policy";
+
 /// The authenticated caller, as the middleware left it on the request.
 ///
 /// An extractor rather than a field on `App`: with more than one token the daemon's principal is not
@@ -269,7 +276,23 @@ impl App {
                 Err(_) => crate::auth::Tokens::confined_to(Self::unconfigured().principal),
             },
         };
-        let policy = load_policy(std::env::var("NUCLEOS_POLICY").ok())?;
+        // The policy lives in the system store now — `nucleos init` writes the bootstrap one there —
+        // and a file is the fallback for a deployment that manages it out of band. The store wins
+        // because it is where a later `nucleos policy set` will write, and two sources that can
+        // disagree are two answers to "what is this daemon enforcing".
+        let policy = match system.get(POLICY_KEY)? {
+            Some(text) => {
+                let document = nucleos_policy::Document::parse(&text)?;
+                tracing::info!(
+                    event = "policy_loaded",
+                    source = "system store",
+                    default = ?document.unmatched,
+                    rules = document.rules.len(),
+                );
+                Arc::new(nucleos_policy::Ruleset::new(document)?) as Arc<dyn nucleos::adapter::Policy>
+            }
+            None => load_policy(std::env::var("NUCLEOS_POLICY").ok())?,
+        };
         let mut builder = Kernel::builder()
             .model(&model, Arc::new(adapter))
             .store(Arc::new(store))

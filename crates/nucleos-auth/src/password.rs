@@ -19,7 +19,9 @@
 //! reach that. The limiter that matters is Argon2's memory cost. [`Limiter`] exists for the case it
 //! *can* address: a person at a keyboard guessing, in the one process that is running.
 
-use argon2::password_hash::{PasswordHash as Phc, PasswordHasher, PasswordVerifier, SaltString, rand_core};
+use argon2::password_hash::{
+    PasswordHash as Phc, PasswordHasher, PasswordVerifier, SaltString, rand_core,
+};
 use argon2::{Algorithm, Argon2, Params, Version};
 use nucleos::error::{Error, Result};
 use std::time::{Duration, Instant};
@@ -109,8 +111,9 @@ impl PasswordHash {
         let value = value.into();
         // Parsed here rather than at verification: a corrupted row should be reported where it is
         // read, not as a mysterious "wrong password" the first time somebody tries to recover.
-        Phc::new(&value)
-            .map_err(|error| Error::invalid(format!("the stored password hash is unusable: {error}")))?;
+        Phc::new(&value).map_err(|error| {
+            Error::invalid(format!("the stored password hash is unusable: {error}"))
+        })?;
         Ok(Self(value))
     }
 
@@ -188,7 +191,10 @@ impl Limiter {
 
     /// Whether an attempt may go ahead. Does not record it.
     pub fn ready(&self) -> bool {
-        let mut seen = self.seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut seen = self
+            .seen
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let now = Instant::now();
         seen.retain(|at| now.duration_since(*at) < self.window);
         seen.len() < self.allowed as usize
@@ -196,7 +202,10 @@ impl Limiter {
 
     /// Record a failed attempt.
     pub fn record(&self) {
-        let mut seen = self.seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut seen = self
+            .seen
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         seen.push(Instant::now());
         tracing::warn!(
             event = "recovery_attempt_rejected",
@@ -230,7 +239,11 @@ mod tests {
         let password = "correct horse battery";
         let stored = hash(password);
         assert!(!stored.as_str().contains(password));
-        assert!(stored.as_str().starts_with("$argon2id$"), "{}", stored.as_str());
+        assert!(
+            stored.as_str().starts_with("$argon2id$"),
+            "{}",
+            stored.as_str()
+        );
     }
 
     #[test]
@@ -246,7 +259,11 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(stored.as_str().contains("m=8,t=2,p=1"), "{}", stored.as_str());
+        assert!(
+            stored.as_str().contains("m=8,t=2,p=1"),
+            "{}",
+            stored.as_str()
+        );
         assert!(stored.verify("correct horse battery").unwrap());
     }
 

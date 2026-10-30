@@ -106,6 +106,17 @@ impl Document {
         Ok(document)
     }
 
+    /// Read a document from text rather than from a file.
+    ///
+    /// The daemon keeps its policy in the system store, so the parser has to be reachable without a
+    /// path — and the validation must be the same one a file gets, or two entry points would drift.
+    pub fn parse(text: &str) -> Result<Self> {
+        let document: Self = serde_json::from_str(text)
+            .map_err(|error| Error::invalid(format!("policy is not valid: {error}")))?;
+        document.validate()?;
+        Ok(document)
+    }
+
     /// Refuse a document that could not mean what it says.
     pub fn validate(&self) -> Result<()> {
         for rule in &self.rules {

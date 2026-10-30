@@ -851,3 +851,17 @@ hash, and it does not.
 raising them later does not invalidate existing hashes, and a deployment can be re-hashed lazily at the
 next enrolment instead of at a migration.
 
+## 62. A private key with a `Debug` derive is a private key in a log line
+
+**Decision.** `KeyPair` implements no `Debug`, no `Display` and no `Serialize`. Its public half is
+`PublicKey`, which derives all three.
+
+**Why.** `#[derive(Debug)]` is one line, and it is the line that puts a secret into every `{:?}` in a
+test, every `dbg!` someone adds while debugging, and every panic message that formats the value it was
+holding. The protection is the absence of the impl, not a reminder to avoid it: `expect_err` on a
+`Result<KeyPair, _>` does not compile, which is how the cost of having no `Debug` shows up exactly once,
+at the place that would have needed it.
+
+**The same reasoning, one layer up.** `PasswordHash` does implement `Display`, and prints
+`<recovery password hash>` — a hash in a log line is a hash somebody can attack offline.
+

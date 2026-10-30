@@ -1,0 +1,28 @@
+[package]
+name = "nucleos-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The nucleos command line: initialise a deployment, and administer one over its socket."
+readme = "../../README.md"
+keywords = ["agent", "kernel", "cli", "admin"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "nucleos"
+path = "src/main.rs"
+
+[dependencies]
+nucleos = { workspace = true }
+nucleos-auth = { path = "../nucleos-auth" }
+nucleos-policy = { path = "../nucleos-policy" }
+nucleos-sqlite = { path = "../nucleos-sqlite" }
+rpassword = "7"
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+
+[lints]
+workspace = true

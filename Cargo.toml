@@ -4,6 +4,7 @@ members = [
     "crates/nucleos",
     "crates/nucleos-agent",
     "crates/nucleos-auth",
+    "crates/nucleos-cli",
     "crates/nucleos-mcp",
     "crates/nucleos-openai",
     "crates/nucleos-policy",

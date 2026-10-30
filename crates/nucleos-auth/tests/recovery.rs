@@ -27,7 +27,10 @@ async fn a_password_written_at_init_is_verified_after_a_restart() {
 
     // A second process, the same file: this is the "every key is lost, recover" path.
     let store = SystemStore::open(&path).unwrap();
-    let stored = store.get(RECOVERY_KEY).unwrap().expect("the hash was written");
+    let stored = store
+        .get(RECOVERY_KEY)
+        .unwrap()
+        .expect("the hash was written");
     let hash = PasswordHash::from_stored(stored).unwrap();
 
     assert!(hash.verify(PASSWORD).unwrap());
@@ -68,7 +71,10 @@ fn recovery_is_rate_limited_within_the_process() {
         assert!(!hash.verify("guess").unwrap());
         limiter.record();
     }
-    assert!(!limiter.ready(), "the third guess inside the window is refused");
+    assert!(
+        !limiter.ready(),
+        "the third guess inside the window is refused"
+    );
 
     std::thread::sleep(Duration::from_millis(50));
     assert!(limiter.ready(), "and the window passing restores it");

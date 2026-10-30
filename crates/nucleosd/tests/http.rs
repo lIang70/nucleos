@@ -897,3 +897,14 @@ async fn a_finished_session_has_no_partial_in_its_view() {
         "absent, not empty: a session that was never interrupted says nothing about it. {view}"
     );
 }
+
+#[tokio::test]
+async fn the_daemon_reads_the_policy_init_wrote_instead_of_a_file() {
+    // The pair of constants is the risk: two crates, one key name, no shared import. This is the test
+    // that makes the duplication safe — if either side renames it, this fails.
+    assert_eq!(
+        nucleosd::http::POLICY_KEY,
+        nucleos_cli::init::POLICY_KEY,
+        "the daemon must read the row `init` writes"
+    );
+}

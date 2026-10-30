@@ -11,7 +11,11 @@ Built, today:
   existing for a reason rather than as a placeholder;
 - `--root`, `--socket`, `--print-paths`, and platform defaults that are absolute (§4.1);
 - the socket default is a private directory, never a bare `/tmp/nucleosd.sock`;
-- **`Gated::Config`** and `Kernel::check_config` — the gate exists before the interface it protects.
+- **`Gated::Config`** and `Kernel::check_config` — the gate exists before the interface it protects;
+- **`nucleos init`** — two stores, the recovery password, an Ed25519 administrator key whose private
+  half goes to the keychain (or `--key-out` for a machine with no login session), the bootstrap policy
+  written into the system store, and the client's socket discovery file. The daemon reads that policy
+  instead of a file, so a fresh deployment needs no `NUCLEOS_POLICY` at all.
 
 Today every deployment decision is an environment variable — fifteen of them, read in four places,
 validated at whatever line happens to need them. There is no file, no single check that says "this
@@ -392,11 +396,14 @@ Each step is useful on its own, and none of them requires the next.
    refusal, because there is no session to park.
 3. **`nucleos init`** + bootstrap file + recovery password. Until this exists, step 4 has no bootstrap
    credential.
-   *Partly done: the recovery password exists — Argon2id, PHC-encoded so raised costs do not
-   invalidate it, stored under `auth/recovery_password` in the system store, verified only where the
-   store file is readable. 64 MiB and three passes cost about 1.5 s per hash on a laptop, which is the
-   intended trade and the reason nothing on a request path may verify one. Still missing: the `init`
-   command that asks for it, and the key enrolment it exists for.*
+   *Done, for the local half.* `nucleos init` creates the two stores, asks for a recovery password
+   (Argon2id, 64 MiB, three passes — about 1.5 s per hash, which is why nothing on a request path may
+   verify one), generates an Ed25519 keypair with the private half in the keychain, files the public
+   half in the system store, writes the bootstrap policy, and records where the socket is for a
+   client. A second `init` refuses rather than replacing a live installation.
+
+   *Still missing:* the remote half — signed requests, and the ABI that carries them (§8). Until it
+   exists, `init` creates an identity that nothing yet presents.
 4. **Configuration ABI** — `/v1/config`, models, sources, tokens, policy; one event per change.
 5. **CLI** — a thin client: send the request, print the event that was recorded.
 6. **Ed25519 signatures** — last, because it protects what steps 1–5 built. Until then, a single
@@ -416,6 +423,10 @@ Each step is useful on its own, and none of them requires the next.
 4. **Versioning and rollback of policy**: keep the last N versions and allow `nucleos policy rollback`?
    The events already record every version; the question is whether the store keeps the documents.
 5. **What `GET /v1/config` exposes to a tenant caller** — nothing, probably; this is an admin surface.
-6. **Whether `seal.key` is one file per root or one per host.** Per root keeps instances independent
+6. **Where the daemon's policy comes from when both exist** — a row in the system store and a
+   `NUCLEOS_POLICY` file. Today the store wins and the file is a fallback, because the store is where a
+   later `nucleos policy set` will write; a deployment that manages policy out of band may want the
+   file to win instead, and that would need saying rather than assuming.
+7. **Whether `seal.key` is one file per root or one per host.** Per root keeps instances independent
    and means a copy of one instance's data is useless without its own key; per host is fewer things to
    lose. Currently written as per root, which is also what the paths table implies.

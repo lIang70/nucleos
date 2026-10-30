@@ -16,8 +16,12 @@
 //! daemon, because it is a transport concern: a token is checked at the edge, a signature will be
 //! checked at the same edge, and neither should reach the kernel.
 
+pub mod key;
+pub mod keychain;
 pub mod password;
 
+pub use key::{KeyPair, PublicKey};
+pub use keychain::Store as KeyStore;
 pub use password::{Cost, Limiter, MIN_PASSWORD_LEN, PasswordHash};
 
 /// The key under which a deployment's recovery password hash is kept.
