@@ -1,4 +1,4 @@
-//! An OpenAI-compatible model, as a [`Model`] adapter — over the **Responses API**.
+//! An OpenAI-compatible model, as a [`nucleos::adapter::Model`] adapter — over the **Responses API**.
 //!
 //! One implementation covers the whole family that speaks `/v1/responses`: OpenAI itself, and the
 //! compatible endpoints that followed it. What they disagree about is capability, so capability is

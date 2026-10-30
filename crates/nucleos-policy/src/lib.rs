@@ -18,7 +18,7 @@
 //!
 //! What is deliberately absent: an expression language, rule priorities, time windows, quotas.
 //! Each of those turns a document a human can read into a program, and the kernel already has a
-//! place for programs — the host that implements [`Policy`].
+//! place for programs — the host that implements [`nucleos::adapter::Policy`].
 
 mod document;
 mod ruleset;
