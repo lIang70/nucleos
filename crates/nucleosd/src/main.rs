@@ -57,21 +57,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // real model can be served without one.
     let app = App::from_env(&layout).await?;
 
-    let token = std::env::var("NUCLEOS_TOKEN").is_ok_and(|token| !token.is_empty());
     tracing::info!(
         event = "daemon_started",
         root = %layout.root.display(),
         socket = %socket.display(),
-        authentication = if token { "token" } else { "socket-permissions" },
         version = env!("CARGO_PKG_VERSION"),
         abi = nucleosd::http::ABI_VERSION,
     );
-    if !token {
-        tracing::info!(
-            event = "token_not_required",
-            detail = "set NUCLEOS_TOKEN to require a bearer token as well as the socket",
-        );
-    }
 
     let served = axum::serve(listener, router(Arc::new(app)))
         .with_graceful_shutdown(shutdown())

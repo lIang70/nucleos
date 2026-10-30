@@ -743,7 +743,7 @@ Three claims, and the daemon only makes the ones it can keep:
 | Claim                             | How                                                              |
 | --------------------------------- | ---------------------------------------------------------------- |
 | only the local user can connect   | the socket lives in a `0700` directory and is `0600`             |
-| a request carries a credential    | `NUCLEOS_TOKEN`, checked on **every** route including `describe` |
+| a request carries a credential    | a hashed token in the system store, checked on **every** route including `describe` |
 | every session belongs to somebody | one principal from `NUCLEOS_PRINCIPAL`, for now                  |
 
 Peer credentials (`LOCAL_PEERCRED`) would be the better first row, and they need `unsafe`, which this
@@ -753,9 +753,23 @@ filesystem — rather than left to a comment claiming a check that does not exis
 A token exempted from any route is not a token: `describe` leaks the model and tool names, so it is
 behind the same check as everything else.
 
-**Several callers: `NUCLEOS_TOKENS`.** A JSON document maps each token to a tenant and a subject;
-the middleware resolves the caller and puts the principal on the request, so a handler reads *its*
-caller and not the daemon's. With one token, `NUCLEOS_TOKEN` and `NUCLEOS_PRINCIPAL` still work.
+**Several callers: tokens in the store.** `nucleos tokens add --tenant … --subject …` issues one,
+prints it **once**, and stores only its SHA-256. The middleware resolves the caller per request and
+puts the principal on the request, so a handler reads *its* caller and not the daemon's. Revocation
+is a row delete and takes effect on the next request.
+
+Two properties the implementation had to learn:
+
+- **Issuing a token is what makes tokens required**, and that is sticky. Revoking the last one must not
+  fall the daemon back to "the socket's permissions are enough" — that would reopen it at the exact
+  moment somebody was closing it.
+- **A token is not a password.** It is 256 random bits, so SHA-256 is the right hash: a slow hash
+  protects low-entropy input, and Argon2 here would add a second to every request (measured: 1.5 s at
+  the deployment cost) to defend a search space nobody can walk.
+
+No environment variable configures any of it. `NUCLEOS_TOKEN`, `NUCLEOS_TOKENS`, `NUCLEOS_TENANT` and
+`NUCLEOS_SUBJECT` are gone; the store is the only source, and `nucleos tokens list` is the only way to
+see who may call.
 
 **Tenant isolation is in the schema.** The store's key is `(tenant, session)`, not the id alone:
 session identifiers are chosen by callers, and two tenants each choosing `s1` is ordinary rather than

@@ -902,3 +902,32 @@ because the system store is backed up and copied, and a backup that contains a c
 credential dump. Sealed credentials are designed (§4) and not built, and until they are, this is the
 honest shape.
 
+## 65. Revoking the last token must not reopen the door
+
+**Decision.** Issuing a token sets a sticky flag (`auth/tokens_enabled`) that is never cleared, and the
+authenticator asks "are tokens required" rather than "is there a token right now".
+
+**Why.** "No tokens configured" and "all tokens revoked" are different states that look identical in
+the table. The first is a development deployment where the socket's permissions are the whole
+authentication; the second is a production deployment that just closed its last door. Treating them the
+same means revoking a leaked token silently reopens the daemon to every local caller — during an
+incident, in the one direction nobody wants.
+
+**What the test shows.** Revoke the last token, then present nothing and then present the revoked value:
+both are refused. The state after a revocation is "no valid credential exists", not "protection is off".
+
+## 66. Two credentials, one middleware
+
+**Decision.** The admission middleware enforces bearer tokens, and passes a request carrying
+`Authorization: Nucleos-Admin …` straight through to the handler that verifies it. The `Caller`
+extractor answers `401` — with a sentence naming the two schemes — when a route that wants a token is
+handed a signature.
+
+**Why it was needed.** With tokens configured, an administrator's signed request to `/v1/tokens` was
+rejected before the signature was ever looked at: one middleware knew one credential type. The refusal
+was `401 "this daemon needs a bearer token"`, which is exactly the right message for the wrong reason.
+
+**Why the pass-through is not a bypass.** The signature covers the method, the path and the body hash,
+and it is verified by the extractor on the route that needs it. A request that carries one to a route
+with no administrator check gets `401` from `Caller`, not a handler that trusts it.
+

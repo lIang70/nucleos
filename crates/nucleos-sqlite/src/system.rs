@@ -18,8 +18,26 @@ use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+/// Set once the deployment has issued its first token, and never cleared.
+pub const TOKENS_ENABLED_KEY: &str = "auth/tokens_enabled";
+
 /// The version this build writes. A store with another version is refused rather than guessed at.
 pub const SCHEMA_VERSION: u32 = 1;
+
+/// One tenant token, as the store keeps it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IssuedToken {
+    /// What `list` shows and `remove` names.
+    pub id: String,
+    /// The tenant it authenticates.
+    pub tenant: String,
+    /// The subject within it.
+    pub subject: String,
+    /// SHA-256 of the token, hex. Empty when read back from `list`, which never carries it.
+    pub hash: String,
+    /// When it was issued.
+    pub created_unix_millis: u64,
+}
 
 /// One recorded configuration change.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +82,16 @@ impl SystemStore {
                  -- Configuration changes, append-only. Here rather than in the session event log
                  -- because a deployment that prunes session data must not prune its own audit trail:
                  -- that is the reason the two databases are separate at all.
+                 -- Tenant tokens, stored hashed. A row here is what makes a caller a tenant; there
+                 -- is no other way in, and no environment variable that could disagree.
+                 create table if not exists tokens (
+                     id      text primary key,
+                     tenant  text not null,
+                     subject text not null,
+                     hash    text not null unique,
+                     created integer not null
+                 ) without rowid;
+
                  create table if not exists history (
                      at_unix_millis integer not null,
                      subject        text    not null,
@@ -147,6 +175,108 @@ impl SystemStore {
                 )
                 .map_err(failed)?;
             Ok(())
+        })
+        .await
+    }
+
+    /// Record an issued token. The hash, never the token.
+    pub async fn add_token(&self, token: &IssuedToken) -> Result<()> {
+        let token = token.clone();
+        self.run(move |connection| {
+            connection
+                .execute(
+                    "insert into tokens (id, tenant, subject, hash, created) values (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        token.id,
+                        token.tenant,
+                        token.subject,
+                        token.hash,
+                        i64::try_from(token.created_unix_millis).unwrap_or(i64::MAX)
+                    ],
+                )
+                .map_err(failed)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// The tenant a presented token belongs to, if it is one of ours.
+    ///
+    /// Read on every request rather than cached: revocation has to be immediate, and a token that
+    /// keeps working for the length of a cache is a token somebody revoked.
+    pub fn tenant_for_hash(&self, hash: &str) -> Result<Option<(String, String, String)>> {
+        let connection = self.lock();
+        connection
+            .query_row(
+                "select id, tenant, subject from tokens where hash = ?1",
+                params![hash],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(failed)
+    }
+
+    /// Whether any token exists right now.
+    pub fn has_tokens(&self) -> Result<bool> {
+        let count: i64 = self
+            .lock()
+            .query_row("select count(*) from tokens", [], |row| row.get(0))
+            .map_err(failed)?;
+        Ok(count > 0)
+    }
+
+    /// Whether this deployment has ever issued a token.
+    ///
+    /// Sticky, and separate from [`has_tokens`] on purpose: revoking the last token must not put the
+    /// daemon back into the mode where the socket's permissions are the whole authentication. A
+    /// deployment that once had tenants still has them — they are just all revoked, which is what
+    /// "no valid token" has to mean once the door has been opened.
+    pub fn tokens_required(&self) -> Result<bool> {
+        Ok(self.get(TOKENS_ENABLED_KEY)?.is_some() || self.has_tokens()?)
+    }
+
+    /// Record that this deployment issues tokens. Never cleared.
+    pub async fn require_tokens(&self) -> Result<()> {
+        if self.get(TOKENS_ENABLED_KEY)?.is_none() {
+            self.set(TOKENS_ENABLED_KEY, "true").await?;
+        }
+        Ok(())
+    }
+
+    /// Every token, without the hash.
+    pub fn list_tokens(&self) -> Result<Vec<IssuedToken>> {
+        let connection = self.lock();
+        let mut statement = connection
+            .prepare("select id, tenant, subject, created from tokens order by created, id")
+            .map_err(failed)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(IssuedToken {
+                    id: row.get(0)?,
+                    tenant: row.get(1)?,
+                    subject: row.get(2)?,
+                    hash: String::new(),
+                    created_unix_millis: row.get::<_, i64>(3)? as u64,
+                })
+            })
+            .map_err(failed)?;
+        rows.collect::<std::result::Result<_, _>>().map_err(failed)
+    }
+
+    /// Forget one. `true` if it was there.
+    pub async fn revoke_token(&self, id: &str) -> Result<bool> {
+        let id = id.to_owned();
+        self.run(move |connection| {
+            let removed = connection
+                .execute("delete from tokens where id = ?1", params![id])
+                .map_err(failed)?;
+            Ok(removed > 0)
         })
         .await
     }

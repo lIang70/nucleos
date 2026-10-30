@@ -59,10 +59,12 @@ impl<S: Send + Sync> axum::extract::FromRequestParts<S> for Caller {
             .cloned()
             .map(Caller)
             .ok_or_else(|| {
-                // Only reachable if a route were mounted outside the authentication layer, which is
-                // a wiring bug rather than a caller error.
-                ApiError::from_error(&nucleos::Error::internal(
-                    "no authenticated principal on the request",
+                // Reachable when an administrative signature is presented to a route that wants a
+                // bearer token: the middleware let the signature through for the `Admin` extractor,
+                // and this route has none. Saying so beats a 500 for a caller who did something
+                // reasonable with the wrong credential.
+                ApiError::unauthorized(&nucleos::Error::denied(
+                    "this route takes a bearer token, not an administrative signature",
                 ))
             })
     }
@@ -92,7 +94,7 @@ pub struct App {
     /// With no tokens configured the socket's permissions are the authentication and every call is
     /// attributed to one principal — a decision about where the daemon is listening, not one this
     /// struct can make for it.
-    tokens: crate::auth::Tokens,
+    tokens: Option<crate::auth::TokenAuth>,
     /// Administrator signatures, when a system store holds keys to check them against.
     admins: Option<Arc<crate::admin::Verifier>>,
     /// The configuration database: what this daemon is, as opposed to what it is doing.
@@ -107,7 +109,7 @@ impl App {
     pub fn new(kernel: Arc<Kernel>, principal: Principal, models: Vec<String>) -> Self {
         Self {
             kernel: Some(kernel),
-            tokens: crate::auth::Tokens::confined_to(principal.clone()),
+            tokens: None,
             principal,
             models,
             tools: std::sync::RwLock::new(Vec::new()),
@@ -125,24 +127,17 @@ impl App {
         &self.metrics
     }
 
-    /// Require one of these tokens on every request.
+    /// Authenticate callers against the tokens a deployment has issued.
     #[must_use]
-    pub fn with_tokens(mut self, tokens: crate::auth::Tokens) -> Self {
-        self.tokens = tokens;
+    pub fn with_tokens(mut self, tokens: crate::auth::TokenAuth) -> Self {
+        self.tokens = Some(tokens);
         self
     }
 
-    /// Require one token on every request, attributed to the principal this daemon already had.
+    /// The authenticator, when this deployment has a token table.
     #[must_use]
-    pub fn with_token(self, token: Option<String>) -> Self {
-        match token.filter(|token| !token.is_empty()) {
-            Some(token) => {
-                let principal = self.principal.clone();
-                let tokens = crate::auth::Tokens::single(token, principal);
-                self.with_tokens(tokens)
-            }
-            None => self,
-        }
+    pub fn tokens(&self) -> Option<&crate::auth::TokenAuth> {
+        self.tokens.as_ref()
     }
 
     /// Remember the tool source, so `POST /v1/tools/reload` has something to reconnect.
@@ -255,40 +250,21 @@ impl App {
                     layout.root.display()
                 ))
             })?;
-        let system = nucleos_sqlite::SystemStore::open(layout.system_store())?;
+        let system = Arc::new(nucleos_sqlite::SystemStore::open(layout.system_store())?);
         tracing::debug!(
             event = "system_store_open",
             path = %layout.system_store().display(),
             schema = system.schema_version()?,
         );
         let store = SqliteStore::open(layout.session_store())?;
-        // Two shapes, one meaning: a token file for a deployment with several callers, a single
-        // token for one, and neither means the socket's permissions are the authentication.
-        let tokens = match std::env::var("NUCLEOS_TOKENS") {
-            Ok(path) => crate::auth::Tokens::load(&path)?,
-            Err(_) => match std::env::var("NUCLEOS_TOKEN") {
-                Ok(token) if !token.is_empty() => crate::auth::Tokens::single(
-                    token,
-                    nucleos::contract::Principal {
-                        tenant: std::env::var("NUCLEOS_TENANT")
-                            .unwrap_or_else(|_| "default".to_owned()),
-                        subject: std::env::var("NUCLEOS_SUBJECT")
-                            .unwrap_or_else(|_| "local".to_owned()),
-                    },
-                ),
-                Ok(_) => {
-                    return Err(nucleos::Error::invalid(
-                        "NUCLEOS_TOKEN is set but empty: unset it to rely on the socket, or give \
-                         it a value",
-                    ));
-                }
-                Err(_) => crate::auth::Tokens::confined_to(Self::unconfigured().principal),
-            },
-        };
-        // The policy lives in the system store now — `nucleos init` writes the bootstrap one there —
-        // and a file is the fallback for a deployment that manages it out of band. The store wins
-        // because it is where a later `nucleos policy set` will write, and two sources that can
-        // disagree are two answers to "what is this daemon enforcing".
+        // Tokens come from the store, not from the environment: a deployment's callers are state, and
+        // state has one writer. A deployment with none is the socket-permissions case, which the
+        // authenticator answers by itself rather than by a variable somebody sets.
+        let tokens = crate::auth::TokenAuth::new(
+            Arc::clone(&system),
+            Self::unconfigured().principal,
+        );
+
         let policy = match system.get(POLICY_KEY)? {
             Some(text) => {
                 let document = nucleos_policy::Document::parse(&text)?;
@@ -314,7 +290,6 @@ impl App {
 
         // Models a previous run stored are registered now, before the first request: a change that
         // did not survive a restart would be a change the operator was told had succeeded.
-        let system = Arc::new(nucleos_sqlite::SystemStore::open(layout.system_store())?);
         let stored = crate::configure::load_stored_models(&kernel, &system)?;
         let mut models = vec![model];
         models.extend(stored.into_iter().map(|model| model.name));
@@ -347,7 +322,7 @@ impl App {
             models: Vec::new(),
             tools: std::sync::RwLock::new(Vec::new()),
             source: None,
-            tokens: crate::auth::Tokens::default(),
+            tokens: None,
             admins: None,
             system: None,
             root: None,
@@ -560,6 +535,39 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            method: "post",
+            path: "/v1/tokens",
+            operation: "issueToken",
+            summary: "Issue a tenant token. The value is returned once.",
+            request: Some("TokenIssueRequest"),
+            reply: openapi::Reply::Json("TokenIssued"),
+        },
+        build: || post(crate::configure::post_token),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "get",
+            path: "/v1/tokens",
+            operation: "listTokens",
+            summary: "The tokens this deployment has issued, without their values.",
+            request: None,
+            reply: openapi::Reply::Json("TokenListResponse"),
+        },
+        build: || get(crate::configure::list_tokens),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "delete",
+            path: "/v1/tokens/{id}",
+            operation: "revokeToken",
+            summary: "Revoke a token. Effective on the next request.",
+            request: None,
+            reply: openapi::Reply::Json("TokenListResponse"),
+        },
+        build: || delete(crate::configure::delete_token),
+    },
+    Route {
+        meta: openapi::Route {
             method: "get",
             path: "/v1/models",
             operation: "listModels",
@@ -730,7 +738,21 @@ async fn authenticate(
         .headers()
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok());
-    match app.tokens.authenticate(header) {
+    // Two kinds of credential reach this daemon, and the middleware is admission for only one of
+    // them: an administrative signature is verified by the `Admin` extractor, which needs the body.
+    // Passing it through here is not a bypass — that route's handler refuses a request the signature
+    // does not cover, and a tenant route refuses it for having no bearer token.
+    if header.is_some_and(|value| value.trim_start().starts_with("Nucleos-Admin")) {
+        return next.run(request).await;
+    }
+
+    // No token table means no token exists to check: the socket's permissions are the
+    // authentication, and every call is attributed to the daemon's own principal.
+    let resolved = match app.tokens() {
+        Some(tokens) => tokens.authenticate(header),
+        None => Ok(app.principal.clone()),
+    };
+    match resolved {
         Ok(principal) => {
             // The identity travels with the request: a handler that read it from the app would be
             // reading the daemon's, which is the same only when there is one caller.

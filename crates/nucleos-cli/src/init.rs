@@ -27,28 +27,23 @@ pub const POLICY_KEY: &str = "config/policy";
 
 /// The policy a fresh deployment gets.
 ///
-/// Deny everything, and allow one named administrator to change models and sources. Written out rather
-/// than left empty because an empty document means "deny", and the first thing an operator does after
-/// `init` is add a model — a bootstrap that cannot do that is a bootstrap that teaches the operator to
-/// disable the policy.
+/// Deny everything, and allow the one administrator `init` created to configure the deployment.
+///
+/// Narrow in the dimension that matters — *who* — and complete in the dimension that has exactly one
+/// user at this point. An earlier version allowed only `models` and `sources`, which read as prudent and
+/// made the deployment unusable: the first administrator could not issue a tenant token, and could not
+/// change the policy that stopped them. A bootstrap that has to be escaped is a bootstrap that teaches
+/// people to escape it.
 pub const BOOTSTRAP_POLICY: &str = r#"{
   "default": "deny",
   "rules": [
     {
       "decision": "allow",
-      "config": "models",
+      "config": "*",
       "scope": "system",
       "tenant": "default",
       "subject": "admin",
-      "reason": "the bootstrap administrator may add models"
-    },
-    {
-      "decision": "allow",
-      "config": "sources",
-      "scope": "system",
-      "tenant": "default",
-      "subject": "admin",
-      "reason": "and tool sources"
+      "reason": "the bootstrap administrator configures this deployment; nobody else may do anything"
     }
   ]
 }"#;
@@ -242,7 +237,11 @@ mod tests {
         let policy = system.get(POLICY_KEY).unwrap().unwrap();
         let document = nucleos_policy::Document::parse(&policy).unwrap();
         document.validate().unwrap();
-        assert_eq!(document.rules.len(), 2);
+        assert_eq!(
+            document.rules.len(),
+            1,
+            "one administrator, and every subject available to them"
+        );
         // The administrator's public key is there, and the private one is at the path asked for.
         let keys = system.get(ADMIN_KEYS_KEY).unwrap().unwrap();
         assert!(keys.contains(&done.key_id));
@@ -306,9 +305,12 @@ mod tests {
         // operator does is the thing that fails.
         let document = nucleos_policy::Document::parse(BOOTSTRAP_POLICY).unwrap();
         assert_eq!(document.unmatched, nucleos_policy::Unmatched::Deny);
-        assert!(document
-            .rules
-            .iter()
-            .any(|rule| rule.decision == Some(nucleos_policy::Decision::Allow)));
+        assert_eq!(document.rules.len(), 1, "one administrator, every subject");
+        assert_eq!(
+            document.rules[0].decision,
+            Some(nucleos_policy::Decision::Allow)
+        );
+        assert_eq!(document.rules[0].config.as_deref(), Some("*"));
+        assert_eq!(document.rules[0].subject.as_deref(), Some("admin"));
     }
 }

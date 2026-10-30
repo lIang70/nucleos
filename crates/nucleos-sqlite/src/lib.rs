@@ -21,4 +21,4 @@ mod store;
 mod system;
 
 pub use store::SqliteStore;
-pub use system::{Change, SCHEMA_VERSION, SystemStore};
+pub use system::{Change, IssuedToken, SCHEMA_VERSION, SystemStore, TOKENS_ENABLED_KEY};

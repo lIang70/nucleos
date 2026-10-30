@@ -534,38 +534,53 @@ async fn a_reload_without_a_source_says_so() {
 // Authentication
 // ---------------------------------------------------------------------------
 
-/// A daemon that requires a bearer token.
-fn guarded() -> Arc<App> {
+/// A daemon that requires a bearer token, and what that token is.
+///
+/// Built the way a deployment builds it: `nucleos tokens add` puts a hash in the store, and the token
+/// itself exists only here.
+async fn guarded() -> (Arc<App>, String) {
     use nucleos::adapter::AllowAll;
+
+    let system = Arc::new(nucleos_sqlite::SystemStore::in_memory().unwrap());
+    let token = nucleos_auth::token::issue();
+    system
+        .add_token(&nucleos_sqlite::IssuedToken {
+            id: token.id.clone(),
+            tenant: "acme".to_owned(),
+            subject: "alice".to_owned(),
+            hash: token.hash.clone(),
+            created_unix_millis: 1,
+        })
+        .await
+        .unwrap();
+
     let kernel = nucleos::Kernel::builder()
-        .model(
-            "primary",
-            Arc::new(nucleos_testkit::FakeModel::text(["unused"])),
-        )
         .store(Arc::new(nucleos_sqlite::SqliteStore::in_memory().unwrap()))
         .policy(Arc::new(AllowAll))
-        .routing(nucleos::contract::Routing {
-            chain: vec!["primary".to_owned()],
-            retries: 0,
-        })
         .build()
         .unwrap();
-    Arc::new(
+    let app = Arc::new(
         App::new(
             Arc::new(kernel),
-            nucleos::contract::Principal {
-                tenant: "acme".to_owned(),
-                subject: "alice".to_owned(),
-            },
+            nucleos::contract::Principal::default(),
             vec!["primary".to_owned()],
         )
-        .with_token(Some("s3cret".to_owned())),
-    )
+        .with_system(
+            Arc::clone(&system),
+            std::path::PathBuf::from("/var/lib/nucleos"),
+            Arc::new(nucleos::adapter::SystemClock),
+        )
+        .with_tokens(nucleosd::auth::TokenAuth::new(
+            Arc::clone(&system),
+            nucleos::contract::Principal::default(),
+        )),
+    );
+    (app, token.token)
 }
 
 #[tokio::test]
 async fn a_configured_token_is_required_on_every_route() {
-    let app = guarded();
+    let (app, token) = guarded().await;
 
     // `describe` too: an exempt health endpoint would tell an unauthenticated caller what the
     // deployment has.
@@ -591,7 +606,7 @@ async fn a_configured_token_is_required_on_every_route() {
             Request::builder()
                 .method("GET")
                 .uri("/v1/describe")
-                .header("authorization", "Bearer s3cret")
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -604,7 +619,7 @@ async fn a_configured_token_is_required_on_every_route() {
             Request::builder()
                 .method("GET")
                 .uri("/v1/describe")
-                .header("authorization", "Bearer wrong")
+                .header("authorization", "Bearer nu_not-a-token")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -619,7 +634,7 @@ async fn a_configured_token_is_required_on_every_route() {
 
 #[tokio::test]
 async fn metrics_count_what_an_operator_asks_about() {
-    let app = guarded();
+    let (app, token) = guarded().await;
 
     // One allowed request, one refused, one reload attempt with no source.
     let _ = router(Arc::clone(&app))
@@ -627,7 +642,7 @@ async fn metrics_count_what_an_operator_asks_about() {
             Request::builder()
                 .method("GET")
                 .uri("/v1/describe")
-                .header("authorization", "Bearer s3cret")
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -650,7 +665,7 @@ async fn metrics_count_what_an_operator_asks_about() {
                 Request::builder()
                     .method("GET")
                     .uri("/v1/metrics")
-                    .header("authorization", "Bearer s3cret")
+                    .header("authorization", format!("Bearer {token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -674,20 +689,27 @@ async fn metrics_count_what_an_operator_asks_about() {
 // answer. These tests are the answer: an id belongs to the tenant that created it.
 // ---------------------------------------------------------------------------
 
-fn multi_tenant() -> Arc<App> {
+async fn multi_tenant() -> (Arc<App>, String, String) {
     use nucleos::adapter::AllowAll;
 
-    let directory = std::env::temp_dir().join(format!("nucleos-tenants-{}", std::process::id()));
-    std::fs::create_dir_all(&directory).unwrap();
-    let file = directory.join("tokens.json");
-    std::fs::write(
-        &file,
-        r#"{"tokens":[
-            {"token":"acme-token","tenant":"acme","subject":"alice"},
-            {"token":"other-token","tenant":"other","subject":"bob"}
-        ]}"#,
-    )
-    .unwrap();
+    // Tokens are issued the way a deployment issues them: into the store, hashed, with the token
+    // itself only ever leaving this function as a value the test sends.
+    let system = Arc::new(nucleos_sqlite::SystemStore::in_memory().unwrap());
+    let mut issued = Vec::new();
+    for (tenant, subject) in [("acme", "alice"), ("other", "bob")] {
+        let token = nucleos_auth::token::issue();
+        system
+            .add_token(&nucleos_sqlite::IssuedToken {
+                id: token.id.clone(),
+                tenant: tenant.to_owned(),
+                subject: subject.to_owned(),
+                hash: token.hash.clone(),
+                created_unix_millis: 1,
+            })
+            .await
+            .unwrap();
+        issued.push(token.token);
+    }
 
     let kernel = nucleos::Kernel::builder()
         .model(
@@ -703,14 +725,24 @@ fn multi_tenant() -> Arc<App> {
         .build()
         .unwrap();
 
-    Arc::new(
+    let app = Arc::new(
         App::new(
             Arc::new(kernel),
             nucleos::contract::Principal::default(),
             Vec::new(),
         )
-        .with_tokens(nucleosd::auth::Tokens::load(&file).unwrap()),
-    )
+        .with_system(
+            Arc::clone(&system),
+            std::path::PathBuf::from("/var/lib/nucleos"),
+            Arc::new(nucleos::adapter::SystemClock),
+        )
+        .with_tokens(nucleosd::auth::TokenAuth::new(
+            Arc::clone(&system),
+            nucleos::contract::Principal::default(),
+        )),
+    );
+    let mut tokens = issued.into_iter();
+    (app, tokens.next().unwrap(), tokens.next().unwrap())
 }
 
 async fn request(
@@ -738,43 +770,43 @@ async fn request(
 
 #[tokio::test]
 async fn a_session_belongs_to_the_tenant_that_created_it() {
-    let app = multi_tenant();
+    let (app, acme, other) = multi_tenant().await;
 
     let (created, _) = request(
         &app,
         "POST",
         "/v1/sessions",
-        "acme-token",
+        &acme,
         r#"{"session":"s1"}"#,
     )
     .await;
     assert_eq!(created, StatusCode::OK);
 
     // The owner can read it.
-    let (mine, _) = request(&app, "GET", "/v1/sessions/s1", "acme-token", "").await;
+    let (mine, _) = request(&app, "GET", "/v1/sessions/s1", &acme, "").await;
     assert_eq!(mine, StatusCode::OK);
 
     // Another tenant gets the same answer as for an id that never existed. A 403 would tell them
     // which identifiers their neighbours are using.
-    let (theirs, error) = request(&app, "GET", "/v1/sessions/s1", "other-token", "").await;
+    let (theirs, error) = request(&app, "GET", "/v1/sessions/s1", &other, "").await;
     assert_eq!(theirs, StatusCode::NOT_FOUND);
     assert_eq!(error["code"], "not_found");
 }
 
 #[tokio::test]
 async fn the_same_identifier_in_two_tenants_is_two_sessions() {
-    let app = multi_tenant();
+    let (app, acme, other) = multi_tenant().await;
 
     // Callers choose their ids, so "s1" from two tenants is ordinary. The store's key is
     // (tenant, id), so both succeed and neither sees the other's history.
-    let (first, _) = request(&app, "POST", "/v1/sessions", "acme-token", r#"{"session":"s1"}"#).await;
-    let (second, _) = request(&app, "POST", "/v1/sessions", "other-token", r#"{"session":"s1"}"#).await;
+    let (first, _) = request(&app, "POST", "/v1/sessions", &acme, r#"{"session":"s1"}"#).await;
+    let (second, _) = request(&app, "POST", "/v1/sessions", &other, r#"{"session":"s1"}"#).await;
     assert_eq!(first, StatusCode::OK);
     assert_eq!(second, StatusCode::OK, "distinct keys, not a collision");
 
     // Each tenant reads its own stream. The events route answers SSE, so this asks for the status
     // rather than trying to parse a body.
-    for token in ["acme-token", "other-token"] {
+    for token in [&acme, &other] {
         let response = router(Arc::clone(&app))
             .oneshot(
                 Request::builder()
@@ -792,29 +824,29 @@ async fn the_same_identifier_in_two_tenants_is_two_sessions() {
 
 #[tokio::test]
 async fn two_tenants_each_get_their_own_session() {
-    let app = multi_tenant();
+    let (app, acme, other) = multi_tenant().await;
 
-    request(&app, "POST", "/v1/sessions", "acme-token", r#"{"session":"a1"}"#).await;
-    request(&app, "POST", "/v1/sessions", "other-token", r#"{"session":"b1"}"#).await;
+    request(&app, "POST", "/v1/sessions", &acme, r#"{"session":"a1"}"#).await;
+    request(&app, "POST", "/v1/sessions", &other, r#"{"session":"b1"}"#).await;
 
     // Different ids, so no collision: each caller sees only its own.
     assert_eq!(
-        request(&app, "GET", "/v1/sessions/a1", "acme-token", "").await.0,
+        request(&app, "GET", "/v1/sessions/a1", &acme, "").await.0,
         StatusCode::OK
     );
     assert_eq!(
-        request(&app, "GET", "/v1/sessions/b1", "other-token", "").await.0,
+        request(&app, "GET", "/v1/sessions/b1", &other, "").await.0,
         StatusCode::OK
     );
     assert_eq!(
-        request(&app, "GET", "/v1/sessions/b1", "acme-token", "").await.0,
+        request(&app, "GET", "/v1/sessions/b1", &acme, "").await.0,
         StatusCode::NOT_FOUND
     );
 }
 
 #[tokio::test]
 async fn a_token_that_is_not_in_the_document_is_refused() {
-    let app = multi_tenant();
+    let (app, _acme, _other) = multi_tenant().await;
     let (status, error) = request(&app, "GET", "/v1/describe", "nobody-token", "").await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(error["code"], "denied");

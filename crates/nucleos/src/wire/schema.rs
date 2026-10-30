@@ -52,6 +52,14 @@ pub struct Abi {
     pub model_request: api::ModelRequest,
     /// One model, as reported.
     pub model_view: api::ModelView,
+    /// `POST /v1/tokens`.
+    pub token_issue_request: api::TokenIssueRequest,
+    /// What issuing returns, once.
+    pub token_issued: api::TokenIssued,
+    /// One token, as a listing reports it.
+    pub token_view: api::TokenView,
+    /// `GET /v1/tokens`.
+    pub token_list_response: api::TokenListResponse,
     /// `GET /v1/models`.
     pub model_list_response: api::ModelListResponse,
     /// `PUT /v1/policy` and other changes.

@@ -210,6 +210,104 @@ fn adapter_for(request: &ModelRequest) -> Result<nucleos_openai::OpenAi> {
     })
 }
 
+/// Issue a tenant token.
+///
+/// The value is returned once and never stored: the row keeps a hash, so a later read of this endpoint
+/// cannot hand it back. That is the only honest shape for a bearer token — one you can retrieve is one
+/// that exists in two places.
+pub async fn post_token(
+    State(app): State<Arc<App>>,
+    admin: Admin,
+) -> std::result::Result<Json<nucleos::wire::api::TokenIssued>, ApiError> {
+    let request: nucleos::wire::api::TokenIssueRequest =
+        serde_json::from_slice(&admin.body).map_err(|error| {
+            ApiError::from_error(&Error::invalid(format!(
+                "the token request is not valid JSON: {error}"
+            )))
+        })?;
+    if request.tenant.trim().is_empty() || request.subject.trim().is_empty() {
+        return Err(ApiError::from_error(&Error::invalid(
+            "a token needs a tenant and a subject: it is an identity, not a password",
+        )));
+    }
+    permit(&app, &admin, "tokens").await?;
+
+    let issued = nucleos_auth::token::issue();
+    // Sticky: from here on this deployment always needs a token, whatever the table holds later.
+    system(&app)?
+        .require_tokens()
+        .await
+        .map_err(|error| ApiError::from_error(&error))?;
+    system(&app)?
+        .add_token(&nucleos_sqlite::IssuedToken {
+            id: issued.id.clone(),
+            tenant: request.tenant.clone(),
+            subject: request.subject.clone(),
+            hash: issued.hash.clone(),
+            created_unix_millis: now(),
+        })
+        .await
+        .map_err(|error| ApiError::from_error(&error))?;
+    record(&app, &admin, "tokens", &format!("issue {}", request.subject)).await?;
+
+    tracing::info!(
+        event = "token_issued",
+        id = %issued.id,
+        tenant = %request.tenant,
+        subject = %request.subject,
+        by = %admin.principal.subject,
+    );
+    Ok(Json(nucleos::wire::api::TokenIssued {
+        id: issued.id,
+        token: issued.token,
+        tenant: request.tenant,
+        subject: request.subject,
+    }))
+}
+
+/// The tokens this deployment has issued, without their values.
+pub async fn list_tokens(
+    State(app): State<Arc<App>>,
+    _admin: Admin,
+) -> std::result::Result<Json<nucleos::wire::api::TokenListResponse>, ApiError> {
+    let tokens = system(&app)?
+        .list_tokens()
+        .map_err(|error| ApiError::from_error(&error))?;
+    Ok(Json(nucleos::wire::api::TokenListResponse {
+        tokens: tokens
+            .into_iter()
+            .map(|token| nucleos::wire::api::TokenView {
+                id: token.id,
+                tenant: token.tenant,
+                subject: token.subject,
+                created_unix_millis: token.created_unix_millis,
+            })
+            .collect(),
+    }))
+}
+
+/// Revoke a token. Immediate, because a revocation that waits is not a revocation.
+pub async fn delete_token(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+    admin: Admin,
+) -> std::result::Result<Json<nucleos::wire::api::TokenListResponse>, ApiError> {
+    permit(&app, &admin, "tokens").await?;
+    let removed = system(&app)?
+        .revoke_token(&id)
+        .await
+        .map_err(|error| ApiError::from_error(&error))?;
+    if !removed {
+        return Err(ApiError::from_error(&Error::not_found(format!(
+            "no token with id {id:?}"
+        ))));
+    }
+    record(&app, &admin, "tokens", &format!("revoke {id}")).await?;
+
+    tracing::info!(event = "token_revoked", id = %id, by = %admin.principal.subject);
+    list_tokens(State(app), admin).await
+}
+
 /// The models this deployment has.
 pub async fn list_models(
     State(app): State<Arc<App>>,

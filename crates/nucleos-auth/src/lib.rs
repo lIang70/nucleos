@@ -18,11 +18,13 @@
 
 pub mod key;
 pub mod signature;
+pub mod token;
 pub mod keychain;
 pub mod password;
 
 pub use key::{KeyPair, PublicKey};
 pub use signature::{canonical, parse_header, Signed, SCHEME};
+pub use token::Issued;
 pub use keychain::Store as KeyStore;
 pub use password::{Cost, Limiter, MIN_PASSWORD_LEN, PasswordHash};
 

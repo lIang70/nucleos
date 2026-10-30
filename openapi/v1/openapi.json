@@ -2988,6 +2988,96 @@
         ],
         "type": "object"
       },
+      "TokenIssueRequest": {
+        "description": "A token to issue.",
+        "properties": {
+          "subject": {
+            "description": "The subject within it.",
+            "type": "string"
+          },
+          "tenant": {
+            "description": "The tenant it authenticates.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant",
+          "subject"
+        ],
+        "type": "object"
+      },
+      "TokenIssued": {
+        "description": "A token that was just issued.\n\nThe `token` field is the only time the value exists: the store keeps a hash, and no endpoint can\nreturn it again. A token you can read back later is a token you can leak later.",
+        "properties": {
+          "id": {
+            "description": "What `list` shows and `remove` names.",
+            "type": "string"
+          },
+          "subject": {
+            "description": "The subject within it.",
+            "type": "string"
+          },
+          "tenant": {
+            "description": "The tenant it authenticates.",
+            "type": "string"
+          },
+          "token": {
+            "description": "The token. Give it to its client now.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "token",
+          "tenant",
+          "subject"
+        ],
+        "type": "object"
+      },
+      "TokenListResponse": {
+        "description": "The tokens this deployment has issued.",
+        "properties": {
+          "tokens": {
+            "default": [],
+            "description": "In the order they were issued.",
+            "items": {
+              "$ref": "#/components/schemas/TokenView"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "TokenView": {
+        "description": "A token as a listing reports it — no value, no hash.",
+        "properties": {
+          "created_unix_millis": {
+            "default": 0,
+            "description": "When it was issued.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "Its identifier.",
+            "type": "string"
+          },
+          "subject": {
+            "description": "The subject within it.",
+            "type": "string"
+          },
+          "tenant": {
+            "description": "The tenant it authenticates.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tenant",
+          "subject"
+        ],
+        "type": "object"
+      },
       "ToolBatchRequest": {
         "description": "A batch of tool calls.",
         "properties": {
@@ -5057,6 +5147,248 @@
           }
         },
         "summary": "Wait for a process to end, and say how it ended."
+      }
+    },
+    "/v1/tokens": {
+      "get": {
+        "operationId": "listTokens",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenListResponse"
+                }
+              }
+            },
+            "description": "The result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "The tokens this deployment has issued, without their values."
+      },
+      "post": {
+        "operationId": "issueToken",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenIssueRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenIssued"
+                }
+              }
+            },
+            "description": "The result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "Issue a tenant token. The value is returned once."
+      }
+    },
+    "/v1/tokens/{id}": {
+      "delete": {
+        "operationId": "revokeToken",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenListResponse"
+                }
+              }
+            },
+            "description": "The result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "Revoke a token. Effective on the next request."
       }
     },
     "/v1/tools/reload": {

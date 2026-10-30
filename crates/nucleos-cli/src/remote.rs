@@ -40,17 +40,15 @@ impl Remote {
                 None => ClientConfig::default(),
             },
         };
-        let socket = overrides
-            .socket
-            .clone()
-            .or(config.socket)
-            .ok_or_else(|| {
-                Error::invalid(
-                    "no socket: pass --socket, or run `nucleos init` so a client config exists",
-                )
-            })?;
+        let socket = overrides.socket.clone().or(config.socket).ok_or_else(|| {
+            Error::invalid(
+                "no socket: pass --socket, or run `nucleos init` so a client config exists",
+            )
+        })?;
         let key_id = overrides.key_id.clone().or(config.key).ok_or_else(|| {
-            Error::invalid("no key: pass --key-id, or run `nucleos init` so a client config names one")
+            Error::invalid(
+                "no key: pass --key-id, or run `nucleos init` so a client config names one",
+            )
         })?;
         // The private key never lives beside the socket path: it comes from the keychain, or from an
         // explicitly named file for a machine that has no keychain at all.

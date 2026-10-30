@@ -13,6 +13,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Some("init") => init(&args[1..]),
         Some("config") => config(&args[1..]),
         Some("models") => models(&args[1..]),
+        Some("tokens") => tokens(&args[1..]),
         Some("--help" | "-h") | None => {
             println!("{USAGE}");
             Ok(())
@@ -29,6 +30,9 @@ usage: nucleos <command> [options]
   models list          the models this deployment has
   models add           add or replace one       (--name --url --model [--key-file] [--context])
   models remove <name> remove one
+  tokens add           issue a tenant token  (--tenant --subject); printed once
+  tokens list          the tokens this deployment has
+  tokens remove <id>   revoke one, effective on the next request
   --help               this text
 
 init options:
@@ -207,6 +211,51 @@ fn models(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync
             nucleos_cli::models::remove(&overrides, &name)?
         }
         other => return Err(Box::from(format!("unknown models subcommand {other:?}"))),
+    };
+    println!("{text}");
+    Ok(())
+}
+
+fn tokens(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let (command, rest) = match args.split_first() {
+        Some((command, rest)) => (command.as_str(), rest),
+        None => return Err(Box::from("tokens needs a subcommand: add, list or remove")),
+    };
+
+    let mut overrides = nucleos_cli::remote::Overrides::default();
+    let (mut tenant, mut subject) = (String::new(), String::new());
+    let mut positional: Option<String> = None;
+
+    let mut iter = rest.iter();
+    while let Some(arg) = iter.next() {
+        let mut value = |what: &str| -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+            iter.next()
+                .cloned()
+                .ok_or_else(|| Box::from(format!("{what} needs a value")))
+        };
+        match arg.as_str() {
+            "--socket" => overrides.socket = Some(PathBuf::from(value("--socket")?)),
+            "--key-id" => overrides.key_id = Some(value("--key-id")?),
+            "--key-file" => overrides.key_file = Some(PathBuf::from(value("--key-file")?)),
+            "--tenant" => tenant = value("--tenant")?,
+            "--subject" => subject = value("--subject")?,
+            other if other.starts_with('-') => {
+                return Err(Box::from(format!("unknown option {other:?}")))
+            }
+            other => positional = Some(other.to_owned()),
+        }
+    }
+
+    let text = match command {
+        "add" => nucleos_cli::tokens::add(&overrides, &tenant, &subject)?,
+        "list" => nucleos_cli::tokens::list(&overrides)?,
+        "remove" => {
+            let id = positional.ok_or_else(|| {
+                Box::<dyn std::error::Error + Send + Sync>::from("tokens remove needs an id")
+            })?;
+            nucleos_cli::tokens::remove(&overrides, &id)?
+        }
+        other => return Err(Box::from(format!("unknown tokens subcommand {other:?}"))),
     };
     println!("{text}");
     Ok(())

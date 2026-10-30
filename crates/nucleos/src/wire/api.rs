@@ -204,6 +204,53 @@ pub struct DescribeResponse {
     pub generation: u64,
 }
 
+/// A token to issue.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct TokenIssueRequest {
+    /// The tenant it authenticates.
+    pub tenant: String,
+    /// The subject within it.
+    pub subject: String,
+}
+
+/// A token that was just issued.
+///
+/// The `token` field is the only time the value exists: the store keeps a hash, and no endpoint can
+/// return it again. A token you can read back later is a token you can leak later.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct TokenIssued {
+    /// What `list` shows and `remove` names.
+    pub id: String,
+    /// The token. Give it to its client now.
+    pub token: String,
+    /// The tenant it authenticates.
+    pub tenant: String,
+    /// The subject within it.
+    pub subject: String,
+}
+
+/// A token as a listing reports it — no value, no hash.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct TokenView {
+    /// Its identifier.
+    pub id: String,
+    /// The tenant it authenticates.
+    pub tenant: String,
+    /// The subject within it.
+    pub subject: String,
+    /// When it was issued.
+    #[serde(default)]
+    pub created_unix_millis: u64,
+}
+
+/// The tokens this deployment has issued.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct TokenListResponse {
+    /// In the order they were issued.
+    #[serde(default)]
+    pub tokens: Vec<TokenView>,
+}
+
 /// One model to add or replace.
 ///
 /// No API key: `key_file` names a path. The system store is backed up and copied, and a store that
