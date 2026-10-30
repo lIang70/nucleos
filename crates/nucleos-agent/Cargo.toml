@@ -11,6 +11,7 @@ keywords = ["agent", "kernel", "loop"]
 categories = ["development-tools"]
 
 [dependencies]
+tracing = { workspace = true }
 nucleos = { workspace = true }
 
 [dev-dependencies]

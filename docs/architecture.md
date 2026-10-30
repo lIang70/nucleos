@@ -707,14 +707,47 @@ request, which is a change to this file and a larger one to the ABI.
 
 Two things, and the absence of the rest is deliberate.
 
+### 12.1 Logs: `tracing`, and who decides what
+
+Libraries emit through **`tracing`**; only the binary installs a subscriber. That split is the whole
+decision:
+
+| | Decides |
+| --- | --- |
+| a library (kernel, adapters, store, policy) | *what* happened, as structured fields |
+| `nucleosd` | format, sink, level (`NUCLEOS_LOG`, JSON, stdout) |
+
+A library that picked its own output is a library a host cannot embed, and a kernel that wrote files
+is a kernel with an opinion about deployments. `tracing` over `log` for one reason that matters here:
+fields. `session = %id, tool = %name, attempt = 3` is what makes a record actionable, and rebuilding
+that from a formatted string is the work this avoids. Spans are available but not required: a
+library's `tracing` calls need no instrumentation pass to be useful.
+
+What libraries log is deliberately narrow, because the event log already holds the domain record:
+
+- **refusals and stops** the caller cannot see afterwards: budget, prompt-too-large, policy verdicts;
+- **fallbacks, retries and reconnects**: attempt failed, source restarted, tool set changed;
+- **degradations**: a parameter the provider dropped;
+- **deployment state**: generation published, session migrated, policy loaded.
+
+What they do not log: message content, tool arguments, model output. A log line carrying a user's
+prompt is a second copy of the data with weaker retention rules, and the event log already holds it
+under the session's lifecycle.
+
+Two rules for the future, learned the expensive way here. A log line must be **assertable** —
+`crates/nucleos/tests/logging.rs` installs a real subscriber and checks the record's fields, because
+instrumentation nothing observes is dead code with a formatting cost. And a comment claiming a
+library misbehaves must be checked against a correct experiment: this file briefly claimed axum did
+not poll a graceful-shutdown future, which was a broken test harness killing the wrong process.
+
 **Counters, at `GET /v1/metrics`.** Which route was called how many times, how many requests were
 refused, how many sessions opened, how many stopped on budget, how many reloads, and how long the
 daemon has been counting. Keyed by route *template*: a thousand sessions would otherwise be a
 thousand keys, and a counter with unbounded cardinality is a memory leak wearing a metric's name.
 
-**One JSON line per request on stdout.** Method, route, status, duration. That is the input a
-collector needs for its own histogram, and it costs no dependency: there is one format, one sink and
-one level, and a logging crate that exists to print one line grows a configuration language.
+**One record per request.** Method, route, status, duration, through the same subscriber as
+everything else — so a deployment has one stream, one format and one filter, and a collector builds
+its own histogram from the durations.
 
 What is absent, and why each absence is a decision rather than an omission:
 

@@ -96,6 +96,11 @@ impl Generations {
 
         self.current += 1;
         let generation = Generation(self.current);
+        tracing::info!(
+            event = "generation_published",
+            generation = generation.0,
+            tools = set.len(),
+        );
         self.sets.insert(generation.0, Arc::new(set));
         Ok(generation)
     }
@@ -194,12 +199,24 @@ pub(crate) async fn migrate(kernel: &super::Kernel, session: &mut super::session
         if !compatible(&pinned, &next) {
             // Incompatible: the session stays where it is until it ends. Moving it would answer a
             // call with a tool the model was never shown.
+            tracing::info!(
+                event = "generation_incompatible",
+                session = %session.id,
+                pinned = session.generation.0,
+                current = current.0,
+            );
             return Ok(false);
         }
         current
     };
 
     let from = session.generation;
+    tracing::info!(
+        event = "generation_migrated",
+        session = %session.id,
+        from = from.0,
+        to = current.0,
+    );
     session.generation = current;
     kernel
         .emit(session, EventKind::GenerationMigrated { from, to: current })

@@ -68,6 +68,14 @@ impl Policy for Ruleset {
 }
 
 fn verdict(decision: Decision, rule: &Rule, request: &PolicyRequest<'_>) -> Verdict {
+    tracing::debug!(
+        event = "policy_decided",
+        decision = ?decision,
+        subject = %describe(&request.subject),
+        tenant = %request.principal.tenant,
+        subject_id = %request.principal.subject,
+        reason = rule.reason.as_deref().unwrap_or(""),
+    );
     match decision {
         Decision::Allow => Verdict::Allow,
         Decision::Deny => Verdict::Deny {

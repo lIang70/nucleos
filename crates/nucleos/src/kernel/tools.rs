@@ -62,7 +62,18 @@ impl Kernel {
 
         let mut verdicts = Vec::with_capacity(calls.len());
         for call in calls {
-            match self.check(session, call).await {
+            let verdict = self.check(session, call).await;
+            tracing::debug!(
+                event = "tool_gated",
+                session = %session.id,
+                tool = %call.name,
+                verdict = match &verdict {
+                    crate::adapter::Verdict::Allow => "allow",
+                    crate::adapter::Verdict::Deny { .. } => "deny",
+                    crate::adapter::Verdict::AskHuman { .. } => "ask",
+                },
+            );
+            match verdict {
                 crate::adapter::Verdict::AskHuman { question, options } => {
                     self.park(
                         session,
@@ -191,6 +202,15 @@ impl Kernel {
             content: output.content,
             is_error: output.is_error,
         };
+        if output.is_error {
+            // The tool's own words go to the model; the operator gets the fact and the identity.
+            tracing::debug!(
+                event = "tool_failed",
+                session = %session.id,
+                tool = %call.name,
+                call = %call.id,
+            );
+        }
         self.emit(
             session,
             EventKind::ToolFinished {

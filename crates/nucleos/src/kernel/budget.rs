@@ -33,6 +33,14 @@ impl Kernel {
             )));
         }
         if let Some(reason) = session.exhausted(self.now()) {
+            tracing::warn!(
+                event = "budget_refused",
+                session = %session.id,
+                stop = ?reason,
+                steps = session.steps,
+                tokens = session.usage.total_tokens(),
+                credit = session.credit_tokens,
+            );
             self.stop_for_budget(session, reason).await?;
             return Err(Error::new(
                 crate::contract::ErrorCode::Budget,

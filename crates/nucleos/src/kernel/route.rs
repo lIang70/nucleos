@@ -203,6 +203,12 @@ impl Kernel {
                         if produced {
                             return Err(error);
                         }
+                        tracing::warn!(
+                            event = "attempt_failed",
+                            model = %name,
+                            trigger = ?trigger,
+                            code = ?error.code(),
+                        );
                         last_error = Some(error);
                     }
                 }
@@ -235,6 +241,12 @@ impl Kernel {
                 .unwrap_or(capability.max_output_tokens),
         );
         if prompt.saturating_add(reserve) > window {
+            tracing::warn!(
+                event = "prompt_does_not_fit",
+                prompt_tokens = prompt,
+                reserve = reserve,
+                window = window,
+            );
             return Err(Error::invalid(format!(
                 "the prompt is {prompt} tokens and the completion reserve is {reserve}, over a \
                  window of {window}; the caller has to compact or raise the budget"

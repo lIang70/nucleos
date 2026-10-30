@@ -166,6 +166,11 @@ impl McpSource {
                 self.name
             )));
         }
+        tracing::info!(
+            event = "source_connected",
+            source = %self.name,
+            tools = specs.len(),
+        );
         Ok((server, specs))
     }
 }
@@ -208,6 +213,12 @@ impl Hub {
                 // pinned to: adopting it would make a generation describe declarations that no
                 // longer exist, and the session would call names it was never shown.
                 if specs != self.pinned {
+                    tracing::warn!(
+                        event = "source_set_changed",
+                        source = %self.source.name,
+                        before = self.pinned.len(),
+                        after = specs.len(),
+                    );
                     link.failures = link.failures.saturating_add(1);
                     link.retry_after = Some(backoff(link.failures));
                     return Err(Error::unavailable(format!(
@@ -218,6 +229,11 @@ impl Hub {
                         specs.len()
                     )));
                 }
+                tracing::info!(
+                    event = "source_reconnected",
+                    source = %self.source.name,
+                    failures = link.failures,
+                );
                 link.server = Some(Arc::clone(&server));
                 link.failures = 0;
                 link.retry_after = None;
@@ -226,6 +242,12 @@ impl Hub {
             Err(error) => {
                 link.failures = link.failures.saturating_add(1);
                 link.retry_after = Some(backoff(link.failures));
+                tracing::warn!(
+                    event = "source_restart_failed",
+                    source = %self.source.name,
+                    failures = link.failures,
+                    detail = %error.reason(),
+                );
                 Err(error)
             }
         }

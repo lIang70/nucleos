@@ -281,6 +281,11 @@ fn kind_name(kind: SessionKind) -> &'static str {
     }
 }
 
+/// Turn a driver error into ours, and say so.
+///
+/// A store failure usually reaches a caller as a single `Err`, which then gets wrapped, returned and
+/// forgotten. Logging it here is the one place that still knows it was the *database*.
 fn failed(error: rusqlite::Error) -> Error {
+    tracing::error!(event = "store_failed", detail = %error);
     Error::internal(format!("store: {error}"))
 }

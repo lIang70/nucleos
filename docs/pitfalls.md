@@ -669,3 +669,32 @@ an unauthenticated inventory. The cost of guarding it is one header a real clien
 `(tenant, session)` key in the ABI. Shipping the six lines and calling it multi-tenant would be the
 kind of claim this file exists to prevent.
 
+## 52. A library emits, the binary decides
+
+**Decision.** Every crate depends on `tracing`; only `nucleosd` depends on `tracing-subscriber` and
+installs a subscriber.
+
+**Why.** A library that configures output cannot be embedded, and a kernel that decides where logs go
+has an opinion about deployments. The facade is also what makes the logs testable: `tests/logging.rs`
+installs a capturing subscriber and asserts the fields, so instrumentation is checked rather than
+trusted.
+
+**Why not `log`.** Fields. `session = %id, tool = %name` is the difference between a line an operator
+can act on and a sentence they have to parse. Spans come with it and cost nothing when unused.
+
+**What is not logged.** Message content, tool arguments, model output. The event log is the record;
+a second copy in a log file has weaker retention rules than the data it duplicates.
+
+## 53. A comment about behaviour needs an experiment that is not broken
+
+**Decision.** The daemon keeps axum's `with_graceful_shutdown`, and the comment saying it "did
+nothing" was removed.
+
+**Why it was wrong.** Three test runs showed exit code 143 and no shutdown record, which looked like
+axum not polling the future. The kill was aimed at the shell wrapping the daemon, so the daemon was
+never signalled at all — it was still running afterwards, socket and all. Re-running against the real
+pid showed `with_graceful_shutdown` working, and the hand-rolled `tokio::select!` unnecessary.
+
+**The rule.** An observation strong enough to write into the code as a claim is strong enough to
+verify twice: here, `pgrep` would have said the process was alive the whole time.
+

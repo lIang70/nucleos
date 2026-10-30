@@ -15,7 +15,7 @@
 //! `Send`. Everything else returns an explicit `UNIMPLEMENTED` with the reason, because a
 //! method that pretends to work is worse than one that says what it is waiting for.
 
-use nucleosd::{App, router};
+use nucleosd::{App, router, telemetry};
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 
@@ -29,6 +29,9 @@ const DEFAULT_SOCKET: &str = "/tmp/nucleosd.sock";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Before anything else: a start-up failure has to be readable, and a subscriber installed after
+    // the first mistake is a subscriber that missed it.
+    telemetry::install();
     let socket = std::env::args()
         .nth(1)
         .unwrap_or_else(|| DEFAULT_SOCKET.to_owned());
@@ -41,10 +44,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // `/tmp`, and refusing to start would make the default unusable. The warning says what the
         // deployment actually has.
         if std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700)).is_err() {
-            eprintln!(
-                "warning: could not restrict {} to its owner; the socket's permissions are the \
-                 authentication, so point nucleosd at a private directory or set NUCLEOS_TOKEN",
-                parent.display()
+            tracing::warn!(
+                event = "socket_directory_not_private",
+                directory = %parent.display(),
+                detail = "the socket's permissions are the authentication; point nucleosd at a \
+                          private directory or set NUCLEOS_TOKEN",
             );
         }
     }
@@ -67,17 +71,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let app = App::from_env().await?;
 
     let token = std::env::var("NUCLEOS_TOKEN").is_ok_and(|token| !token.is_empty());
-    eprintln!(
-        "nucleosd listening on unix:{socket} (authentication: {})",
-        if token {
-            "bearer token + socket permissions"
-        } else {
-            "socket permissions only — set NUCLEOS_TOKEN to require a token"
-        }
+    tracing::info!(
+        event = "daemon_started",
+        socket = %socket,
+        authentication = if token { "token" } else { "socket-permissions" },
+        version = env!("CARGO_PKG_VERSION"),
+        abi = nucleosd::http::ABI_VERSION,
     );
-    axum::serve(listener, router(Arc::new(app)))
-        .await
-        .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { Box::new(error) })?;
+    if !token {
+        tracing::info!(
+            event = "token_not_required",
+            detail = "set NUCLEOS_TOKEN to require a bearer token as well as the socket",
+        );
+    }
+
+    let served = axum::serve(listener, router(Arc::new(app)))
+        .with_graceful_shutdown(shutdown())
+        .await;
+    // A stale socket is a start-up failure next time, with an error that names nothing. Removing it
+    // on the way out is the difference between a restart and an incident.
+    let _ = std::fs::remove_file(&socket);
+    tracing::info!(event = "daemon_stopped");
+    served.map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { Box::new(error) })?;
 
     Ok(())
+}
+
+/// Wait for a signal that means "stop", so the socket is removed and the stop is recorded.
+async fn shutdown() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut terminate = match signal(SignalKind::terminate()) {
+            Ok(stream) => stream,
+            Err(error) => {
+                tracing::warn!(event = "signal_handler_unavailable", detail = %error);
+                let _ = tokio::signal::ctrl_c().await;
+                return;
+            }
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => tracing::info!(event = "shutdown_requested", signal = "int"),
+            _ = terminate.recv() => tracing::info!(event = "shutdown_requested", signal = "term"),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }

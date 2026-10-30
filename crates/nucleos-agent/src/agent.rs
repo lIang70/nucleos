@@ -85,6 +85,12 @@ pub async fn step(kernel: &Kernel, session: &mut Session) -> Result<Step> {
     }
 
     let outstanding = outstanding_calls(session);
+    tracing::debug!(
+        event = "step",
+        session = %session.id(),
+        step = session.inference_calls(),
+        outstanding_calls = outstanding.len(),
+    );
     let result = if outstanding.is_empty() {
         inference_turn(kernel, session).await
     } else {
@@ -95,9 +101,16 @@ pub async fn step(kernel: &Kernel, session: &mut Session) -> Result<Step> {
         // A budget refusal is a stop, not a failure. The kernel has already closed the session and
         // recorded why, so relabelling it here would be the driver overriding a decision it did not
         // make — and it was exactly what this loop used to do.
-        Err(error) if error.code() == ErrorCode::Budget => Ok(Step::Stopped(
-            session.stop_reason().unwrap_or(StopReason::Tokens),
-        )),
+        Err(error) if error.code() == ErrorCode::Budget => {
+            tracing::info!(
+                event = "session_stopped",
+                session = %session.id(),
+                stop = ?session.stop_reason(),
+            );
+            Ok(Step::Stopped(
+                session.stop_reason().unwrap_or(StopReason::Tokens),
+            ))
+        }
         // Anything else ends the *session*, which is an outcome rather than an error of the call:
         // the attempt's own code and reason are already in the log, and `close` records the stop on
         // the state change. Handing back an `Err` here would say the driver's call was wrong when

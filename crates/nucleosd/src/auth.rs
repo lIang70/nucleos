@@ -17,8 +17,8 @@
 //! `(tenant, session)`, so tenants would need to stop sharing a token.
 
 use nucleos::contract::ErrorCode;
-use nucleos::wire::api::ErrorBody;
 use nucleos::error::Error;
+use nucleos::wire::api::ErrorBody;
 
 /// Whether a request may proceed.
 ///
@@ -92,7 +92,10 @@ mod tests {
     fn a_configured_token_is_required_and_checked() {
         assert!(authorize(Some("s3cret"), Some("Bearer s3cret")).is_ok());
         assert!(authorize(Some("s3cret"), None).is_err());
-        assert!(authorize(Some("s3cret"), Some("s3cret")).is_err(), "no scheme");
+        assert!(
+            authorize(Some("s3cret"), Some("s3cret")).is_err(),
+            "no scheme"
+        );
         assert!(authorize(Some("s3cret"), Some("Bearer s3cretx")).is_err());
         assert!(
             authorize(Some("s3cret"), Some("bearer s3cret")).is_err(),

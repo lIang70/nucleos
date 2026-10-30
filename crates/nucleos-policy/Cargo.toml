@@ -11,6 +11,7 @@ keywords = ["agent", "kernel", "policy", "security"]
 categories = ["development-tools"]
 
 [dependencies]
+tracing = { workspace = true }
 async-trait = { workspace = true }
 nucleos = { workspace = true }
 serde = { workspace = true }

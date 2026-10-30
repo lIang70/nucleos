@@ -115,7 +115,16 @@ impl Model for OpenAi {
     /// it under-estimates for code and for CJK — which is the safe direction: the kernel uses it to
     /// refuse a turn that will not fit, and refusing early is recoverable while overflowing is not.
     fn count_tokens(&self, request: &ModelRequest) -> Result<u64> {
-        Ok(request.text_len().div_ceil(4).max(1))
+        // An estimate, and it says so: the provider does not publish a counter, and the kernel's
+        // fit check only needs to be conservative. Debug level because it runs twice per turn.
+        let tokens = request.text_len().div_ceil(4).max(1);
+        tracing::debug!(
+            event = "tokens_estimated",
+            model = %self.config.model,
+            tokens,
+            characters = request.text_len(),
+        );
+        Ok(tokens)
     }
 
     async fn invoke(&self, request: ModelRequest) -> Result<ModelStream> {

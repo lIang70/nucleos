@@ -508,7 +508,13 @@ async fn observe(
     let response = next.run(request).await;
     let millis = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     app.metrics.observe(&method, &route, response.status().as_u16());
-    println!("{}", crate::metrics::line(&method, &route, response.status().as_u16(), millis));
+    tracing::info!(
+        kind = "request",
+        method = %method,
+        route = %route,
+        status = response.status().as_u16(),
+        duration_millis = millis,
+    );
     response
 }
 
@@ -525,6 +531,7 @@ async fn authenticate(
     match crate::auth::authorize(app.token.as_deref(), header) {
         Ok(()) => next.run(request).await,
         Err(error) => {
+            tracing::warn!(event = "request_refused", reason = %error.reason());
             let (status, body) = crate::auth::refusal(&error);
             let status = StatusCode::from_u16(status).unwrap_or(StatusCode::UNAUTHORIZED);
             (status, Json(body)).into_response()
@@ -591,6 +598,13 @@ async fn reload(State(app): State<Arc<App>>) -> Result<Json<ReloadResponse>, Api
         .filter(|name| !names.contains(name))
         .cloned()
         .collect();
+    tracing::info!(
+        event = "tools_reloaded",
+        generation = generation.0,
+        tools = names.len(),
+        added = ?added,
+        removed = ?removed,
+    );
     if let Ok(mut current) = app.tools.write() {
         *current = names.clone();
     }
@@ -1047,10 +1061,11 @@ fn load_policy(path: Option<String>) -> Result<Arc<dyn nucleos::adapter::Policy>
     let ruleset = nucleos_policy::Ruleset::load(&path)?;
     // Said out loud at startup, because "which policy am I running under" is the first question
     // asked after an incident and the last one a log usually answers.
-    eprintln!(
-        "policy: {path} (default: {:?}, {} rule(s))",
-        ruleset.document().unmatched,
-        ruleset.document().rules.len()
+    tracing::info!(
+        event = "policy_loaded",
+        path = %path,
+        default = ?ruleset.document().unmatched,
+        rules = ruleset.document().rules.len(),
     );
     Ok(Arc::new(ruleset))
 }

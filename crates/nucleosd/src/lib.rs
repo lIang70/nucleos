@@ -6,5 +6,7 @@
 pub mod auth;
 pub mod http;
 pub mod metrics;
+pub mod telemetry;
 
 pub use http::{App, router};
+pub use telemetry::install as install_telemetry;
