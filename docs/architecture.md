@@ -850,9 +850,12 @@ source, and that includes the policy — the one thing an operator most needs to
 incident.
 
 [`config.md`](config.md) is the proposal that would replace it: `nucleos init` once, configuration in
-the store, a signed request per change, and two databases with two lifecycles. It is a proposal and
-nothing in it is built; this section exists so that "where does configuration live" has a pointer
-rather than an answer that drifts.
+the store, a signed request per change, and two databases with two lifecycles.
+
+Its first step is built: the daemon now opens **two** databases under one root — `system.db` for
+configuration and `sessions.db` for sessions — and takes `--root` and `--socket`, with platform
+defaults that are absolute and a socket in a private directory rather than a predictable name in
+`/tmp`. The rest is still a proposal, and the document says which half is which.
 
 What it does **not** propose to change, because the architecture already decided it: session wiring
 (kind, sandbox, workspace, budget) stays startup-only and lives in the checkpoint; everything a request

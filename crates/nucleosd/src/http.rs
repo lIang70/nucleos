@@ -167,7 +167,7 @@ impl App {
     /// ```
     ///
     /// Unset means unconfigured: up, describing itself, refusing to pretend it has models.
-    pub async fn from_env() -> Result<Self, nucleos::Error> {
+    pub async fn from_env(layout: &crate::layout::Layout) -> Result<Self, nucleos::Error> {
         let Ok(url) = std::env::var("NUCLEOS_MODEL_URL") else {
             return Ok(Self::unconfigured());
         };
@@ -229,17 +229,23 @@ impl App {
             chain: vec![model.clone()],
             retries: 1,
         };
-        // A file, not a hash map: a session that survives `kill -9` is the property this daemon
-        // exists to provide, and an in-memory store makes every restart look like data loss to the
-        // caller. `NUCLEOS_STORE` names the file; `:memory:` is available for a throwaway run and
-        // is the one place a restart is allowed to forget.
-        let path = std::env::var("NUCLEOS_STORE").unwrap_or_else(|_| "nucleos.db".to_owned());
-        let store = if path == ":memory:" {
-            eprintln!("NUCLEOS_STORE=:memory: sessions do not survive this process");
-            SqliteStore::in_memory()?
-        } else {
-            SqliteStore::open(&path)?
-        };
+        // Two files with two lifecycles: configuration is versioned and kept, sessions are pruned.
+        // Both are named inside one root, so a second instance on this host is one more `--root`.
+        layout
+            .create()
+            .map_err(|error| {
+                nucleos::Error::unavailable(format!(
+                    "cannot create {}: {error}",
+                    layout.root.display()
+                ))
+            })?;
+        let system = nucleos_sqlite::SystemStore::open(layout.system_store())?;
+        tracing::debug!(
+            event = "system_store_open",
+            path = %layout.system_store().display(),
+            schema = system.schema_version()?,
+        );
+        let store = SqliteStore::open(layout.session_store())?;
         // Two shapes, one meaning: a token file for a deployment with several callers, a single
         // token for one, and neither means the socket's permissions are the authentication.
         let tokens = match std::env::var("NUCLEOS_TOKENS") {

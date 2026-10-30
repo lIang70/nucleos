@@ -15,43 +15,30 @@
 //! `Send`. Everything else returns an explicit `UNIMPLEMENTED` with the reason, because a
 //! method that pretends to work is worse than one that says what it is waiting for.
 
-use nucleosd::{App, router, telemetry};
+use nucleosd::{App, Layout, router, telemetry};
 use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
 use std::sync::Arc;
-
-/// A unix socket by default, in a directory only its owner can enter.
-///
-/// The socket's permissions *are* the authentication this daemon can honestly claim: peer
-/// credentials would need `unsafe`, which this workspace forbids, so the check is pushed to the one
-/// place that can enforce it — the filesystem. `NUCLEOS_TOKEN` adds a bearer token on top for a
-/// deployment that exposes the socket beyond its own user.
-const DEFAULT_SOCKET: &str = "/tmp/nucleosd.sock";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Before anything else: a start-up failure has to be readable, and a subscriber installed after
     // the first mistake is a subscriber that missed it.
     telemetry::install();
-    let socket = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| DEFAULT_SOCKET.to_owned());
-
-    // A private directory first: `0600` on a socket inside a world-writable directory does not
-    // stop anyone from connecting, because entering the directory is not what they need to do.
-    if let Some(parent) = std::path::Path::new(&socket).parent() {
-        std::fs::create_dir_all(parent)?;
-        // Best effort and deliberate: a socket in `/tmp` cannot be made private by chmod-ing
-        // `/tmp`, and refusing to start would make the default unusable. The warning says what the
-        // deployment actually has.
-        if std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700)).is_err() {
-            tracing::warn!(
-                event = "socket_directory_not_private",
-                directory = %parent.display(),
-                detail = "the socket's permissions are the authentication; point nucleosd at a \
-                          private directory or set NUCLEOS_TOKEN",
-            );
+    let layout = match args(&std::env::args().skip(1).collect::<Vec<_>>())? {
+        Flags::Paths(layout) => {
+            println!("{}", layout.describe());
+            return Ok(());
         }
-    }
+        Flags::Run(layout) => layout,
+    };
+
+    // Directories first, with the modes the socket's permissions depend on. `Layout::create` narrows
+    // anything too open rather than trusting that an installer did it.
+    layout
+        .create()
+        .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { Box::new(error) })?;
+    let socket = layout.socket.clone();
 
     // A stale socket file from a previous run would make `bind` fail with an address-in-use
     // error that names nothing.
@@ -68,12 +55,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // A deployment file is the next slice; until then the environment is the configuration, so a
     // real model can be served without one.
-    let app = App::from_env().await?;
+    let app = App::from_env(&layout).await?;
 
     let token = std::env::var("NUCLEOS_TOKEN").is_ok_and(|token| !token.is_empty());
     tracing::info!(
         event = "daemon_started",
-        socket = %socket,
+        root = %layout.root.display(),
+        socket = %socket.display(),
         authentication = if token { "token" } else { "socket-permissions" },
         version = env!("CARGO_PKG_VERSION"),
         abi = nucleosd::http::ABI_VERSION,
@@ -118,5 +106,98 @@ async fn shutdown() {
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+/// What the command line asked for.
+#[derive(Debug)]
+enum Flags {
+    /// Print the paths and stop.
+    Paths(Layout),
+    /// Serve.
+    Run(Layout),
+}
+
+/// The whole command line: `--root`, `--socket`, `--print-paths`.
+///
+/// Two flags because there are two things a deployment decides: where the data is, and where the
+/// socket is. Everything else is derived or is configuration, which arrives later over the ABI rather
+/// than on a command line.
+fn args(args: &[String]) -> Result<Flags, Box<dyn std::error::Error + Send + Sync>> {
+    let (mut root, mut socket, mut print) = (None, None, false);
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--root" => {
+                root = Some(PathBuf::from(rest.next().ok_or_else(|| {
+                    Box::<dyn std::error::Error + Send + Sync>::from("--root needs a path")
+                })?));
+            }
+            "--socket" => {
+                socket = Some(PathBuf::from(rest.next().ok_or_else(|| {
+                    Box::<dyn std::error::Error + Send + Sync>::from("--socket needs a path")
+                })?));
+            }
+            "--print-paths" => print = true,
+            other if other.starts_with('-') => {
+                return Err(Box::from(format!(
+                    "unknown flag {other}; this daemon takes --root <dir>, --socket <path>, --print-paths"
+                )));
+            }
+            other => {
+                return Err(Box::from(format!(
+                    "unexpected argument {other:?}; the socket is named with --socket"
+                )));
+            }
+        }
+    }
+
+    let layout = Layout::resolve(root, socket);
+    Ok(if print {
+        Flags::Paths(layout)
+    } else {
+        Flags::Run(layout)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    #[test]
+    fn two_paths_and_one_switch() {
+        let flags = args(&[
+            "--root".to_owned(),
+            "/srv/a".to_owned(),
+            "--socket".to_owned(),
+            "/run/a/s.sock".to_owned(),
+        ])
+        .unwrap();
+        let Flags::Run(layout) = flags else {
+            panic!("expected a run");
+        };
+        assert_eq!(layout.root, PathBuf::from("/srv/a"));
+        assert_eq!(layout.socket, PathBuf::from("/run/a/s.sock"));
+
+        assert!(matches!(
+            args(&["--print-paths".to_owned()]).unwrap(),
+            Flags::Paths(_)
+        ));
+    }
+
+    #[test]
+    fn a_positional_argument_is_refused_rather_than_guessed() {
+        // The old binary took the socket as the first positional; a silent reinterpretation would be
+        // a deployment writing its data to the working directory.
+        let error = args(&["/tmp/s.sock".to_owned()]).unwrap_err();
+        assert!(error.to_string().contains("--socket"), "{error}");
+    }
+
+    #[test]
+    fn an_unknown_flag_names_the_ones_that_exist() {
+        let error = args(&["--store".to_owned(), "x".to_owned()]).unwrap_err();
+        assert!(error.to_string().contains("--root"), "{error}");
     }
 }

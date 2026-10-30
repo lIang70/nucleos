@@ -1,7 +1,16 @@
 # Configuration and administration
 
-**Status: proposal, under discussion.** Nothing in this document is built. The parts of the
-architecture it would replace are named, so the cost of adopting it is visible.
+**Status: partly built.** Step 1 of §10 exists: the two stores, one root, `--root`/`--socket`, and the
+platform paths. Everything else — `init`, the configuration ABI, the admin surface, signatures — is
+still a proposal, and this document says so where it matters so that a reader is never guessing which
+half is real.
+
+Built, today:
+
+- `system.db` and `sessions.db` under one root, with `system.db` holding a schema version and the file
+  existing for a reason rather than as a placeholder;
+- `--root`, `--socket`, `--print-paths`, and platform defaults that are absolute (§4.1);
+- the socket default is a private directory, never a bare `/tmp/nucleosd.sock`.
 
 Today every deployment decision is an environment variable — fifteen of them, read in four places,
 validated at whatever line happens to need them. There is no file, no single check that says "this
@@ -359,9 +368,8 @@ Deletion is the hard direction, and each kind has its own answer:
 
 Each step is useful on its own, and none of them requires the next.
 
-1. **Split the store** — system and tenant, `scope` column, two files. This decides the shape of every
-   table that follows, and it is the step that makes `--root` meaningful: until there are two files,
-   there is nothing for a root to contain.
+1. **Split the store — done.** System and tenant, two files, one root, platform paths, and the two bad
+   defaults replaced (§4.1). The `scope` column arrived earlier, with `(tenant, session)`.
 2. **`Gated::Config`** — the gate before the interface. Deny by default.
 3. **`nucleos init`** + bootstrap file + recovery password. Until this exists, step 4 has no bootstrap
    credential.

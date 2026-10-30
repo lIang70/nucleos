@@ -1,0 +1,200 @@
+//! The system store: what the daemon is, as opposed to what it is doing.
+//!
+//! Two databases, two lifecycles. This one holds configuration — model definitions, tool sources,
+//! policy versions, credential hashes, administrator keys — and changes a few times a day. The other
+//! holds sessions, events and snapshots, and changes once per token.
+//!
+//! They are separate files because a database that is pruned by age and a database that is versioned
+//! and kept have nothing to say to each other: one file would either never be pruned, or prune the
+//! configuration with the sessions. Separating them also keeps configuration writes out of the
+//! session write-ahead log, and a corrupt sessions database cannot take the model registry with it.
+//!
+//! The schema here is deliberately almost empty. Configuration itself is not written yet — that
+//! arrives with the administrative ABI — but the file has to exist for a reason, so it holds a schema
+//! version and a key-value table for everything that follows.
+
+use nucleos::error::{Error, Result};
+use rusqlite::{Connection, OptionalExtension, params};
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+
+/// The version this build writes. A store with another version is refused rather than guessed at.
+pub const SCHEMA_VERSION: u32 = 1;
+
+/// The daemon's own configuration database.
+#[derive(Debug, Clone)]
+pub struct SystemStore {
+    connection: Arc<Mutex<Connection>>,
+}
+
+impl SystemStore {
+    /// Open, or create, the database at `path`.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let connection = Connection::open(path).map_err(failed)?;
+        connection
+            .pragma_update(None, "journal_mode", "wal")
+            .map_err(failed)?;
+        connection
+            .pragma_update(None, "synchronous", "normal")
+            .map_err(failed)?;
+        connection
+            .execute_batch(
+                "create table if not exists meta (
+                     key   text primary key,
+                     value text not null
+                 ) without rowid;",
+            )
+            .map_err(failed)?;
+
+        let store = Self {
+            connection: Arc::new(Mutex::new(connection)),
+        };
+        store.check_version()?;
+        Ok(store)
+    }
+
+    /// An empty store in memory, for tests.
+    pub fn in_memory() -> Result<Self> {
+        Self::open(":memory:")
+    }
+
+    /// The schema version, written on first open.
+    pub fn schema_version(&self) -> Result<u32> {
+        let read = self.get("schema_version")?;
+        Ok(read
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(SCHEMA_VERSION))
+    }
+
+    /// A configuration value, by key.
+    pub fn get(&self, key: &str) -> Result<Option<String>> {
+        let connection = self.lock();
+        let value = connection
+            .query_row(
+                "select value from meta where key = ?1",
+                params![key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(failed)?;
+        Ok(value)
+    }
+
+    /// Set a configuration value.
+    pub async fn set(&self, key: &str, value: &str) -> Result<()> {
+        let key = key.to_owned();
+        let value = value.to_owned();
+        self.run(move |connection| {
+            connection
+                .execute(
+                    "insert into meta (key, value) values (?1, ?2)
+                     on conflict (key) do update set value = excluded.value",
+                    params![key, value],
+                )
+                .map_err(failed)?;
+            Ok(())
+        })
+        .await
+    }
+
+    fn check_version(&self) -> Result<()> {
+        let stored = self.get("schema_version")?;
+        match stored {
+            None => {
+                // First open: record the version this build understands.
+                let connection = self.lock();
+                connection
+                    .execute(
+                        "insert into meta (key, value) values ('schema_version', ?1)",
+                        params![SCHEMA_VERSION.to_string()],
+                    )
+                    .map_err(failed)?;
+                Ok(())
+            }
+            Some(value) => {
+                let version: u32 = value.parse().map_err(|_| {
+                    Error::invalid(format!("system store schema version {value:?} is not a number"))
+                })?;
+                if version > SCHEMA_VERSION {
+                    // Refused rather than guessed: a newer daemon wrote this, and opening it with
+                    // older assumptions is how configuration quietly disappears.
+                    return Err(Error::invalid(format!(
+                        "system store is schema {version}, this build understands {SCHEMA_VERSION}; \
+                         upgrade nucleosd rather than downgrading the store"
+                    )));
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.connection
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    async fn run<T, F>(&self, work: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut Connection) -> Result<T> + Send + 'static,
+    {
+        let connection = Arc::clone(&self.connection);
+        tokio::task::spawn_blocking(move || {
+            let mut guard = connection.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            work(&mut guard)
+        })
+        .await
+        .map_err(|error| Error::internal(format!("the store task failed: {error}")))?
+    }
+}
+
+/// A driver error, turned into ours and said out loud.
+fn failed(error: rusqlite::Error) -> Error {
+    tracing::error!(event = "system_store_failed", detail = %error);
+    Error::internal(format!("system store: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    #[test]
+    fn the_first_open_records_the_schema_version() {
+        let store = SystemStore::in_memory().unwrap();
+        assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+    }
+
+    #[tokio::test]
+    async fn values_round_trip_and_overwrite() {
+        let store = SystemStore::in_memory().unwrap();
+        assert_eq!(store.get("models").unwrap(), None);
+        store.set("models", "[]").await.unwrap();
+        assert_eq!(store.get("models").unwrap().as_deref(), Some("[]"));
+        store.set("models", "[1]").await.unwrap();
+        assert_eq!(store.get("models").unwrap().as_deref(), Some("[1]"));
+    }
+
+    #[test]
+    fn a_newer_schema_is_refused_rather_than_guessed() {
+        let path = std::env::temp_dir().join(format!("nucleos-sys-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        {
+            let store = SystemStore::open(&path).unwrap();
+            store.get("schema_version").unwrap();
+            let connection = store.lock();
+            connection
+                .execute(
+                    "update meta set value = '99' where key = 'schema_version'",
+                    [],
+                )
+                .unwrap();
+        }
+
+        let error = SystemStore::open(&path).expect_err("a newer store is refused");
+        assert!(error.reason().contains("upgrade nucleosd"), "{error:?}");
+        let _ = std::fs::remove_file(&path);
+    }
+}

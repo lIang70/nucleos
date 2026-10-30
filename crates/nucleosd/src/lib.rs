@@ -5,8 +5,10 @@
 
 pub mod auth;
 pub mod http;
+pub mod layout;
 pub mod metrics;
 pub mod telemetry;
 
 pub use http::{App, router};
+pub use layout::Layout;
 pub use telemetry::install as install_telemetry;

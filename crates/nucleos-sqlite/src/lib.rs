@@ -18,5 +18,7 @@
 //!   at the first field rename.
 
 mod store;
+mod system;
 
 pub use store::SqliteStore;
+pub use system::{SCHEMA_VERSION, SystemStore};
