@@ -28,7 +28,8 @@ usage: nucleos <command> [options]
   init                 create a deployment: stores, recovery password, administrator key
   config               print what the daemon is running (signs the request)
   models list          the models this deployment has
-  models add           add or replace one       (--name --url --model [--key-file] [--context])
+  models add           add or replace one       (--name --url --model [--key-file] [--context]
+                                                 [--strict] [--reasoning])
   models remove <name> remove one
   tokens add           issue a tenant token  (--tenant --subject); printed once
   tokens list          the tokens this deployment has
@@ -194,6 +195,8 @@ fn models(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync
             "--model" => request.model = value("--model")?,
             "--key" => request.key_file = Some(value("--key")?),
             "--context" => request.context_window = Some(value("--context")?.parse()?),
+            "--strict" => request.strict_tools = true,
+            "--reasoning" => request.reasoning = true,
             other if other.starts_with('-') => {
                 return Err(Box::from(format!("unknown option {other:?}")))
             }

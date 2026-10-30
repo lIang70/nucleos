@@ -1717,7 +1717,7 @@
             ]
           },
           "key_file": {
-            "description": "Where the API key is, if the endpoint wants one. Absent falls back to `NUCLEOS_MODEL_KEY`.",
+            "description": "Where the API key is, if the endpoint wants one.\n\nA path and the only source: there is no environment fallback, because a credential with two\nsources has one that nobody rotates.",
             "type": [
               "string",
               "null"
@@ -1730,6 +1730,16 @@
           "name": {
             "description": "The name a route uses.",
             "type": "string"
+          },
+          "reasoning": {
+            "default": false,
+            "description": "Whether this model accepts a reasoning effort.",
+            "type": "boolean"
+          },
+          "strict_tools": {
+            "default": false,
+            "description": "Whether to hold the provider to a strict JSON Schema.\n\nPer model, because it is a property of the provider: a strict mode that rejects a schema is a\nfact about one endpoint, not about the deployment.",
+            "type": "boolean"
           },
           "url": {
             "description": "The responses endpoint, in full.",
@@ -1767,6 +1777,16 @@
           "name": {
             "description": "The name routes use.",
             "type": "string"
+          },
+          "reasoning": {
+            "default": false,
+            "description": "Whether it accepts a reasoning effort.",
+            "type": "boolean"
+          },
+          "strict_tools": {
+            "default": false,
+            "description": "Whether the provider is held to a strict JSON Schema.",
+            "type": "boolean"
           },
           "url": {
             "description": "The endpoint.",

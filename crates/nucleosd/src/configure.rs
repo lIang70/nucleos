@@ -106,7 +106,7 @@ pub async fn post_model(
         .add_model(&request.name, Arc::new(adapter))
         .map_err(|error| ApiError::from_error(&error))?;
 
-    let mut models = stored_models(&app)?;
+    let mut models = models_of(&app)?;
     models.retain(|model| model.name != request.name);
     models.push(ModelView {
         name: request.name.clone(),
@@ -114,8 +114,13 @@ pub async fn post_model(
         model: request.model.clone(),
         context_window: request.context_window.unwrap_or(128_000),
         key_file: request.key_file.clone(),
+        strict_tools: request.strict_tools,
+        reasoning: request.reasoning,
     });
     persist_models(&app, &models, &admin).await?;
+    // The advertised list is derived, not frozen: a caller reads `describe` before it opens a
+    // session, and a stale list is a caller told to go away for no reason.
+    app.set_models(models.iter().map(|model| model.name.clone()).collect());
 
     tracing::info!(event = "model_added", name = %request.name, by = %admin.principal.subject);
     Ok(Json(models.last().cloned().unwrap_or_default()))
@@ -140,47 +145,34 @@ pub async fn delete_model(
             "no model named {name:?}"
         ))));
     }
-    let mut models = stored_models(&app)?;
+    let mut models = models_of(&app)?;
     models.retain(|model| model.name != name);
     persist_models(&app, &models, &admin).await?;
+    app.set_models(models.iter().map(|model| model.name.clone()).collect());
 
     tracing::info!(event = "model_removed", name = %name, by = %admin.principal.subject);
     Ok(Json(ModelListResponse { models }))
 }
 
-/// Register the models a previous run stored.
+/// The models a deployment has stored, ready to be registered at start-up.
 ///
-/// Called at start-up, after the kernel exists. Without it a model added by request would work until
-/// the next restart and then vanish — the operator would have been told the change succeeded, and it
-/// did, for as long as the process lived.
-pub fn load_stored_models(
-    kernel: &nucleos::kernel::Kernel,
-    system: &SystemStore,
-) -> Result<Vec<ModelView>> {
+/// Without this a model added by request would work until the next restart and then vanish — the
+/// operator would have been told the change succeeded, and it did, for as long as the process lived.
+pub fn stored_models(system: &SystemStore) -> Result<Vec<ModelView>> {
     let Some(raw) = system.get(MODELS_KEY)? else {
         return Ok(Vec::new());
     };
-    let models: Vec<ModelView> = serde_json::from_str(&raw)
-        .map_err(|error| Error::internal(format!("stored model definitions are unreadable: {error}")))?;
-
-    for model in &models {
-        let adapter = adapter_for(&ModelRequest {
-            name: model.name.clone(),
-            url: model.url.clone(),
-            model: model.model.clone(),
-            key_file: model.key_file.clone(),
-            context_window: Some(model.context_window),
-        })?;
-        kernel.add_model(&model.name, Arc::new(adapter))?;
-    }
-    Ok(models)
+    serde_json::from_str(&raw)
+        .map_err(|error| Error::internal(format!("stored model definitions are unreadable: {error}")))
 }
 
 /// Build the provider adapter for one definition.
 ///
 /// One function for both paths — a request and a restart — because two ways to build a model is two
 /// ways to disagree about which key a model uses.
-fn adapter_for(request: &ModelRequest) -> Result<nucleos_openai::OpenAi> {
+pub fn adapter_for(request: &ModelRequest) -> Result<nucleos_openai::OpenAi> {
+    // The key comes from the named file or not at all. A fallback to an environment variable would be
+    // a second source for a credential, and the second source is always the one nobody rotates.
     let api_key = match &request.key_file {
         Some(path) => Some(
             std::fs::read_to_string(path)
@@ -190,7 +182,7 @@ fn adapter_for(request: &ModelRequest) -> Result<nucleos_openai::OpenAi> {
                 .trim()
                 .to_owned(),
         ),
-        None => std::env::var("NUCLEOS_MODEL_KEY").ok(),
+        None => None,
     };
     nucleos_openai::OpenAi::new(nucleos_openai::Config {
         url: request.url.clone(),
@@ -204,8 +196,8 @@ fn adapter_for(request: &ModelRequest) -> Result<nucleos_openai::OpenAi> {
         prompt_cache_key: None,
         include: Vec::new(),
         safety_identifier: None,
-        strict_tools: false,
-        supports_reasoning: false,
+        strict_tools: request.strict_tools,
+        supports_reasoning: request.reasoning,
         timeout: Some(std::time::Duration::from_secs(120)),
     })
 }
@@ -314,7 +306,7 @@ pub async fn list_models(
     _admin: Admin,
 ) -> std::result::Result<Json<ModelListResponse>, ApiError> {
     Ok(Json(ModelListResponse {
-        models: stored_models(&app)?,
+        models: models_of(&app)?,
     }))
 }
 
@@ -342,18 +334,8 @@ fn system(app: &Arc<App>) -> std::result::Result<&Arc<SystemStore>, ApiError> {
     })
 }
 
-fn stored_models(app: &Arc<App>) -> std::result::Result<Vec<ModelView>, ApiError> {
-    let Some(raw) = system(app)?
-        .get(MODELS_KEY)
-        .map_err(|error| ApiError::from_error(&error))?
-    else {
-        return Ok(Vec::new());
-    };
-    serde_json::from_str(&raw).map_err(|error| {
-        ApiError::from_error(&Error::internal(format!(
-            "stored model definitions are unreadable: {error}"
-        )))
-    })
+fn models_of(app: &Arc<App>) -> std::result::Result<Vec<ModelView>, ApiError> {
+    stored_models(system(app)?).map_err(|error| ApiError::from_error(&error))
 }
 
 async fn persist_models(

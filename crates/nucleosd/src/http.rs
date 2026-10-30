@@ -79,7 +79,7 @@ pub struct App {
     /// Single-tenant for now. The unix socket's peer credentials are the authentication this
     /// daemon can honestly claim; deriving a principal from them is the next slice.
     principal: Principal,
-    models: Vec<String>,
+    models: std::sync::RwLock<Vec<String>>,
     /// The tools every source advertises, for `Describe`.
     ///
     /// Behind a lock because a reload replaces it: it describes the *current* generation, and a
@@ -111,7 +111,7 @@ impl App {
             kernel: Some(kernel),
             tokens: None,
             principal,
-            models,
+            models: std::sync::RwLock::new(models),
             tools: std::sync::RwLock::new(Vec::new()),
             source: None,
             admins: None,
@@ -156,6 +156,24 @@ impl App {
         self
     }
 
+    /// Replace the advertised model list, after a change that made it stale.
+    ///
+    /// `describe` is what a caller trusts before it opens a session; a list frozen at start-up would
+    /// tell it the deployment has no models the moment after one was added.
+    pub fn set_models(&self, models: Vec<String>) {
+        if let Ok(mut current) = self.models.write() {
+            *current = models;
+        }
+    }
+
+    /// The models in force.
+    fn models_now(&self) -> Vec<String> {
+        self.models
+            .read()
+            .map(|models| models.clone())
+            .unwrap_or_default()
+    }
+
     /// The tools in force.
     fn tools_now(&self) -> Vec<String> {
         self.tools
@@ -164,55 +182,23 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// Serve what the environment describes.
+    /// Serve what the deployment has stored.
     ///
-    /// Three variables, because a deployment file is not written yet and a daemon that can only be
-    /// tested with fakes is a daemon nobody runs:
-    ///
-    /// ```text
-    /// NUCLEOS_MODEL_URL    full chat-completions URL
-    /// NUCLEOS_MODEL_NAME   the model to ask for
-    /// NUCLEOS_MODEL_KEY    bearer token, when the endpoint wants one
-    /// NUCLEOS_CONTEXT      context window, default 128000
-    /// NUCLEOS_MCP          one tool source: `name=command args…`
-    /// ```
-    ///
-    /// Unset means unconfigured: up, describing itself, refusing to pretend it has models.
+    /// The environment contributes nothing to this: models, policy and tokens are rows in the system
+    /// store, written by `nucleos init` and by signed requests afterwards. What is left in the
+    /// environment is the tool source (`NUCLEOS_MCP`) and the policy file fallback
+    /// (`NUCLEOS_POLICY`), both scheduled for removal once their store-backed forms exist.
     pub async fn from_env(layout: &crate::layout::Layout) -> Result<Self, nucleos::Error> {
-        let Ok(url) = std::env::var("NUCLEOS_MODEL_URL") else {
-            return Ok(Self::unconfigured());
-        };
-        let model = std::env::var("NUCLEOS_MODEL_NAME")
-            .map_err(|_| nucleos::Error::invalid("NUCLEOS_MODEL_NAME is required with a url"))?;
-        let context_window = std::env::var("NUCLEOS_CONTEXT")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(128_000);
-
-        let adapter = nucleos_openai::OpenAi::new(nucleos_openai::Config {
-            url,
-            api_key: std::env::var("NUCLEOS_MODEL_KEY").ok(),
-            model: model.clone(),
-            capability: nucleos_openai::Config::capabilities(context_window, 8_192),
-            options: nucleos::contract::Hints {
-                // Refused rather than silently applied: dropping the oldest items mid-session
-                // would make the provider's view of the conversation differ from the kernel's,
-                // and compaction is the kernel's job, not the transport's.
-                truncation: Some(nucleos::contract::Truncation::Disabled),
-                ..Default::default()
-            },
-            // Derived from the session, not chosen by the application: a cache key that changes per
-            // call bills the same prefix twice.
-            prompt_cache_key: None,
-            include: Vec::new(),
-            safety_identifier: None,
-            // Both are statements about the deployment, so both are variables rather than
-            // guesses: strict mode rejects a schema that is not strict-eligible, and reasoning
-            // effort is rejected by models that do not have it.
-            strict_tools: std::env::var("NUCLEOS_STRICT_TOOLS").is_ok(),
-            supports_reasoning: std::env::var("NUCLEOS_REASONING").is_ok(),
-            timeout: Some(std::time::Duration::from_secs(120)),
-        })?;
+        // No environment variable configures a model. Models are rows in the system store, written
+        // by `nucleos models add` through a signed request; a deployment with none starts, serves
+        // `describe`, and refuses to open an agent session until somebody adds one.
+        let system = Arc::new(nucleos_sqlite::SystemStore::open(layout.system_store())?);
+        tracing::debug!(
+            event = "system_store_open",
+            path = %layout.system_store().display(),
+            schema = system.schema_version()?,
+        );
+        let stored = crate::configure::stored_models(&system)?;
 
         // One source, from one variable: a deployment file is the next slice, and a daemon that
         // cannot run a real tool is a daemon nobody can test against.
@@ -236,10 +222,6 @@ impl App {
             configured_source = Some(source);
         }
 
-        let routing = nucleos::contract::Routing {
-            chain: vec![model.clone()],
-            retries: 1,
-        };
         // Two files with two lifecycles: configuration is versioned and kept, sessions are pruned.
         // Both are named inside one root, so a second instance on this host is one more `--root`.
         layout
@@ -250,12 +232,6 @@ impl App {
                     layout.root.display()
                 ))
             })?;
-        let system = Arc::new(nucleos_sqlite::SystemStore::open(layout.system_store())?);
-        tracing::debug!(
-            event = "system_store_open",
-            path = %layout.system_store().display(),
-            schema = system.schema_version()?,
-        );
         let store = SqliteStore::open(layout.session_store())?;
         // Tokens come from the store, not from the environment: a deployment's callers are state, and
         // state has one writer. A deployment with none is the socket-permissions case, which the
@@ -278,23 +254,35 @@ impl App {
             }
             None => load_policy(std::env::var("NUCLEOS_POLICY").ok())?,
         };
+        // The routing a session inherits names the first stored model: a session that does not
+        // choose one still has somewhere to go, and a deployment with no models has an empty chain
+        // that fails by saying so.
+        let routing = nucleos::contract::Routing {
+            chain: stored.first().map(|model| model.name.clone()).into_iter().collect(),
+            retries: 1,
+        };
         let mut builder = Kernel::builder()
-            .model(&model, Arc::new(adapter))
             .store(Arc::new(store))
             .policy(policy)
             .routing(routing);
+        for model in &stored {
+            let adapter = crate::configure::adapter_for(&nucleos::wire::api::ModelRequest {
+                name: model.name.clone(),
+                url: model.url.clone(),
+                model: model.model.clone(),
+                key_file: model.key_file.clone(),
+                context_window: Some(model.context_window),
+                strict_tools: model.strict_tools,
+                reasoning: model.reasoning,
+            })?;
+            builder = builder.model(&model.name, Arc::new(adapter));
+        }
         for tool in tools {
             builder = builder.tool(tool);
         }
         let kernel = builder.build()?;
 
-        // Models a previous run stored are registered now, before the first request: a change that
-        // did not survive a restart would be a change the operator was told had succeeded.
-        let stored = crate::configure::load_stored_models(&kernel, &system)?;
-        let mut models = vec![model];
-        models.extend(stored.into_iter().map(|model| model.name));
-        models.sort();
-        models.dedup();
+        let models: Vec<String> = stored.into_iter().map(|model| model.name).collect();
 
         let app = Self::new(Arc::new(kernel), Self::unconfigured().principal, models)
         .with_system(
@@ -319,7 +307,7 @@ impl App {
                 tenant: "default".to_owned(),
                 subject: "local".to_owned(),
             },
-            models: Vec::new(),
+            models: std::sync::RwLock::new(Vec::new()),
             tools: std::sync::RwLock::new(Vec::new()),
             source: None,
             tokens: None,
@@ -779,7 +767,7 @@ async fn describe(State(app): State<Arc<App>>) -> Json<DescribeResponse> {
     Json(DescribeResponse {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         abi_version: ABI_VERSION.to_owned(),
-        models: app.models.clone(),
+        models: app.models_now(),
         tools: app.tools_now(),
         generation: app.kernel.as_ref().map(|kernel| kernel.generation().0).unwrap_or(0),
     })

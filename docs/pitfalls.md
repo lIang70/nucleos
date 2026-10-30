@@ -931,3 +931,23 @@ was `401 "this daemon needs a bearer token"`, which is exactly the right message
 and it is verified by the extractor on the route that needs it. A request that carries one to a route
 with no administrator check gets `401` from `Caller`, not a handler that trusts it.
 
+## 67. A list frozen at start-up is a list that lies
+
+**Decision.** `describe` and the default route read the model registry when asked, not the values they
+were given at construction.
+
+**Why.** Two snapshots existed and both became wrong the moment `POST /v1/models` succeeded: the
+advertised model list, and the routing chain a session inherits. The symptom was a deployment where a
+model had been added, the API had said `200`, `/v1/models` listed it — and `/v1/describe` said the
+deployment had none, and every session was refused for having no route. The change worked; two copies
+of the old state did not.
+
+**The rule.** Anything a caller reads to decide what to do next must be derived at read time. `describe`
+is exactly such a thing, which is why it now reads the registry and the store rather than a `Vec` filled
+in `from_env`.
+
+**A related one, caught by the same test.** A session with an empty routing chain now takes the
+deployment's first model instead of failing. The alternative — requiring every caller to name a model —
+turns a deployment default into a per-call responsibility, and the error a client saw ("routing chain is
+empty") was about the daemon's configuration, not about anything the client did.
+

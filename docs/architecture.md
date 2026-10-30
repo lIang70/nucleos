@@ -858,10 +858,21 @@ log, which is the record rather than a statistic.
 
 ## 12.9 Configuration, today and proposed
 
-Today every deployment decision is an environment variable: fifteen of them, read in `nucleosd`,
-validated wherever they happen to be needed. Nothing can change without a restart except the tool
-source, and that includes the policy — the one thing an operator most needs to tighten during an
-incident.
+Nine of the fifteen environment variables are gone, and the pattern of their removal is the design:
+
+| Removed | Replaced by |
+| --- | --- |
+| `NUCLEOS_TOKEN`, `NUCLEOS_TOKENS`, `NUCLEOS_TENANT`, `NUCLEOS_SUBJECT` | `nucleos tokens add`, hashed into the system store |
+| `NUCLEOS_MODEL_URL`, `_NAME`, `_KEY`, `_CONTEXT`, `_STRICT_TOOLS`, `_REASONING` | `nucleos models add`, a row in the system store |
+
+What remains is `NUCLEOS_MCP` and `NUCLEOS_POLICY`, both scheduled for the same treatment once their
+store-backed forms exist. Bootstrap paths are flags (`--root`, `--socket`) rather than variables,
+because a deployment's filesystem is a fact about where it runs, not configuration somebody types into
+a manifest.
+
+The daemon now starts with **no models at all** when the store has none: `describe` says so, and an
+agent session is refused with "routing chain is empty: a session needs at least one model" — which is a
+better answer than a daemon that will not start.
 
 [`config.md`](config.md) is the proposal that would replace it: `nucleos init` once, configuration in
 the store, a signed request per change, and two databases with two lifecycles.

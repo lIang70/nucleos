@@ -263,12 +263,24 @@ pub struct ModelRequest {
     pub url: String,
     /// The provider's model identifier.
     pub model: String,
-    /// Where the API key is, if the endpoint wants one. Absent falls back to `NUCLEOS_MODEL_KEY`.
+    /// Where the API key is, if the endpoint wants one.
+    ///
+    /// A path and the only source: there is no environment fallback, because a credential with two
+    /// sources has one that nobody rotates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_file: Option<String>,
     /// The context window, when the deployment knows better than the default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u32>,
+    /// Whether to hold the provider to a strict JSON Schema.
+    ///
+    /// Per model, because it is a property of the provider: a strict mode that rejects a schema is a
+    /// fact about one endpoint, not about the deployment.
+    #[serde(default)]
+    pub strict_tools: bool,
+    /// Whether this model accepts a reasoning effort.
+    #[serde(default)]
+    pub reasoning: bool,
 }
 
 /// A model, as the daemon reports it.
@@ -286,6 +298,12 @@ pub struct ModelView {
     /// Where its key is read from, if anywhere. A path, never the key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_file: Option<String>,
+    /// Whether the provider is held to a strict JSON Schema.
+    #[serde(default)]
+    pub strict_tools: bool,
+    /// Whether it accepts a reasoning effort.
+    #[serde(default)]
+    pub reasoning: bool,
 }
 
 /// The models this deployment has.

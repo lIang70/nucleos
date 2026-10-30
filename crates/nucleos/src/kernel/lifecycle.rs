@@ -65,6 +65,15 @@ impl Kernel {
         self.apply_patch(&mut session, &spec.config)?;
         self.seed_search_policy(&mut session);
         if session.kind == crate::contract::SessionKind::Agent {
+            // A session with no route takes the deployment's first model. Without this, a model added
+            // by request would be usable only by a session that named it, and every caller that
+            // relied on the default would keep failing until the daemon restarted — which is the
+            // change-not-surviving-a-restart problem, in the other direction.
+            if session.routing.chain.is_empty()
+                && let Some(first) = self.models().first()
+            {
+                session.routing.chain = vec![first.clone()];
+            }
             self.resolve_route(&session.routing)?;
         }
         self.emit_state(&mut session).await?;

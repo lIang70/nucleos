@@ -1278,3 +1278,39 @@ async fn every_change_lands_in_the_deployment_history() {
         "every row names who made the change"
     );
 }
+
+#[tokio::test]
+async fn a_model_added_by_request_is_visible_without_a_restart() {
+    let (app, key, key_id) = governable().await;
+
+    let (status, config) = signed(&app, &key, &key_id, "GET", "/v1/config", "").await;
+    assert_eq!(status, StatusCode::OK, "{config}");
+
+    signed(
+        &app,
+        &key,
+        &key_id,
+        "POST",
+        "/v1/models",
+        r#"{"name":"primary","url":"https://example.invalid/v1/responses","model":"m"}"#,
+    )
+    .await;
+
+    // `describe` is what a caller reads before opening a session. Two snapshots used to be frozen at
+    // start-up — the advertised list and the default route — so a model added by request worked for
+    // nobody but the session that named it.
+    let described = body_json(
+        router(Arc::clone(&app))
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/describe")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(described["models"], serde_json::json!(["primary"]));
+}
