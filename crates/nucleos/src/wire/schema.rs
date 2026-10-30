@@ -49,6 +49,14 @@ pub struct Abi {
     /// The fragment a turn left behind when it was cut short.
     pub partial_turn: k::PartialTurn,
     /// `GET /v1/config`.
+    pub model_request: api::ModelRequest,
+    /// One model, as reported.
+    pub model_view: api::ModelView,
+    /// `GET /v1/models`.
+    pub model_list_response: api::ModelListResponse,
+    /// `PUT /v1/policy` and other changes.
+    pub put_response: api::PutResponse,
+    /// `GET /v1/config`.
     pub config_response: api::ConfigResponse,
     /// `GET /v1/metrics`.
     pub metrics_response: api::MetricsResponse,

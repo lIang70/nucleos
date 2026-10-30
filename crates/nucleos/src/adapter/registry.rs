@@ -40,6 +40,12 @@ impl ModelRegistry {
 
     /// Every name, sorted.
     #[must_use]
+    /// Forget a model. `true` if it was there.
+    pub fn remove(&mut self, name: &str) -> bool {
+        self.models.remove(name).is_some()
+    }
+
+    /// The registered names, sorted.
     pub fn names(&self) -> Vec<String> {
         self.models.keys().cloned().collect()
     }

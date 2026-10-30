@@ -21,6 +21,23 @@ use std::sync::{Arc, Mutex};
 /// The version this build writes. A store with another version is refused rather than guessed at.
 pub const SCHEMA_VERSION: u32 = 1;
 
+/// One recorded configuration change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Change {
+    /// When it happened, unix milliseconds.
+    pub at_unix_millis: u64,
+    /// The tenant that made it.
+    pub tenant: String,
+    /// The subject within it.
+    pub subject: String,
+    /// Which administrator key signed it.
+    pub key_id: String,
+    /// What was changed: `policy`, `models`, `sources`, `tokens`, `admin_keys`.
+    pub key: String,
+    /// The new value, as stored.
+    pub value: String,
+}
+
 /// The daemon's own configuration database.
 #[derive(Debug, Clone)]
 pub struct SystemStore {
@@ -42,7 +59,19 @@ impl SystemStore {
                 "create table if not exists meta (
                      key   text primary key,
                      value text not null
-                 ) without rowid;",
+                 ) without rowid;
+
+                 -- Configuration changes, append-only. Here rather than in the session event log
+                 -- because a deployment that prunes session data must not prune its own audit trail:
+                 -- that is the reason the two databases are separate at all.
+                 create table if not exists history (
+                     at_unix_millis integer not null,
+                     subject        text    not null,
+                     tenant         text    not null,
+                     key_id         text    not null,
+                     key            text    not null,
+                     value          text    not null
+                 );",
             )
             .map_err(failed)?;
 
@@ -95,6 +124,55 @@ impl SystemStore {
             Ok(())
         })
         .await
+    }
+
+    /// Append one configuration change to the history.
+    ///
+    /// Append-only and never rewritten: what a deployment enforced last Tuesday is a fact about it,
+    /// and a record that can be edited answers no question worth asking.
+    pub async fn record(&self, change: Change) -> Result<()> {
+        self.run(move |connection| {
+            connection
+                .execute(
+                    "insert into history (at_unix_millis, subject, tenant, key_id, key, value)
+                     values (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        i64::try_from(change.at_unix_millis).unwrap_or(i64::MAX),
+                        change.subject,
+                        change.tenant,
+                        change.key_id,
+                        change.key,
+                        change.value
+                    ],
+                )
+                .map_err(failed)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// The history, newest last.
+    pub fn history(&self, limit: usize) -> Result<Vec<Change>> {
+        let connection = self.lock();
+        let mut statement = connection
+            .prepare(
+                "select at_unix_millis, tenant, subject, key_id, key, value
+                 from history order by at_unix_millis, rowid limit ?1",
+            )
+            .map_err(failed)?;
+        let rows = statement
+            .query_map(params![i64::try_from(limit).unwrap_or(i64::MAX)], |row| {
+                Ok(Change {
+                    at_unix_millis: row.get::<_, i64>(0)? as u64,
+                    tenant: row.get(1)?,
+                    subject: row.get(2)?,
+                    key_id: row.get(3)?,
+                    key: row.get(4)?,
+                    value: row.get(5)?,
+                })
+            })
+            .map_err(failed)?;
+        rows.collect::<std::result::Result<_, _>>().map_err(failed)
     }
 
     fn check_version(&self) -> Result<()> {

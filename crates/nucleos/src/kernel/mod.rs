@@ -51,7 +51,7 @@ use crate::contract::{
     Event, Generation, Ledger, Message, Routing, SessionId, SessionState, StopReason, Usage,
 };
 use crate::error::{Error, Result};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 /// What a caller asks for when starting or resuming a session.
 #[derive(Debug, Clone, Default)]
@@ -115,11 +115,14 @@ pub(crate) type ResolvedRoute = Vec<(String, Arc<dyn Model>)>;
 
 /// The kernel.
 pub struct Kernel {
-    models: ModelRegistry,
+    /// The models a route may name. Behind a lock because configuration is changeable at runtime:
+    /// adding one is a request, not a restart.
+    models: Arc<RwLock<ModelRegistry>>,
     /// Every tool set a live session may be pinned to, plus the current one.
     generations: std::sync::RwLock<generation::Generations>,
     store: Arc<dyn Store>,
-    policy: Arc<dyn Policy>,
+    /// Swappable: a deployment that can only tighten its policy by restarting will not tighten it.
+    policy: Arc<RwLock<Arc<dyn Policy>>>,
     clock: Arc<dyn Clock>,
     heartbeat: std::time::Duration,
     retries: u32,
@@ -174,7 +177,10 @@ impl Kernel {
     /// The registered model names, sorted.
     #[must_use]
     pub fn models(&self) -> Vec<String> {
-        self.models.names()
+        self.models
+            .read()
+            .map(|models| models.names())
+            .unwrap_or_default()
     }
     /// The tool set new sessions are pinned to.
     #[must_use]
@@ -219,7 +225,12 @@ impl Kernel {
 
     /// Resolve a route against the registry.
     pub fn resolve_route(&self, routing: &crate::contract::Routing) -> Result<ResolvedRoute> {
-        self.models.resolve(routing)
+        // Resolved out of the lock rather than inside it: the returned `Arc`s are what the call needs,
+        // and holding a read guard across an await would make every caller's future non-`Send`.
+        self.models
+            .read()
+            .map_err(|_| Error::internal("the model registry lock is poisoned"))?
+            .resolve(routing)
     }
 }
 
@@ -319,14 +330,15 @@ impl Builder {
     /// silently invented policy is how "deny by default" turns into "allow by accident".
     pub fn build(self) -> Result<Kernel> {
         Ok(Kernel {
-            models: self.models,
+            models: Arc::new(RwLock::new(self.models)),
             generations: std::sync::RwLock::new(generation::Generations::first(self.tools)?),
             store: self
                 .store
                 .ok_or_else(|| Error::internal("kernel needs a store"))?,
-            policy: self
-                .policy
-                .ok_or_else(|| Error::internal("kernel needs a policy"))?,
+            policy: Arc::new(RwLock::new(
+                self.policy
+                    .ok_or_else(|| Error::internal("kernel needs a policy"))?,
+            )),
             clock: self.clock.unwrap_or_else(|| Arc::new(SystemClock)),
             heartbeat: self.heartbeat,
             retries: self.retries,
@@ -337,8 +349,47 @@ impl Builder {
 }
 
 impl Kernel {
-    pub(crate) fn policy(&self) -> &Arc<dyn Policy> {
-        &self.policy
+    pub(crate) fn policy(&self) -> Arc<dyn Policy> {
+        self.policy
+            .read()
+            .map(|policy| Arc::clone(&policy))
+            .unwrap_or_else(|poisoned| Arc::clone(&poisoned.into_inner()))
+    }
+
+    /// Replace the policy in force.
+    ///
+    /// The next call sees it; a call already in flight keeps the one it started with, which is the
+    /// same rule session configuration follows. Recorded by the caller, because a policy change with
+    /// no line in a record is indistinguishable afterwards from a bug.
+    pub fn set_policy(&self, policy: Arc<dyn Policy>) -> Result<()> {
+        let mut current = self
+            .policy
+            .write()
+            .map_err(|_| Error::internal("the policy lock is poisoned"))?;
+        *current = policy;
+        Ok(())
+    }
+
+    /// Register a model for routes to name.
+    ///
+    /// Replacing an existing name is allowed and takes effect on the next route resolution; sessions
+    /// already in a call finish on the model they started with.
+    pub fn add_model(&self, name: &str, model: Arc<dyn Model>) -> Result<()> {
+        let mut models = self
+            .models
+            .write()
+            .map_err(|_| Error::internal("the model registry lock is poisoned"))?;
+        models.insert(name, model);
+        Ok(())
+    }
+
+    /// Forget a model. Routes that still name it fail at resolution, by name.
+    pub fn remove_model(&self, name: &str) -> Result<bool> {
+        let mut models = self
+            .models
+            .write()
+            .map_err(|_| Error::internal("the model registry lock is poisoned"))?;
+        Ok(models.remove(name))
     }
 
     /// The current time, from the injected clock.

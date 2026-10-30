@@ -881,3 +881,24 @@ either would be a signature over a verb. Captured on a `GET`, it would authorise
 the policy — which is why those two are lines in the canonical form and not assumptions about the
 transport.
 
+## 64. A configuration change is applied, then stored
+
+**Decision.** `PUT /v1/policy` swaps the kernel's policy first and writes the store second; a store
+failure leaves the daemon enforcing something it cannot explain.
+
+**Why that order.** The other one leaves a daemon reporting a change that never took effect: the
+operator reads `200 OK`, the endpoint still answers with the old policy, and the difference is invisible
+until somebody checks. A daemon whose store disagrees with its behaviour is a loud, recoverable state —
+it fails on restart, with a message — while a daemon that reports success it did not have is a lie with
+a delay fuse.
+
+**Why the history is in the system store.** The obvious place is the session event log, which already
+has sequence numbers and a replay. But that log is per session and is pruned; a deployment's own audit
+trail must outlive the sessions it audited. The two stores were split by lifecycle for exactly this
+reason, and putting configuration history in the prunable one would undo the split.
+
+**What is deliberately not in it.** API keys. A model takes a `key_file` path rather than a key,
+because the system store is backed up and copied, and a backup that contains a credential is a
+credential dump. Sealed credentials are designed (§4) and not built, and until they are, this is the
+honest shape.
+

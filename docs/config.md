@@ -16,6 +16,9 @@ Built, today:
   half goes to the keychain (or `--key-out` for a machine with no login session), the bootstrap policy
   written into the system store, and the client's socket discovery file. The daemon reads that policy
   instead of a file, so a fresh deployment needs no `NUCLEOS_POLICY` at all.
+- **The mutation surface**: `PUT /v1/policy`, `GET|POST /v1/models`, `DELETE /v1/models/{name}`, each
+  behind a signature, through `Kernel::check_config`, applied to the running kernel, stored, and
+  appended to the deployment's history. Models added this way survive a restart.
 - **Signed requests, and one endpoint to use them on.** `GET /v1/config` is the first
   administrator-authenticated route, and `nucleos config` is the first command that presents the key
   `init` created. The canonical form, the header, and the verifier share one definition
@@ -390,6 +393,17 @@ Deletion is the hard direction, and each kind has its own answer:
 | A token | immediate, because revocation that waits is not revocation |
 | An admin key | immediate; warn loudly if it was the last one — recovery is still possible locally, and locking yourself out is worse than a weaker fallback |
 
+## 8.1 Two things the mutation surface taught us
+
+**A mutation applies to the running kernel before it is stored.** The opposite order would leave a
+daemon reporting a change that had not taken effect; this order leaves a daemon enforcing something its
+store cannot explain if the write fails. The second is a loud, recoverable state; the first is a lie
+that survives until the next restart.
+
+**The new policy governs the next request, not the next restart.** A test asserts it by refusing the
+same administrator its own next change, one line after being allowed the previous one — which is what
+"read per call" has to mean if tightening during an incident is going to work at all.
+
 ## 9. What is *not* signable or changeable
 
 - **store path, socket, log format** — the identity of the process (§3.1).
@@ -417,7 +431,11 @@ Each step is useful on its own, and none of them requires the next.
 
    *Still missing:* the remote half — signed requests, and the ABI that carries them (§8). Until it
    exists, `init` creates an identity that nothing yet presents.
-4. **Configuration ABI** — `/v1/config`, models, sources, tokens, policy; one event per change.
+4. **Configuration ABI — partly done.** `/v1/config` (read), `PUT /v1/policy`, `GET|POST /v1/models`,
+   `DELETE /v1/models/{name}`. Each change is gated by `check_config`, applied to the running kernel,
+   stored, and appended to a history table in the **system store** — not to the session event log,
+   because a deployment that prunes session data must not prune its own audit trail, which is the
+   reason the two databases are separate. Still missing: `sources`, `tokens`, `admin_keys`.
 5. **CLI** — a thin client: send the request, print the event that was recorded.
 6. **Ed25519 signatures — done.** `KeyPair::sign_request` and the daemon's `Verifier`, with a
    canonical form defined once:

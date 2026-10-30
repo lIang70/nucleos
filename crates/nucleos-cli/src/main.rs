@@ -12,6 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match args.first().map(String::as_str) {
         Some("init") => init(&args[1..]),
         Some("config") => config(&args[1..]),
+        Some("models") => models(&args[1..]),
         Some("--help" | "-h") | None => {
             println!("{USAGE}");
             Ok(())
@@ -25,6 +26,9 @@ usage: nucleos <command> [options]
 
   init                 create a deployment: stores, recovery password, administrator key
   config               print what the daemon is running (signs the request)
+  models list          the models this deployment has
+  models add           add or replace one       (--name --url --model [--key-file] [--context])
+  models remove <name> remove one
   --help               this text
 
 init options:
@@ -38,7 +42,7 @@ init options:
   --no-client-config   do not write the socket discovery file
   --force              replace an existing deployment
 
-config options:
+remote options (config and models):
   --socket <path>      where the daemon listens     (default: the client config)
   --key-id <id>        which key signs               (default: the client config)
   --key-file <path>    read the private key from a file instead of the keychain
@@ -157,5 +161,53 @@ fn config(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync
         }
     }
     nucleos_cli::config::run(&options)?;
+    Ok(())
+}
+
+fn models(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let (command, rest) = match args.split_first() {
+        Some((command, rest)) => (command.as_str(), rest),
+        None => return Err(Box::from("models needs a subcommand: list, add or remove")),
+    };
+
+    let mut overrides = nucleos_cli::remote::Overrides::default();
+    let mut request = nucleos::wire::api::ModelRequest::default();
+    let mut positional: Option<String> = None;
+
+    let mut iter = rest.iter();
+    while let Some(arg) = iter.next() {
+        let mut value = |what: &str| -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+            iter.next()
+                .cloned()
+                .ok_or_else(|| Box::from(format!("{what} needs a value")))
+        };
+        match arg.as_str() {
+            "--socket" => overrides.socket = Some(PathBuf::from(value("--socket")?)),
+            "--key-id" => overrides.key_id = Some(value("--key-id")?),
+            "--key-file" => overrides.key_file = Some(PathBuf::from(value("--key-file")?)),
+            "--name" => request.name = value("--name")?,
+            "--url" => request.url = value("--url")?,
+            "--model" => request.model = value("--model")?,
+            "--key" => request.key_file = Some(value("--key")?),
+            "--context" => request.context_window = Some(value("--context")?.parse()?),
+            other if other.starts_with('-') => {
+                return Err(Box::from(format!("unknown option {other:?}")))
+            }
+            other => positional = Some(other.to_owned()),
+        }
+    }
+
+    let text = match command {
+        "list" => nucleos_cli::models::list(&overrides)?,
+        "add" => nucleos_cli::models::add(&overrides, &request)?,
+        "remove" => {
+            let name = positional.ok_or_else(|| Box::<dyn std::error::Error + Send + Sync>::from(
+                "models remove needs a name",
+            ))?;
+            nucleos_cli::models::remove(&overrides, &name)?
+        }
+        other => return Err(Box::from(format!("unknown models subcommand {other:?}"))),
+    };
+    println!("{text}");
     Ok(())
 }

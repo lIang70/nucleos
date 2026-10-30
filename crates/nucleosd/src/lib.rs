@@ -5,6 +5,7 @@
 
 pub mod admin;
 pub mod auth;
+pub mod configure;
 pub mod http;
 pub mod layout;
 pub mod metrics;

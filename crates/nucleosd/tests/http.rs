@@ -1030,3 +1030,219 @@ async fn a_signed_config_request_answers_with_what_the_daemon_is_running() {
     assert_eq!(config["policy_json"], r#"{"default":"deny","rules":[]}"#);
     assert_eq!(config["signed_body_bytes"], 0, "a read signs an empty body");
 }
+
+// ---------------------------------------------------------------------------
+// Configuration changes
+// ---------------------------------------------------------------------------
+
+/// Who may change what, in the fixture: one administrator, every subject, one tenant.
+const GOVERNED_BY: &str = r#"{
+  "default": "deny",
+  "rules": [
+    {"decision": "allow", "config": "*", "scope": "system", "tenant": "acme", "subject": "admin"}
+  ]
+}"#;
+
+/// A deployment that enforces the policy it stores, with one administrator enrolled.
+async fn governable() -> (Arc<App>, nucleos_auth::KeyPair, String) {
+    let system = Arc::new(nucleos_sqlite::SystemStore::in_memory().unwrap());
+    let key = nucleos_auth::KeyPair::generate();
+    let public = key.public("acme", "admin");
+    system
+        .set(
+            nucleosd::admin::ADMIN_KEYS_KEY,
+            &serde_json::to_string(&vec![public.clone()]).unwrap(),
+        )
+        .await
+        .unwrap();
+    system
+        .set(nucleosd::http::POLICY_KEY, nucleos_cli::init::BOOTSTRAP_POLICY)
+        .await
+        .unwrap();
+
+    // The kernel enforces the same policy that is stored, as the daemon does at start-up: a fixture
+    // with a permissive gate would test the endpoints without testing the thing in front of them.
+    let policy = nucleos_policy::Ruleset::new(
+        nucleos_policy::Document::parse(GOVERNED_BY).unwrap(),
+    )
+    .unwrap();
+    let kernel = nucleos::Kernel::builder()
+        .store(Arc::new(nucleos_sqlite::SqliteStore::in_memory().unwrap()))
+        .policy(Arc::new(policy))
+        .build()
+        .unwrap();
+    let app = Arc::new(
+        App::new(
+            Arc::new(kernel),
+            nucleos::contract::Principal::default(),
+            Vec::new(),
+        )
+        .with_system(
+            system,
+            std::path::PathBuf::from("/var/lib/nucleos"),
+            Arc::new(nucleos::adapter::SystemClock),
+        ),
+    );
+    let id = public.id.clone();
+    (app, key, id)
+}
+
+async fn signed(
+    app: &Arc<App>,
+    key: &nucleos_auth::KeyPair,
+    key_id: &str,
+    method: &str,
+    path: &str,
+    body: &str,
+) -> (StatusCode, serde_json::Value) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let authorization = key.sign_request(key_id, method, path, body.as_bytes(), now);
+    let response = router(Arc::clone(app))
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(path)
+                .header("authorization", authorization)
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_owned()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    (status, body_json(response).await)
+}
+
+#[tokio::test]
+async fn a_policy_change_is_applied_and_recorded() {
+    let (app, key, key_id) = governable().await;
+    let document = r#"{"default":"deny","rules":[{"decision":"allow","config":"*","scope":"system"}]}"#;
+
+    let (status, reply) = signed(&app, &key, &key_id, "PUT", "/v1/policy", document).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["changed"], "policy");
+    assert_eq!(reply["rules"], 1);
+
+    // The new policy is what the endpoint reports afterwards, and what the store keeps.
+    let (status, config) = signed(&app, &key, &key_id, "GET", "/v1/config", "").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(config["policy_json"], document);
+}
+
+#[tokio::test]
+async fn an_invalid_policy_is_refused_before_it_is_stored() {
+    let (app, key, key_id) = governable().await;
+    let (status, error) = signed(
+        &app,
+        &key,
+        &key_id,
+        "PUT",
+        "/v1/policy",
+        r#"{"rules":[{"decision":"allow"}]}"#,
+    )
+    .await;
+    // A rule that names nothing is a caller error, not a policy.
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+    assert!(error["reason"].as_str().unwrap().contains("matches nothing"), "{error}");
+}
+
+#[tokio::test]
+async fn a_model_can_be_added_listed_and_removed() {
+    let (app, key, key_id) = governable().await;
+    let model = r#"{"name":"primary","url":"https://example.invalid/v1/responses","model":"m"}"#;
+
+    let (status, added) = signed(&app, &key, &key_id, "POST", "/v1/models", model).await;
+    assert_eq!(status, StatusCode::OK, "{added}");
+    assert_eq!(added["name"], "primary");
+
+    let (status, list) = signed(&app, &key, &key_id, "GET", "/v1/models", "").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(list["models"][0]["name"], "primary");
+
+    let (status, list) =
+        signed(&app, &key, &key_id, "DELETE", "/v1/models/primary", "").await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    assert!(list["models"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_change_the_policy_does_not_allow_is_403_not_401() {
+    // A key that is valid, and an administrator the policy does not let change the policy. The
+    // signature is fine; the authority is not — which is a different status code from a missing
+    // credential, and the whole reason `check_config` exists separately from the signature check.
+    let (app, _, _) = governable().await;
+    let outsider = nucleos_auth::KeyPair::generate();
+    let public = outsider.public("acme", "intern");
+    app.system()
+        .unwrap()
+        .set(
+            nucleosd::admin::ADMIN_KEYS_KEY,
+            &serde_json::to_string(&vec![public.clone()]).unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let (status, error) = signed(
+        &app,
+        &outsider,
+        &public.id,
+        "PUT",
+        "/v1/policy",
+        r#"{"default":"allow","rules":[]}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{error}");
+    assert!(
+        error["reason"].as_str().unwrap().contains("configuration"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn a_new_policy_governs_the_next_request() {
+    let (app, key, key_id) = governable().await;
+
+    // Replacing the policy is allowed while the old one allows it…
+    let (status, _) = signed(&app, &key, &key_id, "PUT", "/v1/policy", r#"{"default":"deny","rules":[]}"#).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // …and the new one takes effect on the very next request, not at the next restart. The same
+    // administrator, the same key, now refuses itself: that is what "read per call" means.
+    let (status, error) = signed(
+        &app,
+        &key,
+        &key_id,
+        "POST",
+        "/v1/models",
+        r#"{"name":"m","url":"https://example.invalid/v1/responses","model":"x"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{error}");
+}
+
+#[tokio::test]
+async fn every_change_lands_in_the_deployment_history() {
+    let (app, key, key_id) = governable().await;
+    // A policy that keeps this administrator able to change models, so both changes below succeed.
+    signed(&app, &key, &key_id, "PUT", "/v1/policy", GOVERNED_BY).await;
+    signed(
+        &app,
+        &key,
+        &key_id,
+        "POST",
+        "/v1/models",
+        r#"{"name":"m","url":"https://example.invalid/v1/responses","model":"x"}"#,
+    )
+    .await;
+
+    let history = app.system().unwrap().history(10).unwrap();
+    let keys: Vec<&str> = history.iter().map(|change| change.key.as_str()).collect();
+    assert_eq!(keys, ["policy", "models"], "{history:?}");
+    assert!(
+        history.iter().all(|change| change.subject == "admin"),
+        "every row names who made the change"
+    );
+}

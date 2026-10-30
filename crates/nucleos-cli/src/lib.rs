@@ -15,5 +15,7 @@
 pub mod client;
 pub mod config;
 pub mod init;
+pub mod models;
+pub mod remote;
 
 pub use init::{Done, Options, run};

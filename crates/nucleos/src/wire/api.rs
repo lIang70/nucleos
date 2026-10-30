@@ -204,6 +204,61 @@ pub struct DescribeResponse {
     pub generation: u64,
 }
 
+/// One model to add or replace.
+///
+/// No API key: `key_file` names a path. The system store is backed up and copied, and a store that
+/// contains a credential turns every backup into a credential dump.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ModelRequest {
+    /// The name a route uses.
+    pub name: String,
+    /// The responses endpoint, in full.
+    pub url: String,
+    /// The provider's model identifier.
+    pub model: String,
+    /// Where the API key is, if the endpoint wants one. Absent falls back to `NUCLEOS_MODEL_KEY`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_file: Option<String>,
+    /// The context window, when the deployment knows better than the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
+}
+
+/// A model, as the daemon reports it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ModelView {
+    /// The name routes use.
+    pub name: String,
+    /// The endpoint.
+    pub url: String,
+    /// The provider's identifier.
+    pub model: String,
+    /// The context window in force.
+    #[serde(default)]
+    pub context_window: u32,
+    /// Where its key is read from, if anywhere. A path, never the key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_file: Option<String>,
+}
+
+/// The models this deployment has.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ModelListResponse {
+    /// In the order they were added.
+    #[serde(default)]
+    pub models: Vec<ModelView>,
+}
+
+/// What a change did.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct PutResponse {
+    /// Which setting changed.
+    pub changed: String,
+    /// How many rules the new policy has, when it was a policy.
+    #[serde(default)]
+    pub rules: usize,
+}
+
 /// What this daemon is running.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct ConfigResponse {

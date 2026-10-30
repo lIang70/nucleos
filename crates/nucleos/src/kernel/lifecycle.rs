@@ -65,7 +65,7 @@ impl Kernel {
         self.apply_patch(&mut session, &spec.config)?;
         self.seed_search_policy(&mut session);
         if session.kind == crate::contract::SessionKind::Agent {
-            self.models.resolve(&session.routing)?;
+            self.resolve_route(&session.routing)?;
         }
         self.emit_state(&mut session).await?;
         self.write_checkpoint(&session).await?;

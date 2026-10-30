@@ -21,4 +21,4 @@ mod store;
 mod system;
 
 pub use store::SqliteStore;
-pub use system::{SCHEMA_VERSION, SystemStore};
+pub use system::{Change, SCHEMA_VERSION, SystemStore};

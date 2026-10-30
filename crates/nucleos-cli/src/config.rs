@@ -1,22 +1,15 @@
-//! `nucleos config`: read back what a deployment is running, with a signature.
+//! `nucleos config`: read back what a deployment is running.
 //!
-//! The first command that presents the key `nucleos init` created. It is a read, deliberately: the
-//! mechanism that proves who is asking arrives before the surface that changes anything, so an
+//! The first command that presents the key `nucleos init` created, and a read deliberately: the
+//! mechanism that proves who is asking arrived before the surface that changes anything, so an
 //! administrator can confirm the policy, the enrolled keys and the generation in force without a
 //! mutation existing yet.
 //!
-//! Where the pieces come from, in order of preference — each one overridable, because a script may know
-//! better than a file written at `init` time:
-//!
-//! | Piece | Default | Override |
-//! | --- | --- | --- |
-//! | socket | the client config file | `--socket` |
-//! | key id | the client config file | `--key-id` |
-//! | private key | the keychain entry for that id | `--key-file` |
+//! Where the pieces come from is [`crate::remote`]'s business; what is left here is the client config
+//! `init` writes and the one-line `key=value` format that a person may want to read.
 
-use crate::client;
+use crate::remote::{Overrides, Remote};
 use nucleos::error::{Error, Result};
-use nucleos_auth::{KeyPair, KeyStore};
 use std::path::{Path, PathBuf};
 
 /// What the operator said.
@@ -30,6 +23,17 @@ pub struct Options {
     pub key_file: Option<PathBuf>,
     /// The client config written by `init`.
     pub client_config: Option<PathBuf>,
+}
+
+impl Options {
+    fn overrides(&self) -> Overrides {
+        Overrides {
+            socket: self.socket.clone(),
+            key_id: self.key_id.clone(),
+            key_file: self.key_file.clone(),
+            client_config: self.client_config.clone(),
+        }
+    }
 }
 
 /// The client config, as `init` writes it.
@@ -85,51 +89,10 @@ impl ClientConfig {
 
 /// Read what the daemon is running, and print it.
 pub fn run(options: &Options) -> Result<()> {
-    let config = match &options.client_config {
-        Some(path) => ClientConfig::load(path)?,
-        None => ClientConfig::default(),
-    };
-    let socket = options
-        .socket
-        .clone()
-        .or(config.socket)
-        .ok_or_else(|| {
-            Error::invalid(
-                "no socket: pass --socket, or run `nucleos init` so a client config exists",
-            )
-        })?;
-    let key_id = options.key_id.clone().or(config.key).ok_or_else(|| {
-        Error::invalid(
-            "no key: pass --key-id, or run `nucleos init` so a client config names one",
-        )
-    })?;
-
-    // The private key never lives next to the socket path in a file the client config names: it comes
-    // from the keychain, or from an explicitly named file for a machine that has no keychain.
-    let store = match &options.key_file {
-        Some(path) => KeyStore::File(path.clone()),
-        None => KeyStore::keychain(key_id.clone()),
-    };
-    let key = KeyPair::from_secret(&store.get()?)?;
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis() as u64)
-        .unwrap_or(0);
-    let authorization = key.sign_request(&key_id, "GET", "/v1/config", b"", now);
-
-    let response = client::request(&socket, "GET", "/v1/config", b"", &authorization)?;
-    if response.status != 200 {
-        return Err(Error::new(
-            nucleos::contract::ErrorCode::Denied,
-            format!(
-                "the daemon refused the request ({}): {}",
-                response.status,
-                response.body.trim()
-            ),
-        ));
-    }
-    println!("{}", response.body.trim());
+    println!(
+        "{}",
+        Remote::open(&options.overrides())?.call("GET", "/v1/config", b"")?
+    );
     Ok(())
 }
 

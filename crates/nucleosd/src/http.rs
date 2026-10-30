@@ -12,7 +12,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event as SseEvent, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{MethodRouter, get, post};
+use axum::routing::{MethodRouter, delete, get, post, put};
 use axum::{Json, Router};
 use nucleos::contract::{ErrorCode, Principal, SessionId, SessionState};
 use nucleos_sqlite::SqliteStore;
@@ -312,13 +312,18 @@ impl App {
         }
         let kernel = builder.build()?;
 
-        let app = Self::new(
-            Arc::new(kernel),
-            Self::unconfigured().principal,
-            vec![model],
-        )
+        // Models a previous run stored are registered now, before the first request: a change that
+        // did not survive a restart would be a change the operator was told had succeeded.
+        let system = Arc::new(nucleos_sqlite::SystemStore::open(layout.system_store())?);
+        let stored = crate::configure::load_stored_models(&kernel, &system)?;
+        let mut models = vec![model];
+        models.extend(stored.into_iter().map(|model| model.name));
+        models.sort();
+        models.dedup();
+
+        let app = Self::new(Arc::new(kernel), Self::unconfigured().principal, models)
         .with_system(
-            Arc::new(nucleos_sqlite::SystemStore::open(layout.system_store())?),
+            system,
             layout.root.clone(),
             Arc::new(nucleos::adapter::SystemClock),
         )
@@ -386,7 +391,7 @@ impl App {
         self.root.as_deref()
     }
 
-    fn kernel(&self) -> Result<&Arc<Kernel>, ApiError> {
+    pub(crate) fn kernel(&self) -> Result<&Arc<Kernel>, ApiError> {
         self.kernel.as_ref().ok_or_else(|| {
             ApiError::from_error(&nucleos::Error::unavailable(
                 "no deployment is configured: the daemon has no models or tools",
@@ -541,6 +546,50 @@ pub const ROUTES: &[Route] = &[
             reply: openapi::Reply::Json("ExecOutput"),
         },
         build: || post(wait_process),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "put",
+            path: "/v1/policy",
+            operation: "putPolicy",
+            summary: "Replace the policy in force. Signed, gated, and recorded.",
+            request: None,
+            reply: openapi::Reply::Json("PutResponse"),
+        },
+        build: || put(crate::configure::put_policy),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "get",
+            path: "/v1/models",
+            operation: "listModels",
+            summary: "The models this deployment has.",
+            request: None,
+            reply: openapi::Reply::Json("ModelListResponse"),
+        },
+        build: || get(crate::configure::list_models),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "post",
+            path: "/v1/models",
+            operation: "addModel",
+            summary: "Add or replace a model. Signed, gated, and recorded.",
+            request: Some("ModelRequest"),
+            reply: openapi::Reply::Json("ModelView"),
+        },
+        build: || post(crate::configure::post_model),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "delete",
+            path: "/v1/models/{name}",
+            operation: "removeModel",
+            summary: "Remove a model.",
+            request: None,
+            reply: openapi::Reply::Json("ModelListResponse"),
+        },
+        build: || delete(crate::configure::delete_model),
     },
     Route {
         meta: openapi::Route {
