@@ -756,3 +756,21 @@ output is a documented gap and a note in the code at the exact line that would n
 handle (unreachable). Both compiled. Neither worked. A test against the real fixture caught the first;
 reading the dependency's source caught the second.
 
+## 57. An id is not an identity
+
+**Decision.** The snapshot records its owner (`Principal`), `load` refuses a session belonging to
+another principal with `NotFound`, and `open` refuses an id another tenant already owns.
+
+**Why.** The store keys sessions by id alone and `load` took the *caller's* principal as the session's.
+With one tenant that is invisible; with two it means the first caller to guess `s1` reads somebody
+else's history, is billed for nothing, and can close their work. The multi-tenant token file made the
+hole reachable, so it was fixed in the same change rather than after it.
+
+**Why `NotFound` and not `Denied`.** "This exists but is not yours" answers a question the caller had
+no right to ask: it enumerates the identifiers other tenants use. A missing row and a row that is not
+yours look the same from outside, which is the point.
+
+**What is still absent.** Two tenants cannot use the same session id: the store has one id space, so a
+collision is refused rather than namespaced. Making it `(tenant, id)` is a store schema change, and it
+only becomes urgent when a caller needs to choose its own ids across tenants.
+

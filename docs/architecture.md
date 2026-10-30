@@ -740,9 +740,18 @@ workspace forbids. So the check is pushed to the one place that can enforce it w
 filesystem — rather than left to a comment claiming a check that does not exist.
 
 A token exempted from any route is not a token: `describe` leaks the model and tool names, so it is
-behind the same check as everything else. Multi-tenant identity is deliberately absent: one token is
-one principal, and splitting it needs the kernel's `(tenant, session)` key to be reachable per
-request, which is a change to this file and a larger one to the ABI.
+behind the same check as everything else.
+
+**Several callers: `NUCLEOS_TOKENS`.** A JSON document maps each token to a tenant and a subject;
+the middleware resolves the caller and puts the principal on the request, so a handler reads *its*
+caller and not the daemon's. With one token, `NUCLEOS_TOKEN` and `NUCLEOS_PRINCIPAL` still work.
+
+**Tenant isolation is the kernel's job, and it was missing.** The store keys sessions by id alone, and
+`load` used to take the caller's principal as the session's — so the first tenant to guess an id could
+read another's history. The snapshot now records its owner, `load` refuses a mismatch with `NotFound`
+(not `Denied`: a refusal that says "this exists but is not yours" is a directory of other tenants'
+names), and `open` refuses an id that already belongs to somebody else. Two tenants can therefore
+share a daemon, and cannot share an identifier.
 
 ## 12. Telemetry
 

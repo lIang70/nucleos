@@ -14,6 +14,16 @@ impl Kernel {
         id: SessionId,
         spec: SessionSpec,
     ) -> Result<session::Session> {
+        // An identifier belongs to whoever created it. Without this, a second tenant opening "s1"
+        // would take over the first tenant's history rather than starting its own.
+        if let Some(existing) = self.store.snapshot(&id).await?
+            && existing.principal != *principal
+        {
+            return Err(Error::denied(format!(
+                "session {id} belongs to another tenant"
+            )));
+        }
+
         let now = self.now();
         let mut session = session::Session::new(
             id,
@@ -68,6 +78,13 @@ impl Kernel {
             .snapshot(id)
             .await?
             .ok_or_else(|| Error::not_found(format!("no checkpoint for session {id}")))?;
+
+        // The store keys sessions by id alone, so this is the check that makes an id private to its
+        // tenant. `NotFound` rather than `Denied`: a refusal that says "this exists but is not yours"
+        // tells a caller which identifiers other tenants are using.
+        if snapshot.principal != *principal {
+            return Err(Error::not_found(format!("no session {id}")));
+        }
         let mut session = session::Session::from_snapshot(
             snapshot.clone(),
             principal.clone(),

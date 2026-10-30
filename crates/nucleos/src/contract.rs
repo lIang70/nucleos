@@ -782,6 +782,17 @@ pub struct Principal {
     pub subject: String,
 }
 
+impl Default for Principal {
+    /// Nobody. Used as the "unknown owner" value for a snapshot written before the field existed,
+    /// never as an authenticated identity — a caller with an empty tenant never matches a real one.
+    fn default() -> Self {
+        Self {
+            tenant: String::new(),
+            subject: String::new(),
+        }
+    }
+}
+
 /// A tool, declared.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ToolSpec {
@@ -839,6 +850,13 @@ pub struct PendingCall {
 pub struct Snapshot {
     /// The session it belongs to.
     pub session: SessionId,
+    /// Who owns it.
+    ///
+    /// Recorded because the store keys sessions by id alone: without this, a second tenant could
+    /// load the first tenant's session by guessing its name. `load` refuses a mismatch, and an
+    /// identifier that already belongs to somebody else cannot be opened.
+    #[serde(default)]
+    pub principal: Principal,
     /// The last event folded in.
     pub seq: u64,
     /// The tool-source generation the session is pinned to.

@@ -343,6 +343,7 @@ async fn a_snapshot_cannot_claim_more_than_the_log_holds() -> Result<()> {
     store.append(&session, &[event(&session, 0)]).await?;
 
     let snapshot = Snapshot {
+        principal: Default::default(),
         session: session.clone(),
         seq: 3,
         generation: nucleos::Generation(1),
@@ -387,6 +388,7 @@ async fn a_valid_snapshot_round_trips() -> Result<()> {
     };
     store
         .write_snapshot(Snapshot {
+            principal: Default::default(),
             session: session.clone(),
             seq: 0,
             generation: nucleos::Generation(7),

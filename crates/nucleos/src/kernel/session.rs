@@ -308,6 +308,7 @@ impl Session {
         }
         Some(Snapshot {
             session: self.id.clone(),
+            principal: self.principal.clone(),
             seq: self.seq.load(std::sync::atomic::Ordering::SeqCst) - 1,
             generation: self.generation,
             state: self.state,

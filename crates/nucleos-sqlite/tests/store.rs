@@ -218,6 +218,7 @@ async fn a_session_survives_the_process_that_wrote_it() {
 /// A checkpoint with no content, for the tests that are about the log rather than about a turn.
 fn snapshot_for(session: &SessionId) -> nucleos::contract::Snapshot {
     nucleos::contract::Snapshot {
+        principal: Default::default(),
         session: session.clone(),
         seq: 0,
         generation: nucleos::contract::Generation(0),

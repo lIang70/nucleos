@@ -32,6 +32,35 @@ use tokio_stream::StreamExt;
 /// The ABI version this daemon speaks.
 pub const ABI_VERSION: &str = "v1";
 
+/// The authenticated caller, as the middleware left it on the request.
+///
+/// An extractor rather than a field on `App`: with more than one token the daemon's principal is not
+/// the caller's, and reading it from the app would attribute every session to whoever the deployment
+/// configured first.
+pub struct Caller(pub Principal);
+
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for Caller {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        parts
+            .extensions
+            .get::<Principal>()
+            .cloned()
+            .map(Caller)
+            .ok_or_else(|| {
+                // Only reachable if a route were mounted outside the authentication layer, which is
+                // a wiring bug rather than a caller error.
+                ApiError::from_error(&nucleos::Error::internal(
+                    "no authenticated principal on the request",
+                ))
+            })
+    }
+}
+
 /// What every handler shares.
 pub struct App {
     /// `None` until a deployment is configured.
@@ -51,11 +80,12 @@ pub struct App {
     source: Option<nucleos_mcp::McpSource>,
     /// What this daemon has done since it started.
     metrics: crate::metrics::Metrics,
-    /// The bearer token every request must present, when one is configured.
+    /// Who may call, and who each caller is.
     ///
-    /// `None` means the daemon trusts its socket's permissions, which is a decision about where it
-    /// is listening — not one this struct can make for it.
-    token: Option<String>,
+    /// With no tokens configured the socket's permissions are the authentication and every call is
+    /// attributed to one principal — a decision about where the daemon is listening, not one this
+    /// struct can make for it.
+    tokens: crate::auth::Tokens,
 }
 
 impl App {
@@ -64,11 +94,11 @@ impl App {
     pub fn new(kernel: Arc<Kernel>, principal: Principal, models: Vec<String>) -> Self {
         Self {
             kernel: Some(kernel),
+            tokens: crate::auth::Tokens::confined_to(principal.clone()),
             principal,
             models,
             tools: std::sync::RwLock::new(Vec::new()),
             source: None,
-            token: None,
             metrics: crate::metrics::Metrics::started_now(),
         }
     }
@@ -79,11 +109,24 @@ impl App {
         &self.metrics
     }
 
-    /// Require a bearer token on every request.
+    /// Require one of these tokens on every request.
     #[must_use]
-    pub fn with_token(mut self, token: Option<String>) -> Self {
-        self.token = token.filter(|token| !token.is_empty());
+    pub fn with_tokens(mut self, tokens: crate::auth::Tokens) -> Self {
+        self.tokens = tokens;
         self
+    }
+
+    /// Require one token on every request, attributed to the principal this daemon already had.
+    #[must_use]
+    pub fn with_token(self, token: Option<String>) -> Self {
+        match token.filter(|token| !token.is_empty()) {
+            Some(token) => {
+                let principal = self.principal.clone();
+                let tokens = crate::auth::Tokens::single(token, principal);
+                self.with_tokens(tokens)
+            }
+            None => self,
+        }
     }
 
     /// Remember the tool source, so `POST /v1/tools/reload` has something to reconnect.
@@ -197,12 +240,29 @@ impl App {
         } else {
             SqliteStore::open(&path)?
         };
-        let token = std::env::var("NUCLEOS_TOKEN").ok();
-        if token.as_deref().is_some_and(str::is_empty) {
-            return Err(nucleos::Error::invalid(
-                "NUCLEOS_TOKEN is set but empty: unset it to rely on the socket, or give it a value",
-            ));
-        }
+        // Two shapes, one meaning: a token file for a deployment with several callers, a single
+        // token for one, and neither means the socket's permissions are the authentication.
+        let tokens = match std::env::var("NUCLEOS_TOKENS") {
+            Ok(path) => crate::auth::Tokens::load(&path)?,
+            Err(_) => match std::env::var("NUCLEOS_TOKEN") {
+                Ok(token) if !token.is_empty() => crate::auth::Tokens::single(
+                    token,
+                    nucleos::contract::Principal {
+                        tenant: std::env::var("NUCLEOS_TENANT")
+                            .unwrap_or_else(|_| "default".to_owned()),
+                        subject: std::env::var("NUCLEOS_SUBJECT")
+                            .unwrap_or_else(|_| "local".to_owned()),
+                    },
+                ),
+                Ok(_) => {
+                    return Err(nucleos::Error::invalid(
+                        "NUCLEOS_TOKEN is set but empty: unset it to rely on the socket, or give \
+                         it a value",
+                    ));
+                }
+                Err(_) => crate::auth::Tokens::confined_to(Self::unconfigured().principal),
+            },
+        };
         let policy = load_policy(std::env::var("NUCLEOS_POLICY").ok())?;
         let mut builder = Kernel::builder()
             .model(&model, Arc::new(adapter))
@@ -220,7 +280,7 @@ impl App {
             vec![model],
         )
         .with_tools(discovered)
-        .with_token(token);
+        .with_tokens(tokens);
         Ok(match configured_source {
             Some(source) => app.with_source(source),
             None => app,
@@ -239,7 +299,7 @@ impl App {
             models: Vec::new(),
             tools: std::sync::RwLock::new(Vec::new()),
             source: None,
-            token: None,
+            tokens: crate::auth::Tokens::default(),
             metrics: crate::metrics::Metrics::started_now(),
         }
     }
@@ -528,8 +588,14 @@ async fn authenticate(
         .headers()
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok());
-    match crate::auth::authorize(app.token.as_deref(), header) {
-        Ok(()) => next.run(request).await,
+    match app.tokens.authenticate(header) {
+        Ok(principal) => {
+            // The identity travels with the request: a handler that read it from the app would be
+            // reading the daemon's, which is the same only when there is one caller.
+            let mut request = request;
+            request.extensions_mut().insert(principal);
+            next.run(request).await
+        }
         Err(error) => {
             tracing::warn!(event = "request_refused", reason = %error.reason());
             let (status, body) = crate::auth::refusal(&error);
@@ -620,6 +686,7 @@ async fn reload(State(app): State<Arc<App>>) -> Result<Json<ReloadResponse>, Api
 /// Open a session and run the reference loop to completion.
 async fn run_agent(
     State(app): State<Arc<App>>,
+    caller: Caller,
     Json(request): Json<StartRequest>,
 ) -> Result<Json<StartResponse>, ApiError> {
     let kernel = app.kernel()?.clone();
@@ -627,9 +694,9 @@ async fn run_agent(
     let spec: SessionSpec = request.clone().into();
     let id = SessionId::new(request.session_id());
     let outcome = if request.resume {
-        agent::resume(&kernel, &app.principal, &id).await
+        agent::resume(&kernel, &caller.0, &id).await
     } else {
-        agent::start(&kernel, &app.principal, id, spec).await
+        agent::start(&kernel, &caller.0, id, spec).await
     }
     .map_err(|error| ApiError::from_error(&error))?;
     Ok(Json(StartResponse::from(&outcome)))
@@ -638,13 +705,14 @@ async fn run_agent(
 /// Open a session without driving it.
 async fn open(
     State(app): State<Arc<App>>,
+    caller: Caller,
     Json(request): Json<StartRequest>,
 ) -> Result<Json<StartResponse>, ApiError> {
     let kernel = app.kernel()?.clone();
     app.metrics().session_opened();
     let spec: SessionSpec = request.clone().into();
     let session = kernel
-        .open(&app.principal, SessionId::new(request.session_id()), spec)
+        .open(&caller.0, SessionId::new(request.session_id()), spec)
         .await
         .map_err(|error| ApiError::from_error(&error))?;
     Ok(Json(StartResponse {
@@ -657,10 +725,11 @@ async fn open(
 
 async fn view(
     State(app): State<Arc<App>>,
+    caller: Caller,
     Path(id): Path<String>,
 ) -> Result<Json<SessionView>, ApiError> {
     let kernel = app.kernel()?.clone();
-    let session = load(&kernel, &app, &id).await?;
+    let session = load(&kernel, &caller, &id).await?;
     Ok(Json(SessionView {
         session: session.id().as_str().to_owned(),
         state: if session.is_closed() {
@@ -680,11 +749,12 @@ async fn view(
 
 async fn inference(
     State(app): State<Arc<App>>,
+    caller: Caller,
     Path(id): Path<String>,
     Json(request): Json<InferenceRequest>,
 ) -> Result<Json<InferenceResponse>, ApiError> {
     let kernel = app.kernel()?.clone();
-    let mut session = load(&kernel, &app, &id).await?;
+    let mut session = load(&kernel, &caller, &id).await?;
     let outcome = kernel
         .inference(&mut session, &request.messages)
         .await
@@ -698,11 +768,12 @@ async fn inference(
 
 async fn tools(
     State(app): State<Arc<App>>,
+    caller: Caller,
     Path(id): Path<String>,
     Json(request): Json<ToolBatchRequest>,
 ) -> Result<Json<ToolBatchResponse>, ApiError> {
     let kernel = app.kernel()?.clone();
-    let mut session = load(&kernel, &app, &id).await?;
+    let mut session = load(&kernel, &caller, &id).await?;
     let outputs = kernel
         .invoke_tools(&mut session, &request.calls)
         .await
@@ -722,11 +793,12 @@ async fn tools(
 
 async fn append(
     State(app): State<Arc<App>>,
+    caller: Caller,
     Path(id): Path<String>,
     Json(request): Json<StateRequest>,
 ) -> Result<StatusCode, ApiError> {
     let kernel = app.kernel()?.clone();
-    let mut session = load(&kernel, &app, &id).await?;
+    let mut session = load(&kernel, &caller, &id).await?;
     kernel
         .append(
             &mut session,
@@ -746,6 +818,7 @@ async fn append(
 /// thing whose *launch* has to be gated, and the gate needs to see the policy and the argv together.
 async fn start_process(
     State(app): State<Arc<App>>,
+    caller: Caller,
     Json(request): Json<ProcessStartRequest>,
 ) -> Result<Json<ProcessStartResponse>, ApiError> {
     let kernel = app.kernel()?.clone();
@@ -776,7 +849,7 @@ async fn start_process(
     };
 
     let session = kernel
-        .spawn(&app.principal, id, spec)
+        .spawn(&caller.0, id, spec)
         .await
         .map_err(|error| ApiError::from_error(&error))?;
 
@@ -860,11 +933,12 @@ async fn list_processes(
 
 async fn write_stdin(
     State(app): State<Arc<App>>,
+    caller: Caller,
     Path(id): Path<String>,
     Json(request): Json<StdinRequest>,
 ) -> Result<StatusCode, ApiError> {
     let kernel = app.kernel()?.clone();
-    let session = load(&kernel, &app, &id).await?;
+    let session = load(&kernel, &caller, &id).await?;
     kernel
         .write_stdin(&session, &request.chunk)
         .await
@@ -874,10 +948,11 @@ async fn write_stdin(
 
 async fn signal_process(
     State(app): State<Arc<App>>,
+    caller: Caller,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     let kernel = app.kernel()?.clone();
-    let session = load(&kernel, &app, &id).await?;
+    let session = load(&kernel, &caller, &id).await?;
     kernel
         .signal(&session)
         .await
@@ -887,10 +962,11 @@ async fn signal_process(
 
 async fn wait_process(
     State(app): State<Arc<App>>,
+    caller: Caller,
     Path(id): Path<String>,
 ) -> Result<Json<nucleos::contract::ExecOutput>, ApiError> {
     let kernel = app.kernel()?.clone();
-    let session = load(&kernel, &app, &id).await?;
+    let session = load(&kernel, &caller, &id).await?;
     let output = kernel
         .wait(&session)
         .await
@@ -905,11 +981,12 @@ async fn wait_process(
 /// sandbox.
 async fn configure(
     State(app): State<Arc<App>>,
+    caller: Caller,
     Path(id): Path<String>,
     Json(patch): Json<nucleos::contract::ConfigPatch>,
 ) -> Result<Json<nucleos::wire::api::ConfigureResponse>, ApiError> {
     let kernel = app.kernel()?.clone();
-    let mut session = load(&kernel, &app, &id).await?;
+    let mut session = load(&kernel, &caller, &id).await?;
     let changed = kernel
         .configure(&mut session, patch)
         .await
@@ -921,10 +998,11 @@ async fn configure(
 
 async fn close(
     State(app): State<Arc<App>>,
+    caller: Caller,
     Path(id): Path<String>,
 ) -> Result<Json<StartResponse>, ApiError> {
     let kernel = app.kernel()?.clone();
-    let mut session = load(&kernel, &app, &id).await?;
+    let mut session = load(&kernel, &caller, &id).await?;
     kernel
         .close(&mut session, nucleos::contract::StopReason::Cancelled)
         .await
@@ -939,13 +1017,14 @@ async fn close(
 
 async fn verdict(
     State(app): State<Arc<App>>,
+    caller: Caller,
     Path(id): Path<String>,
     Json(request): Json<VerdictRequest>,
 ) -> Result<Json<StartResponse>, ApiError> {
     let kernel = app.kernel()?.clone();
     let outcome = agent::answer(
         &kernel,
-        &app.principal,
+        &caller.0,
         &SessionId::new(id),
         HitlVerdict {
             tool_call_id: request.tool_call_id,
@@ -996,9 +1075,13 @@ async fn events(
     Ok(Sse::new(stream))
 }
 
-async fn load(kernel: &Kernel, app: &App, id: &str) -> Result<nucleos::kernel::Session, ApiError> {
+async fn load(
+    kernel: &Kernel,
+    caller: &Caller,
+    id: &str,
+) -> Result<nucleos::kernel::Session, ApiError> {
     kernel
-        .load(&app.principal, &SessionId::new(id))
+        .load(&caller.0, &SessionId::new(id))
         .await
         .map_err(|error| ApiError::from_error(&error))
 }

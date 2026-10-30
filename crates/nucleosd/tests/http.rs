@@ -128,8 +128,16 @@ async fn every_row_of_the_table_is_a_route_the_router_serves() {
 fn running() -> Arc<App> {
     use nucleos::adapter::AllowAll;
     let kernel = nucleos::Kernel::builder()
+        .model(
+            "primary",
+            Arc::new(nucleos_testkit::FakeModel::text(["unused"])),
+        )
         .store(Arc::new(nucleos_sqlite::SqliteStore::in_memory().unwrap()))
         .policy(Arc::new(AllowAll))
+        .routing(nucleos::contract::Routing {
+            chain: vec!["primary".to_owned()],
+            retries: 0,
+        })
         .build()
         .unwrap();
     Arc::new(App::new(
@@ -530,8 +538,16 @@ async fn a_reload_without_a_source_says_so() {
 fn guarded() -> Arc<App> {
     use nucleos::adapter::AllowAll;
     let kernel = nucleos::Kernel::builder()
+        .model(
+            "primary",
+            Arc::new(nucleos_testkit::FakeModel::text(["unused"])),
+        )
         .store(Arc::new(nucleos_sqlite::SqliteStore::in_memory().unwrap()))
         .policy(Arc::new(AllowAll))
+        .routing(nucleos::contract::Routing {
+            chain: vec!["primary".to_owned()],
+            retries: 0,
+        })
         .build()
         .unwrap();
     Arc::new(
@@ -649,4 +665,147 @@ async fn metrics_count_what_an_operator_asks_about() {
     // The request that produced this snapshot is counted after the body is built, so it cannot
     // include itself — which is the correct behaviour and the reason it is not asserted.
     assert!(body["uptime_millis"].is_u64() || body["uptime_millis"].is_f64());
+}
+
+// ---------------------------------------------------------------------------
+// Tenants
+//
+// The store keys sessions by id alone, so "whose session is this" is a question the daemon has to
+// answer. These tests are the answer: an id belongs to the tenant that created it.
+// ---------------------------------------------------------------------------
+
+fn multi_tenant() -> Arc<App> {
+    use nucleos::adapter::AllowAll;
+
+    let directory = std::env::temp_dir().join(format!("nucleos-tenants-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let file = directory.join("tokens.json");
+    std::fs::write(
+        &file,
+        r#"{"tokens":[
+            {"token":"acme-token","tenant":"acme","subject":"alice"},
+            {"token":"other-token","tenant":"other","subject":"bob"}
+        ]}"#,
+    )
+    .unwrap();
+
+    let kernel = nucleos::Kernel::builder()
+        .model(
+            "primary",
+            Arc::new(nucleos_testkit::FakeModel::text(["unused"])),
+        )
+        .store(Arc::new(nucleos_sqlite::SqliteStore::in_memory().unwrap()))
+        .policy(Arc::new(AllowAll))
+        .routing(nucleos::contract::Routing {
+            chain: vec!["primary".to_owned()],
+            retries: 0,
+        })
+        .build()
+        .unwrap();
+
+    Arc::new(
+        App::new(
+            Arc::new(kernel),
+            nucleos::contract::Principal::default(),
+            Vec::new(),
+        )
+        .with_tokens(nucleosd::auth::Tokens::load(&file).unwrap()),
+    )
+}
+
+async fn request(
+    app: &Arc<App>,
+    method: &str,
+    uri: &str,
+    token: &str,
+    body: &str,
+) -> (StatusCode, serde_json::Value) {
+    let response = router(Arc::clone(app))
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_owned()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    (status, body_json(response).await)
+}
+
+#[tokio::test]
+async fn a_session_belongs_to_the_tenant_that_created_it() {
+    let app = multi_tenant();
+
+    let (created, _) = request(
+        &app,
+        "POST",
+        "/v1/sessions",
+        "acme-token",
+        r#"{"session":"s1"}"#,
+    )
+    .await;
+    assert_eq!(created, StatusCode::OK);
+
+    // The owner can read it.
+    let (mine, _) = request(&app, "GET", "/v1/sessions/s1", "acme-token", "").await;
+    assert_eq!(mine, StatusCode::OK);
+
+    // Another tenant gets the same answer as for an id that never existed. A 403 would tell them
+    // which identifiers their neighbours are using.
+    let (theirs, error) = request(&app, "GET", "/v1/sessions/s1", "other-token", "").await;
+    assert_eq!(theirs, StatusCode::NOT_FOUND);
+    assert_eq!(error["code"], "not_found");
+}
+
+#[tokio::test]
+async fn an_identifier_cannot_be_taken_over_by_another_tenant() {
+    let app = multi_tenant();
+    request(&app, "POST", "/v1/sessions", "acme-token", r#"{"session":"s1"}"#).await;
+
+    // Same id, different tenant: refused rather than silently reusing the checkpoint, which would
+    // hand one tenant's history to another.
+    let (status, error) = request(
+        &app,
+        "POST",
+        "/v1/sessions",
+        "other-token",
+        r#"{"session":"s1"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{error}");
+    assert!(error["reason"].as_str().unwrap().contains("another tenant"));
+}
+
+#[tokio::test]
+async fn two_tenants_each_get_their_own_session() {
+    let app = multi_tenant();
+
+    request(&app, "POST", "/v1/sessions", "acme-token", r#"{"session":"a1"}"#).await;
+    request(&app, "POST", "/v1/sessions", "other-token", r#"{"session":"b1"}"#).await;
+
+    // Different ids, so no collision: each caller sees only its own.
+    assert_eq!(
+        request(&app, "GET", "/v1/sessions/a1", "acme-token", "").await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(&app, "GET", "/v1/sessions/b1", "other-token", "").await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(&app, "GET", "/v1/sessions/b1", "acme-token", "").await.0,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn a_token_that_is_not_in_the_document_is_refused() {
+    let app = multi_tenant();
+    let (status, error) = request(&app, "GET", "/v1/describe", "nobody-token", "").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(error["code"], "denied");
 }
