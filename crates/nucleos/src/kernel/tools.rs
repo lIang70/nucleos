@@ -28,6 +28,51 @@ impl Kernel {
             })
             .await
     }
+    /// Ask whether a configuration change may happen.
+    ///
+    /// Configuration is a privilege: adding a model points every session's traffic somewhere, and
+    /// replacing the policy replaces the answer to every question this kernel asks. So it goes
+    /// through the same policy as a tool call — and answers differently in one case: `AskHuman`
+    /// becomes a refusal, because there is no session here to park until somebody replies.
+    pub async fn check_config(
+        &self,
+        principal: &crate::contract::Principal,
+        scope: crate::adapter::ConfigScope<'_>,
+        subject: &str,
+    ) -> Result<crate::adapter::Verdict> {
+        let verdict = self
+            .policy()
+            .check(crate::adapter::PolicyRequest {
+                principal,
+                session: None,
+                subject: crate::adapter::Gated::Config { scope, subject },
+            })
+            .await;
+        tracing::debug!(
+            event = "config_gated",
+            tenant = %principal.tenant,
+            scope = %scope,
+            subject,
+            verdict = match &verdict {
+                crate::adapter::Verdict::Allow => "allow",
+                crate::adapter::Verdict::Deny { .. } => "deny",
+                crate::adapter::Verdict::AskHuman { .. } => "ask (refused)",
+            },
+        );
+        Ok(match verdict {
+            // A change that needs a human is refused: there is no session to park, and an
+            // unattended "ask" that becomes an "allow" after a timeout is worse than a refusal.
+            crate::adapter::Verdict::AskHuman { question, .. } => crate::adapter::Verdict::Deny {
+                code: crate::contract::ErrorCode::Denied,
+                reason: format!(
+                    "changing {subject} needs a human ({question}), and configuration cannot wait \
+                     for one; change it with the administrator's credential instead"
+                ),
+            },
+            other => other,
+        })
+    }
+
     /// Run one tool call.
     ///
     /// Policy is consulted here as well as in [`Kernel::check`]: a kernel that executed an ungated

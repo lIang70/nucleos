@@ -810,3 +810,25 @@ run, which is the only reason it was noticed.
 **The general shape.** Two questions that look like one: "has this turn ended?" (yes) and "does this
 event belong to the fragment?" (no). Sharing a predicate between them was the bug.
 
+## 60. Configuration is a privilege, and a tool rule is not one
+
+**Decision.** `Gated::Config { scope, subject }` gets its own rule field (`config`, narrowed by
+`scope`), never a `tool` rule. An `ask` verdict is translated to a refusal.
+
+**Why it needs its own field.** The failure is quiet and total: a deployment whose policy says
+`{"decision": "allow", "tool": "*"}` — a perfectly ordinary way to let a session use its tools — would
+otherwise also grant whoever holds that token the right to **add a model**, which points every
+session's traffic at a server of their choosing, and to **replace the policy** that was the only
+reason the first grant was safe. Reusing the field would make one permission imply an unbounded one.
+
+**Why `ask` is a denial here.** Everywhere else in this kernel `AskHuman` parks a session and waits.
+Configuration has no session: there is nothing to park, nothing to wake, and a question with no
+waiting asker is a decision the daemon would have to make on its own — after a timeout, silently, in
+the permissive direction. Refusing and naming the alternative ("change it with the administrator's
+credential instead") is the only answer that stays true when nobody is watching.
+
+**Why the scope is in the request, not in the token.** The two authorities are different: the
+deployment's configuration is the operator's, and a tenant's narrowing is the tenant's. A rule written
+for `tenant` must not reach `system` even when the subject is spelled the same, which only holds if the
+request says which scope it is being judged against.
+

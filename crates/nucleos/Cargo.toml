@@ -22,6 +22,7 @@ tokio-stream = { workspace = true }
 
 [dev-dependencies]
 nucleos-sqlite = { path = "../nucleos-sqlite" }
+nucleos-policy = { path = "../nucleos-policy" }
 nucleos-testkit = { path = "../nucleos-testkit" }
 tracing-subscriber = { workspace = true }
 tokio = { workspace = true }

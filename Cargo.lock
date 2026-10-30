@@ -764,6 +764,7 @@ version = "0.0.1-preview"
 dependencies = [
  "async-trait",
  "futures-util",
+ "nucleos-policy",
  "nucleos-sqlite",
  "nucleos-testkit",
  "schemars",

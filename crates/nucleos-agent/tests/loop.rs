@@ -629,6 +629,12 @@ impl Policy for DenyToolsOnly {
             },
             Gated::Model { .. } => Verdict::Allow,
             Gated::Exec { .. } => Verdict::Allow,
+            // These tests are about a session's turns; configuration has its own gate and its own
+            // tests, and a policy here that allowed it would be answering a question nobody asked.
+            Gated::Config { .. } => Verdict::Deny {
+                code: ErrorCode::Denied,
+                reason: "configuration is not this policy's business".to_owned(),
+            },
         }
     }
 }
@@ -657,6 +663,12 @@ impl Policy for AskFirst {
             },
             Gated::Model { .. } => Verdict::Allow,
             Gated::Exec { .. } => Verdict::Allow,
+            // These tests are about a session's turns; configuration has its own gate and its own
+            // tests, and a policy here that allowed it would be answering a question nobody asked.
+            Gated::Config { .. } => Verdict::Deny {
+                code: ErrorCode::Denied,
+                reason: "configuration is not this policy's business".to_owned(),
+            },
         }
     }
 }

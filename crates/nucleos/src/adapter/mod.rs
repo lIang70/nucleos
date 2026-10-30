@@ -42,7 +42,7 @@ pub use model::{
     FinishReason, GenerateParams, Model, ModelDelta, ModelRequest, ModelStream, ReasoningEffort,
     TextFormat, ToolChoice,
 };
-pub use policy::{AllowAll, DenyAll, Gated, Policy, PolicyRequest, Verdict};
+pub use policy::{AllowAll, ConfigScope, DenyAll, Gated, Policy, PolicyRequest, Verdict};
 pub use registry::ModelRegistry;
 pub use store::{SessionKey, SessionPage, SessionQuery, Store};
 pub use tool::{NoProgress, Progress, Tool, ToolCtx, ToolOutput};

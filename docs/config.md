@@ -10,7 +10,8 @@ Built, today:
 - `system.db` and `sessions.db` under one root, with `system.db` holding a schema version and the file
   existing for a reason rather than as a placeholder;
 - `--root`, `--socket`, `--print-paths`, and platform defaults that are absolute (§4.1);
-- the socket default is a private directory, never a bare `/tmp/nucleosd.sock`.
+- the socket default is a private directory, never a bare `/tmp/nucleosd.sock`;
+- **`Gated::Config`** and `Kernel::check_config` — the gate exists before the interface it protects.
 
 Today every deployment decision is an environment variable — fifteen of them, read in four places,
 validated at whatever line happens to need them. There is no file, no single check that says "this
@@ -348,6 +349,18 @@ The second cannot be dropped. A signature proves *who*; it does not prove *what*
 is itself configuration, the bootstrap version must be inline in `init` — the shipped default is
 `deny`, with an example that lets administrators change models and sources only.
 
+The gate is `Gated::Config { scope, subject }`, where the subject is a name (`models`, `sources`,
+`policy`, `tokens`, `admin_keys`) and the scope is `system` or `tenant/<id>`. Three properties follow,
+and each is a test rather than an intention:
+
+- **A tool rule grants nothing over configuration.** A deployment that allowed `read_file` has said
+  nothing about whether anyone may add a model — which is the ability to point every session's
+  traffic at a different server.
+- **The scope travels with the request**, so a rule written for `tenant` cannot reach the system scope
+  even when the subject matches.
+- **`ask` becomes a refusal.** There is no session here to park until a human replies, and an
+  unattended question that expires into an answer would be a gate that opens by itself.
+
 Deletion is the hard direction, and each kind has its own answer:
 
 | Deleting | Behaviour |
@@ -370,7 +383,10 @@ Each step is useful on its own, and none of them requires the next.
 
 1. **Split the store — done.** System and tenant, two files, one root, platform paths, and the two bad
    defaults replaced (§4.1). The `scope` column arrived earlier, with `(tenant, session)`.
-2. **`Gated::Config`** — the gate before the interface. Deny by default.
+2. **`Gated::Config` — done.** `Gated::Config { scope, subject }`, a `config` field and a `scope`
+   field in the policy document, and `Kernel::check_config`. Two properties are pinned by tests: a
+   rule that allows `tool: "*"` grants nothing over configuration, and an `ask` answer becomes a
+   refusal, because there is no session to park.
 3. **`nucleos init`** + bootstrap file + recovery password. Until this exists, step 4 has no bootstrap
    credential.
 4. **Configuration ABI** — `/v1/config`, models, sources, tokens, policy; one event per change.

@@ -128,6 +128,22 @@ fn matches(rule: &Rule, request: &PolicyRequest<'_>) -> bool {
         Gated::Model { model, .. } => {
             rule.model.as_ref().is_some_and(|pattern| glob(pattern, model))
         }
+        // Configuration has its own rule field, so a tool rule cannot accidentally grant it.
+        Gated::Config { scope, subject } => {
+            let Some(pattern) = &rule.config else {
+                return false;
+            };
+            if !glob(pattern, subject) {
+                return false;
+            }
+            match (&rule.scope, scope) {
+                (None, _) => true,
+                (Some(wanted), nucleos::adapter::ConfigScope::System) => wanted == "system",
+                (Some(wanted), nucleos::adapter::ConfigScope::Tenant(tenant)) => {
+                    wanted == "tenant" || wanted == tenant
+                }
+            }
+        }
         // A rule that names a program applies to commands only. `argv_prefix` narrows within it.
         Gated::Exec { argv, .. } => {
             let Some(program) = &rule.program else {
@@ -158,6 +174,7 @@ fn describe(subject: &Gated<'_>) -> String {
             Some(program) => format!("command `{}`", basename(program)),
             None => "an empty command".to_owned(),
         },
+        Gated::Config { scope, subject } => format!("{scope} configuration `{subject}`"),
     }
 }
 
@@ -490,5 +507,105 @@ mod tests {
         assert!(!glob("read_*", "xread_file"), "an unanchored match would pass");
         assert!(!glob("exact", "exactly"), "no implicit prefix matching");
         assert!(!glob("read_?", "read_a"), "? is not a wildcard here");
+    }
+}
+
+#[cfg(test)]
+mod config_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use nucleos::adapter::ConfigScope;
+    use nucleos::contract::Principal;
+
+    fn document(value: &str) -> Document {
+        let document: Document = serde_json::from_str(value).unwrap();
+        document.validate().unwrap();
+        document
+    }
+
+    async fn check(document: Document, scope: ConfigScope<'_>, subject: &str) -> Verdict {
+        let principal = Principal {
+            tenant: "acme".to_owned(),
+            subject: "alice".to_owned(),
+        };
+        Ruleset::new(document)
+            .unwrap()
+            .check(PolicyRequest {
+                principal: &principal,
+                session: None,
+                subject: Gated::Config { scope, subject },
+            })
+            .await
+    }
+
+    #[tokio::test]
+    async fn a_config_rule_matches_by_subject_and_scope() {
+        let rules = document(
+            r#"{"rules":[{"decision":"allow","config":"models","scope":"system"}]}"#,
+        );
+        assert_eq!(
+            check(rules.clone(), ConfigScope::System, "models").await,
+            Verdict::Allow
+        );
+        // The subject is a glob: one rule can name the whole family.
+        assert!(matches!(
+            check(rules.clone(), ConfigScope::System, "policy").await,
+            Verdict::Deny { .. }
+        ));
+        // And the scope narrows: a tenant caller cannot reach the system scope even when the
+        // subject matches, because the request says which scope it is.
+        assert!(matches!(
+            check(rules, ConfigScope::Tenant("acme"), "models").await,
+            Verdict::Deny { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_tool_rule_grants_nothing_over_configuration() {
+        // The failure this prevents: a deployment that allowed `read_file` discovering it also
+        // allowed adding a model, which points every session's traffic somewhere else.
+        let rules = document(r#"{"rules":[{"decision":"allow","tool":"*"}]}"#);
+        assert!(matches!(
+            check(rules, ConfigScope::System, "models").await,
+            Verdict::Deny { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_tenant_scope_rule_reaches_only_tenants() {
+        let rules = document(r#"{"rules":[{"decision":"allow","config":"*","scope":"tenant"}]}"#);
+        assert_eq!(
+            check(rules.clone(), ConfigScope::Tenant("acme"), "policy").await,
+            Verdict::Allow
+        );
+        assert!(matches!(
+            check(rules, ConfigScope::System, "policy").await,
+            Verdict::Deny { .. }
+        ));
+    }
+
+    #[test]
+    fn a_scope_without_a_config_subject_is_refused_at_load() {
+        let parsed: Document =
+            serde_json::from_str(r#"{"rules":[{"decision":"allow","scope":"system"}]}"#).unwrap();
+        let error = parsed.validate().expect_err("a scope on its own names nothing");
+        assert!(error.reason().contains("scope"), "{error:?}");
+
+        let unknown: Document =
+            serde_json::from_str(r#"{"rules":[{"decision":"allow","config":"*","scope":"galaxy"}]}"#)
+                .unwrap();
+        assert!(unknown.validate().is_err(), "only system and tenant exist");
+    }
+
+    #[test]
+    fn a_config_request_is_named_in_a_refusal() {
+        // A refusal has to say what was refused: "configuration models" is actionable, "denied" is
+        // not.
+        let described = describe(&Gated::Config {
+            scope: ConfigScope::System,
+            subject: "models",
+        });
+        assert_eq!(described, "system configuration `models`");
     }
 }

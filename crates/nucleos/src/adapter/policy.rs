@@ -36,6 +36,20 @@ pub enum Gated<'a> {
         /// Why.
         purpose: Purpose,
     },
+    /// Configuration is about to change.
+    ///
+    /// Configuration is a privilege before it is a convenience: whoever may add a model may point a
+    /// deployment's traffic at their own server, and whoever may replace the policy may replace it
+    /// with one that says yes. So a change is gated like a tool call, and — unlike a tool call — a
+    /// gate that answers "ask a human" refuses instead of parking: there is no session to park.
+    Config {
+        /// Whether this is the deployment's configuration or one tenant's.
+        scope: ConfigScope<'a>,
+        /// What is being changed: `models`, `sources`, `policy`, `tokens`, `admin_keys`.
+        ///
+        /// A name rather than a path, so a policy rule reads `{"config": "models"}` and not a URL.
+        subject: &'a str,
+    },
     /// A command is about to run.
     ///
     /// The three fields are what a policy needs to decide: you cannot judge "run this" without
@@ -48,6 +62,29 @@ pub enum Gated<'a> {
         /// What this command asks for on top.
         permissions: &'a SandboxPermissions,
     },
+}
+
+/// Which configuration a change touches.
+///
+/// Two scopes because they are two different authorities: the deployment's configuration is the
+/// operator's, and a tenant's narrowing is the tenant's. A tenant may not edit the system scope even
+/// if the policy would allow the same subject, which is why the scope travels with the request
+/// instead of being implied by the token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigScope<'a> {
+    /// The whole deployment: models, sources, tokens, the system policy.
+    System,
+    /// One tenant's narrowing of the above.
+    Tenant(&'a str),
+}
+
+impl std::fmt::Display for ConfigScope<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::System => f.write_str("system"),
+            Self::Tenant(tenant) => write!(f, "tenant/{tenant}"),
+        }
+    }
 }
 
 /// What policy is given.
@@ -111,6 +148,7 @@ impl Policy for DenyAll {
             Gated::Tool { call } => call.name.clone(),
             Gated::Model { model, .. } => model.to_owned(),
             Gated::Exec { argv, .. } => argv.join(" "),
+            Gated::Config { scope, subject } => format!("{scope} configuration: {subject}"),
         };
         Verdict::Deny {
             code: crate::contract::ErrorCode::Denied,

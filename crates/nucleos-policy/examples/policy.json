@@ -1,6 +1,5 @@
 {
   "default": "deny",
-
   "rules": [
     {
       "decision": "allow",
@@ -18,7 +17,9 @@
     {
       "decision": "ask",
       "program": "git",
-      "argv_prefix": ["push"],
+      "argv_prefix": [
+        "push"
+      ],
       "question": "Push this branch to the remote?"
     },
     {
@@ -33,6 +34,13 @@
       "decision": "deny",
       "program": "rm",
       "reason": "rm is never allowed through this daemon"
+    },
+    {
+      "decision": "allow",
+      "config": "*",
+      "scope": "system",
+      "subject": "admin",
+      "reason": "the administrator may change deployment configuration, and nobody else may"
     }
   ]
 }

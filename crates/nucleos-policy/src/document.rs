@@ -47,6 +47,20 @@ pub struct Rule {
     /// A glob on a model name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// A glob on a configuration subject: `models`, `sources`, `policy`, `tokens`, `admin_keys`.
+    ///
+    /// Configuration rules are separate from tool rules on purpose. A deployment that lets a caller
+    /// run `read_file` has said nothing at all about whether it may add a model — which is the
+    /// ability to point every session's traffic somewhere else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<String>,
+    /// Which configuration scope: `system` or `tenant`.
+    ///
+    /// Narrows a `config` rule; meaningless without one. A tenant may hold a rule for `tenant` and
+    /// still never reach the system scope, because the request carries the scope it was made
+    /// against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
     /// The program of a command, compared exactly against the basename of `argv[0]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub program: Option<String>,
@@ -100,10 +114,29 @@ impl Document {
                     "every rule needs a decision: allow, deny or ask",
                 ));
             };
-            if rule.tool.is_none() && rule.model.is_none() && rule.program.is_none() {
+            // The specific mistake first: a rule carrying only `scope` is one edit away from being
+            // right, and "matches nothing" would send its author looking in the wrong place.
+            if rule.scope.is_some() && rule.config.is_none() {
+                return Err(Error::invalid(
+                    "a `scope` only narrows a `config` rule; on its own it names nothing",
+                ));
+            }
+            if rule.tool.is_none()
+                && rule.model.is_none()
+                && rule.program.is_none()
+                && rule.config.is_none()
+            {
                 return Err(Error::invalid(format!(
-                    "a rule with no tool, model or program matches nothing; {decision:?} on \
+                    "a rule with no tool, model, program or config matches nothing; {decision:?} on \
                      everything is written as a rule with `tool: \"*\"`"
+                )));
+            }
+            if let Some(scope) = &rule.scope
+                && scope != "system"
+                && scope != "tenant"
+            {
+                return Err(Error::invalid(format!(
+                    "config scope {scope:?} is not `system` or `tenant`"
                 )));
             }
             if !rule.argv_prefix.is_empty() && rule.program.is_none() {
