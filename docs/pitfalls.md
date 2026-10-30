@@ -629,3 +629,27 @@ handle believing two events existed, so the next `configure` or `close` failed a
 that did nothing wrong — `event seq 1 does not continue the log at 4`. A copy of a counter is a
 second truth about the same log, and the store is right to refuse it.
 
+## 49. A call is answered by the generation that built the prompt
+
+**Decision.** `execute_calls` resolves every tool through `tool_in(session, name)` — the session's
+pinned set — and `tool_specs` builds the prompt from the same set.
+
+**Why.** The first version wired the pinning into the prompt and left the execution path resolving
+against the newest set. The test that caught it publishes a generation without `read_file` and then
+calls the tool from a session pinned before the publish: the prompt had it, the registry did not, and
+the model got "no tool named". Prompt and execution reading two registries is a bug that only appears
+when a source changes under a running session — which is exactly the case generations exist for.
+
+**A second error the same test found.** The refusal said `no tool named "<call id>"`: the message
+formatted the correlation id where the tool name belonged, so the one line a model reads to recover
+named something it had never seen.
+
+## 50. An incompatible generation is not an error
+
+**Decision.** A session whose tool set is incompatible with the current one stays pinned, records
+nothing, and keeps working until it ends.
+
+**Why.** The alternative — refusing turns, or closing the session — turns somebody else's deployment
+into this session's outage. A model midway through a task did not ask for the tool list to change, and
+the set it is holding still answers every call it can make.
+

@@ -105,8 +105,14 @@ impl Kernel {
         let deadline = self.deadline(session);
         let session_id = session.id.clone();
         let started = self.now();
-        let futures = calls.iter().zip(verdicts).map(|(call, denial)| {
-            let tool = self.tool(&call.name);
+        // Resolved once, against the generation this session is pinned to: a call is answered by the
+        // set that built the prompt, even if a newer generation has been published since.
+        let resolved: Vec<Option<Arc<dyn Tool>>> = calls
+            .iter()
+            .map(|call| self.tool_in(session, &call.name))
+            .collect();
+
+        let futures = calls.iter().zip(verdicts).zip(resolved).map(|((call, denial), tool)| {
             let args = call.arguments_json.clone();
             let call_id = call.id.clone();
             let session_id = session_id.clone();
@@ -126,7 +132,10 @@ impl Kernel {
                                 "arguments were not valid JSON: {error}"
                             )),
                         },
-                        None => ToolOutput::failed(format!("no tool named {:?}", ctx.call_id)),
+                        None => ToolOutput::failed(format!(
+                            "no tool named {:?} in this session's tool generation",
+                            call.name
+                        )),
                     },
                     Some(reason) => ToolOutput::failed(reason),
                 }
@@ -239,8 +248,9 @@ impl Kernel {
     /// Whether the ceiling allows a tool at all.
     #[must_use]
     pub(crate) fn allowable(&self, session: &session::Session, name: &str) -> bool {
-        self.tools.contains_key(name)
-            && (session.tools.is_empty() || session.tools.contains(&name.to_owned()))
+        let generations = self.generations();
+        let set = generations.set(session.generation);
+        set.contains_key(name) && (session.tools.is_empty() || session.tools.contains(&name.to_owned()))
     }
 
     /// How visible a tool is under the session's policy.
@@ -291,10 +301,20 @@ impl Kernel {
         self.trim_pool(session);
     }
 
-    /// One tool by name.
+    /// One tool by name, in the current generation.
     #[must_use]
     pub fn tool(&self, name: &str) -> Option<Arc<dyn Tool>> {
-        self.tools.get(name).cloned()
+        self.generations().current_set().get(name).cloned()
+    }
+
+    /// One tool by name, in the generation this session is pinned to.
+    ///
+    /// The distinction is the whole point of pinning: the model produced a call from a prompt built
+    /// out of one set, so that set is what answers it — even if a newer one has been published and
+    /// even if the tool has since been withdrawn.
+    #[must_use]
+    pub fn tool_in(&self, session: &session::Session, name: &str) -> Option<Arc<dyn Tool>> {
+        self.generations().set(session.generation).get(name).cloned()
     }
 
     /// The declarations this session may use, in name order so a prompt is reproducible.
@@ -306,14 +326,14 @@ impl Kernel {
         // The door is shown only when something is behind it. A policy that shows every tool in
         // full leaves nothing to find, so spending a schema on the way to find it would be paying
         // for an empty room.
-        let needs_door = self
-            .tools
+        let generations = self.generations();
+        let set = generations.set(session.generation);
+        let needs_door = set
             .keys()
             .filter(|name| self.allowable(session, name))
             .any(|name| session.tool_policy.exposure_of(name).searchable());
 
-        let mut candidates: Vec<(crate::contract::Exposure, u64, crate::contract::ToolSpec)> = self
-            .tools
+        let mut candidates: Vec<(crate::contract::Exposure, u64, crate::contract::ToolSpec)> = set
             .iter()
             .filter(|(name, _)| session.tools.is_empty() || session.tools.contains(name))
             .filter_map(|(name, tool)| {
@@ -378,7 +398,9 @@ impl Kernel {
     /// Whether a discovery tool exists at all.
     #[must_use]
     pub fn discoverable(&self) -> bool {
-        self.tools.contains_key(super::tool_search::NAME)
+        self.generations()
+            .current_set()
+            .contains_key(super::tool_search::NAME)
     }
 }
 

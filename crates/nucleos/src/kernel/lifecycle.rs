@@ -18,7 +18,7 @@ impl Kernel {
         let mut session = session::Session::new(
             id,
             principal.clone(),
-            self.generation,
+            self.generation(),
             spec.budget.clone(),
             spec.credit_tokens,
             now,

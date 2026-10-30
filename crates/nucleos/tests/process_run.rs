@@ -12,7 +12,7 @@ use nucleos::adapter::{AllowAll, Store};
 use nucleos_sqlite::SqliteStore;
 use nucleos_testkit::{FakeModel, FixedClock};
 use nucleos::contract::{
-    EventKind, ExecStream, Principal, ProcessSpec, SandboxPolicy, SessionId, SessionKind,
+    EventKind, ExecStream, Principal, ProcessSpec, Routing, SandboxPolicy, SessionId, SessionKind,
 };
 use nucleos::kernel::{Kernel, SessionSpec};
 use std::sync::Arc;
@@ -443,5 +443,111 @@ async fn a_page_fills_through_a_phase_filter_and_says_where_to_continue() -> nuc
         let _ = kernel.signal(&session).await;
         let _ = kernel.wait(&session).await;
     }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// A process session outlives the runtime that started it
+// ---------------------------------------------------------------------------
+
+/// A kernel on a file, so a second one can be built on the same file after this one is dropped.
+fn kernel_on(path: &std::path::Path) -> nucleos::Result<Kernel> {
+    Kernel::builder()
+        .model("primary", Arc::new(FakeModel::text(["unused"])))
+        .store(Arc::new(SqliteStore::open(path)?))
+        .policy(Arc::new(AllowAll))
+        .clock(Arc::new(FixedClock::at(0)))
+        .routing(Routing {
+            chain: vec!["primary".to_owned()],
+            retries: 0,
+        })
+        .build()
+}
+
+#[tokio::test]
+async fn a_resumed_process_session_can_still_answer_what_it_did() -> nucleos::Result<()> {
+    let directory = std::env::temp_dir().join(format!("nucleos-resume-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).expect("a scratch directory");
+    let database = directory.join("nucleos.db");
+
+    let id = SessionId::new("p1");
+    let (before, during) = {
+        let kernel = kernel_on(&database)?;
+        let session = kernel
+            .spawn(
+                &principal(),
+                id.clone(),
+                SessionSpec {
+                    sandbox: SandboxPolicy::DangerFullAccess,
+                    credit_tokens: 1_000,
+                    process: Some(ProcessSpec {
+                        argv: vec![
+                            "/bin/sh".to_owned(),
+                            "-c".to_owned(),
+                            "printf out; printf err >&2".to_owned(),
+                        ],
+                        cwd: None,
+                        env: Default::default(),
+                        permissions: Default::default(),
+                    }),
+                    ..SessionSpec::default()
+                },
+            )
+            .await?;
+        let before = kernel.wait(&session).await?;
+        (before, session)
+    };
+
+    // Nothing of the first kernel is left — this is the restart, not a reload.
+    assert_eq!(before.stdout.text, "out");
+    assert_eq!(before.stderr.text, "err");
+    drop(during);
+
+    let kernel = kernel_on(&database)?;
+    let resumed = kernel.load(&principal(), &id).await?;
+    let after = kernel.wait(&resumed).await?;
+
+    // The supervisor is memory and has forgotten this process. The answer is in the log: the chunks
+    // the reader wrote, and the summary the exit wrote.
+    assert_eq!(after.exit_code, 0);
+    assert_eq!(after.stdout.text, "out", "the text comes back from the stream");
+    assert_eq!(after.stderr.text, "err");
+    assert_eq!(after.duration_millis, before.duration_millis, "the summary is the record");
+
+    let _ = std::fs::remove_dir_all(&directory);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_process_with_no_recorded_exit_says_so_instead_of_inventing_one() -> nucleos::Result<()> {
+    let (kernel, _store) = kernel();
+    // Opened, never spawned: pending, no chunks, no exit. This is the shape of a session whose
+    // process this runtime never started, and the one thing it must not do is answer with a zero
+    // exit code and empty output.
+    let session = kernel
+        .open(
+            &principal(),
+            SessionId::new("p1"),
+            SessionSpec {
+                kind: SessionKind::Process,
+                sandbox: SandboxPolicy::DangerFullAccess,
+                credit_tokens: 1_000,
+                process: Some(ProcessSpec {
+                    argv: vec!["/usr/bin/sleep".to_owned(), "10".to_owned()],
+                    cwd: None,
+                    env: Default::default(),
+                    permissions: Default::default(),
+                }),
+                ..SessionSpec::default()
+            },
+        )
+        .await?;
+
+    let error = kernel
+        .wait(&session)
+        .await
+        .expect_err("a process with no exit has no answer");
+    assert!(error.reason().contains("no recorded exit"), "{error:?}");
     Ok(())
 }

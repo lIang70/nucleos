@@ -395,6 +395,21 @@ Because the set is immutable, compatibility is a pure function of two generation
 
 Compatibility is decided by schema structure, not by a version number somebody typed.
 
+**What is built.** `Kernel::publish(tools)` adds a generation and pins new sessions to it; a session
+resolves tools through the generation it is pinned to, not the newest one, which is the whole point:
+a call is answered by the set that built the prompt. `inference` is the turn boundary, and there
+`compatible` decides — same names, and input schemas where nothing new is required and nothing old
+changed. Compatible sessions move and record `generation_migrated`; incompatible ones stay pinned for
+the rest of their lives, and keeping working, because the set they reference is still held.
+
+**What is not built.** Retirement. Every generation this kernel published stays in memory, because
+freeing one requires a durable answer to "which sessions still reference it", and the store can only
+give that by reading every snapshot. It is a small leak on purpose, and the alternative — freeing a
+set a pinned session might reach for — is a correctness bug.
+
+Reloading a source still creates a new session unless the caller publishes a new generation by hand;
+the daemon does not yet expose `publish` over the ABI. That is the next slice, not this one.
+
 #### A source dies, and a tool outlives it
 
 A source is a child process, so it stops: it crashes, someone deploys over it, the host reclaims

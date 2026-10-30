@@ -26,6 +26,9 @@ impl Kernel {
         // Before anything is spent, and before the round counter moves: a turn that will not run
         // should leave no trace of having started.
         self.spend(session).await?;
+        // A turn boundary is the only moment a session may change tool sets: a prompt built from
+        // one generation cannot be answered by another.
+        super::generation::migrate(self, session).await?;
         // A turn is the unit the discovery pool expires against, so the counter moves before the
         // prompt is built: what a session shows this turn is decided with this turn's clock.
         self.begin_round(session);

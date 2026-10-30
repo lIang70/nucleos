@@ -10,6 +10,7 @@
 
 pub(crate) mod bm25;
 pub(crate) mod budget;
+pub(crate) mod generation;
 pub(crate) mod config;
 pub(crate) mod inference;
 pub(crate) mod lifecycle;
@@ -48,7 +49,6 @@ use crate::contract::{
     Event, Generation, Ledger, Message, Routing, SessionId, SessionState, StopReason, Usage,
 };
 use crate::error::{Error, Result};
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// What a caller asks for when starting or resuming a session.
@@ -114,11 +114,11 @@ pub(crate) type ResolvedRoute = Vec<(String, Arc<dyn Model>)>;
 /// The kernel.
 pub struct Kernel {
     models: ModelRegistry,
-    tools: BTreeMap<String, Arc<dyn Tool>>,
+    /// Every tool set a live session may be pinned to, plus the current one.
+    generations: std::sync::RwLock<generation::Generations>,
     store: Arc<dyn Store>,
     policy: Arc<dyn Policy>,
     clock: Arc<dyn Clock>,
-    generation: Generation,
     retries: u32,
     routing: Routing,
     /// The processes this kernel is supervising.
@@ -133,8 +133,15 @@ impl std::fmt::Debug for Kernel {
         // Adapters are not `Debug`; the names are what a reader wants.
         f.debug_struct("Kernel")
             .field("models", &self.models)
-            .field("tools", &self.tools.keys().collect::<Vec<_>>())
-            .field("generation", &self.generation)
+            .field(
+                "tools",
+                &self
+                    .generations
+                    .read()
+                    .map(|generations| generations.current_set().keys().cloned().collect::<Vec<_>>())
+                    .unwrap_or_default(),
+            )
+            .field("generation", &self.generation())
             .field("routing", &self.routing)
             .finish_non_exhaustive()
     }
@@ -157,6 +164,34 @@ impl Kernel {
     pub fn models(&self) -> Vec<String> {
         self.models.names()
     }
+    /// The tool set new sessions are pinned to.
+    #[must_use]
+    pub fn generation(&self) -> Generation {
+        self.generations
+            .read()
+            .map(|generations| generations.current())
+            .unwrap_or_default()
+    }
+
+    /// Publish a new tool set, and pin new sessions to it.
+    ///
+    /// Existing sessions keep theirs until they reach a turn boundary and the sets are compatible.
+    /// A session that never migrates keeps working; that is the point of pinning.
+    pub fn publish(&self, tools: Vec<Arc<dyn Tool>>) -> Result<Generation> {
+        let mut generations = self
+            .generations
+            .write()
+            .map_err(|_| Error::internal("the tool registry is poisoned"))?;
+        generations.publish(tools)
+    }
+
+    /// The sets this kernel is holding, for a reader that wants to know.
+    pub(crate) fn generations(&self) -> std::sync::RwLockReadGuard<'_, generation::Generations> {
+        self.generations
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// Resolve a route against the registry.
     pub fn resolve_route(&self, routing: &crate::contract::Routing) -> Result<ResolvedRoute> {
         self.models.resolve(routing)
@@ -167,11 +202,11 @@ impl Kernel {
 #[derive(Default)]
 pub struct Builder {
     models: ModelRegistry,
-    tools: BTreeMap<String, Arc<dyn Tool>>,
+    /// The first generation's tools. Publishing more is [`Kernel::publish`], after it is built.
+    tools: Vec<Arc<dyn Tool>>,
     store: Option<Arc<dyn Store>>,
     policy: Option<Arc<dyn Policy>>,
     clock: Option<Arc<dyn Clock>>,
-    generation: Generation,
     retries: u32,
     routing: Routing,
 }
@@ -187,7 +222,7 @@ impl Builder {
     /// Register a tool. Its own `spec().name` is the name a route and a session use.
     #[must_use]
     pub fn tool(mut self, tool: Arc<dyn Tool>) -> Self {
-        self.tools.insert(tool.spec().name, tool);
+        self.tools.push(tool);
         self
     }
 
@@ -212,13 +247,6 @@ impl Builder {
         self
     }
 
-    /// The tool-source generation new sessions are pinned to.
-    #[must_use]
-    pub fn generation(mut self, generation: Generation) -> Self {
-        self.generation = generation;
-        self
-    }
-
     /// Extra attempts per target, on top of whatever a session asks for.
     #[must_use]
     pub fn retries(mut self, retries: u32) -> Self {
@@ -240,7 +268,7 @@ impl Builder {
     pub fn build(self) -> Result<Kernel> {
         Ok(Kernel {
             models: self.models,
-            tools: with_discovery(self.tools),
+            generations: std::sync::RwLock::new(generation::Generations::first(self.tools)?),
             store: self
                 .store
                 .ok_or_else(|| Error::internal("kernel needs a store"))?,
@@ -248,7 +276,6 @@ impl Builder {
                 .policy
                 .ok_or_else(|| Error::internal("kernel needs a policy"))?,
             clock: self.clock.unwrap_or_else(|| Arc::new(SystemClock)),
-            generation: self.generation,
             retries: self.retries,
             routing: self.routing,
             supervisor: process::Supervisor::default(),
@@ -275,25 +302,4 @@ impl Kernel {
             None => u64::MAX,
         }
     }
-}
-
-/// Add the built-in discovery tool.
-///
-/// Built here rather than registered by a caller, because it has to see the registry: a search
-/// tool that was told about tools by hand would go stale the moment one was added.
-///
-/// Registered whenever there is a catalog, and *shown* only when the session's policy leaves
-/// something the prompt cannot reach without it. A deck of three tools the application chose to
-/// show in full therefore costs no search schema — but that is the policy's doing, not a size
-/// threshold only the kernel knows about.
-fn with_discovery(
-    mut tools: BTreeMap<String, Arc<dyn Tool>>,
-) -> BTreeMap<String, Arc<dyn Tool>> {
-    if tools.contains_key(tool_search::NAME) || tools.is_empty() {
-        return tools;
-    }
-    let specs: Vec<crate::contract::ToolSpec> = tools.values().map(|tool| tool.spec()).collect();
-    let tool: Arc<dyn Tool> = Arc::new(tool_search::Search::new(&specs));
-    tools.insert(tool_search::NAME.to_owned(), tool);
-    tools
 }

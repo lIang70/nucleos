@@ -135,6 +135,12 @@ impl Session {
         &self.tools
     }
 
+    /// The tool generation this session is pinned to.
+    #[must_use]
+    pub fn generation(&self) -> crate::contract::Generation {
+        self.generation
+    }
+
     /// Why the session stopped, once it has.
     #[must_use]
     pub fn stop_reason(&self) -> Option<crate::contract::StopReason> {

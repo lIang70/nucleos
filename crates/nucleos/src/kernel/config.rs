@@ -144,7 +144,7 @@ impl Kernel {
             policy.validate(super::tool_search::NAME)?;
         }
         let ceiling = if session.tools.is_empty() {
-            self.tools.keys().cloned().collect()
+            self.generations().current_set().keys().cloned().collect()
         } else {
             session.tools.clone()
         };

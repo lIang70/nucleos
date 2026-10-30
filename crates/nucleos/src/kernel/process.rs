@@ -577,8 +577,63 @@ impl Kernel {
         self.supervisor.signal(&session.id).await
     }
     /// Wait for a process to end, and say how it ended.
+    /// Wait for a process, or answer for one this runtime never saw.
+    ///
+    /// A process session outlives the process: `kill -9`, redeploy, resume. The supervisor is
+    /// memory, so after a restart it holds nothing — but the *answer* is in the log, in the chunks
+    /// the reader wrote and the summary the supervisor appended when the child exited. Rebuilding it
+    /// is the difference between "the session resumed" and "the session resumed and cannot tell you
+    /// what it did".
     pub async fn wait(&self, session: &Session) -> Result<crate::contract::ExecOutput> {
-        self.supervisor.wait(&session.id).await
+        match self.supervisor.wait(&session.id).await {
+            Ok(output) => Ok(output),
+            Err(error) if error.code() == crate::contract::ErrorCode::NotFound => {
+                self.wait_from_log(session).await
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// The output of a process that ended before this runtime started.
+    async fn wait_from_log(&self, session: &Session) -> Result<crate::contract::ExecOutput> {
+        let events = self.store.events_since(&session.id, 0).await?;
+
+        // The summary is the exit event's, because that is the only place the exit status, the
+        // duration and the truncation count are written down.
+        let summary = events.iter().rev().find_map(|event| match &event.kind {
+            EventKind::ExecExited { output } => Some(output.clone()),
+            _ => None,
+        });
+        let Some(mut output) = summary.or_else(|| session.process.as_ref().and_then(|process| {
+            match &process.status {
+                crate::contract::ProcessStatus::Exited { output } => Some(output.clone()),
+                _ => None,
+            }
+        })) else {
+            // Running, pending, or lost without an exit: the log has no ending to report, and
+            // inventing one — an exit code of zero, an empty stdout — is the failure this method
+            // exists to avoid.
+            return Err(Error::unavailable(format!(
+                "session {} has no recorded exit: the process either outlived this runtime or is \
+                 still running, so nothing can be said about how it ended",
+                session.id
+            )));
+        };
+
+        // The text is in the stream, chunk by chunk, in the order the reader wrote it. The exit
+        // event deliberately carries no text — repeating sixty-four kilobytes would be two truths —
+        // so this is where the two halves are put back together.
+        for event in &events {
+            let EventKind::ExecOutput { stream, chunk } = &event.kind else {
+                continue;
+            };
+            let target = match stream {
+                crate::contract::ExecStream::Stdout => &mut output.stdout,
+                crate::contract::ExecStream::Stderr => &mut output.stderr,
+            };
+            target.text.push_str(chunk);
+        }
+        Ok(output)
     }
 }
 
