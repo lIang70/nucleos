@@ -521,3 +521,78 @@ async fn a_reload_without_a_source_says_so() {
     let error = body_json(response).await;
     assert!(error["reason"].as_str().unwrap().contains("NUCLEOS_MCP"));
 }
+
+// ---------------------------------------------------------------------------
+// Authentication
+// ---------------------------------------------------------------------------
+
+/// A daemon that requires a bearer token.
+fn guarded() -> Arc<App> {
+    use nucleos::adapter::AllowAll;
+    let kernel = nucleos::Kernel::builder()
+        .store(Arc::new(nucleos_sqlite::SqliteStore::in_memory().unwrap()))
+        .policy(Arc::new(AllowAll))
+        .build()
+        .unwrap();
+    Arc::new(
+        App::new(
+            Arc::new(kernel),
+            nucleos::contract::Principal {
+                tenant: "acme".to_owned(),
+                subject: "alice".to_owned(),
+            },
+            vec!["primary".to_owned()],
+        )
+        .with_token(Some("s3cret".to_owned())),
+    )
+}
+
+#[tokio::test]
+async fn a_configured_token_is_required_on_every_route() {
+    let app = guarded();
+
+    // `describe` too: an exempt health endpoint would tell an unauthenticated caller what the
+    // deployment has.
+    for uri in ["/v1/describe", "/v1/sessions/s1/events"] {
+        let response = router(Arc::clone(&app))
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{uri}");
+        let error = body_json(response).await;
+        assert_eq!(error["code"], "denied", "{error}");
+        assert!(error["reason"].as_str().unwrap().contains("bearer"));
+    }
+
+    let allowed = router(Arc::clone(&app))
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/describe")
+                .header("authorization", "Bearer s3cret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(allowed.status(), StatusCode::OK);
+
+    let refused = router(app)
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/describe")
+                .header("authorization", "Bearer wrong")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
+}

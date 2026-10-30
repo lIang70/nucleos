@@ -48,6 +48,11 @@ pub struct App {
     tools: std::sync::RwLock<Vec<String>>,
     /// The source a reload reconnects, when the deployment configured one.
     source: Option<nucleos_mcp::McpSource>,
+    /// The bearer token every request must present, when one is configured.
+    ///
+    /// `None` means the daemon trusts its socket's permissions, which is a decision about where it
+    /// is listening — not one this struct can make for it.
+    token: Option<String>,
 }
 
 impl App {
@@ -60,7 +65,15 @@ impl App {
             models,
             tools: std::sync::RwLock::new(Vec::new()),
             source: None,
+            token: None,
         }
+    }
+
+    /// Require a bearer token on every request.
+    #[must_use]
+    pub fn with_token(mut self, token: Option<String>) -> Self {
+        self.token = token.filter(|token| !token.is_empty());
+        self
     }
 
     /// Remember the tool source, so `POST /v1/tools/reload` has something to reconnect.
@@ -174,6 +187,12 @@ impl App {
         } else {
             SqliteStore::open(&path)?
         };
+        let token = std::env::var("NUCLEOS_TOKEN").ok();
+        if token.as_deref().is_some_and(str::is_empty) {
+            return Err(nucleos::Error::invalid(
+                "NUCLEOS_TOKEN is set but empty: unset it to rely on the socket, or give it a value",
+            ));
+        }
         let policy = load_policy(std::env::var("NUCLEOS_POLICY").ok())?;
         let mut builder = Kernel::builder()
             .model(&model, Arc::new(adapter))
@@ -190,7 +209,8 @@ impl App {
             Self::unconfigured().principal,
             vec![model],
         )
-        .with_tools(discovered);
+        .with_tools(discovered)
+        .with_token(token);
         Ok(match configured_source {
             Some(source) => app.with_source(source),
             None => app,
@@ -209,6 +229,7 @@ impl App {
             models: Vec::new(),
             tools: std::sync::RwLock::new(Vec::new()),
             source: None,
+            token: None,
         }
     }
 
@@ -432,7 +453,33 @@ pub fn router(app: Arc<App>) -> Router {
         .fold(Router::new(), |router, route| {
             router.route(route.meta.path, (route.build)())
         })
+        // One layer over every route, including `describe`: a surface exempted from authentication
+        // is a surface that tells an unauthenticated caller what the deployment has.
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&app),
+            authenticate,
+        ))
         .with_state(app)
+}
+
+/// Refuse a request that does not carry the token, when one is configured.
+async fn authenticate(
+    State(app): State<Arc<App>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let header = request
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok());
+    match crate::auth::authorize(app.token.as_deref(), header) {
+        Ok(()) => next.run(request).await,
+        Err(error) => {
+            let (status, body) = crate::auth::refusal(&error);
+            let status = StatusCode::from_u16(status).unwrap_or(StatusCode::UNAUTHORIZED);
+            (status, Json(body)).into_response()
+        }
+    }
 }
 
 /// The table, for the OpenAPI generator.

@@ -684,6 +684,25 @@ them survive in-place editing:
 The kernel's own copy of the conversation is the record; the prompt is a view of it. That is why a
 caller's compaction changes the view without touching the log.
 
+## 11.5 Authentication
+
+Three claims, and the daemon only makes the ones it can keep:
+
+| Claim | How |
+| --- | --- |
+| only the local user can connect | the socket lives in a `0700` directory and is `0600` |
+| a request carries a credential | `NUCLEOS_TOKEN`, checked on **every** route including `describe` |
+| every session belongs to somebody | one principal from `NUCLEOS_PRINCIPAL`, for now |
+
+Peer credentials (`LOCAL_PEERCRED`) would be the better first row, and they need `unsafe`, which this
+workspace forbids. So the check is pushed to the one place that can enforce it without it — the
+filesystem — rather than left to a comment claiming a check that does not exist.
+
+A token exempted from any route is not a token: `describe` leaks the model and tool names, so it is
+behind the same check as everything else. Multi-tenant identity is deliberately absent: one token is
+one principal, and splitting it needs the kernel's `(tenant, session)` key to be reachable per
+request, which is a change to this file and a larger one to the ABI.
+
 ## 12. Telemetry
 
 Names are not ours to invent. Attribute names follow the OpenTelemetry GenAI conventions

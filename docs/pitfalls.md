@@ -653,3 +653,19 @@ nothing, and keeps working until it ends.
 into this session's outage. A model midway through a task did not ask for the tool list to change, and
 the set it is holding still answers every call it can make.
 
+## 51. The socket's permissions are the authentication
+
+**Decision.** `nucleosd` creates its socket in a `0700` directory, `chmod`s the socket to `0600`, and
+optionally requires `NUCLEOS_TOKEN` on every route.
+
+**Why not peer credentials.** They are the right answer for a unix socket and they need `unsafe`,
+which the workspace forbids. A comment claiming "the peer is already the local user" is not a check;
+`0600` on the socket inside an owner-only directory is one the kernel enforces.
+
+**Why the token covers `describe` too.** An unauthenticated endpoint that lists models and tools is
+an unauthenticated inventory. The cost of guarding it is one header a real client already sends.
+
+**Why one principal.** Deriving identity per token is six lines here and a redesign of the
+`(tenant, session)` key in the ABI. Shipping the six lines and calling it multi-tenant would be the
+kind of claim this file exists to prevent.
+
