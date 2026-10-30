@@ -17,10 +17,12 @@
 //! checked at the same edge, and neither should reach the kernel.
 
 pub mod key;
+pub mod signature;
 pub mod keychain;
 pub mod password;
 
 pub use key::{KeyPair, PublicKey};
+pub use signature::{canonical, parse_header, Signed, SCHEME};
 pub use keychain::Store as KeyStore;
 pub use password::{Cost, Limiter, MIN_PASSWORD_LEN, PasswordHash};
 
@@ -29,3 +31,15 @@ pub use password::{Cost, Limiter, MIN_PASSWORD_LEN, PasswordHash};
 /// A constant so that the writer and the reader cannot disagree about the spelling, which is the one
 /// class of bug a key-value store is genuinely good at producing.
 pub const RECOVERY_KEY: &str = "auth/recovery_password";
+
+/// Sixteen random bytes, hex-encoded: the one-time half of a signed request.
+///
+/// Not a UUID and not a counter. A counter would need shared state to start from; a UUID is 122 bits of
+/// randomness behind a format that implies meaning it does not have. Sixteen bytes within a ±60 s
+/// window is a collision probability nobody will meet.
+pub(crate) fn nonce() -> String {
+    let mut bytes = [0u8; 16];
+    use rand_core::RngCore as _;
+    rand_core::OsRng.fill_bytes(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}

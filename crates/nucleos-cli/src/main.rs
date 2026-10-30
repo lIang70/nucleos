@@ -11,13 +11,12 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("init") => init(&args[1..]),
+        Some("config") => config(&args[1..]),
         Some("--help" | "-h") | None => {
             println!("{USAGE}");
             Ok(())
         }
-        Some(other) => Err(Box::from(format!(
-            "unknown command {other:?}\n\n{USAGE}"
-        ))),
+        Some(other) => Err(Box::from(format!("unknown command {other:?}\n\n{USAGE}"))),
     }
 }
 
@@ -25,6 +24,7 @@ const USAGE: &str = "\
 usage: nucleos <command> [options]
 
   init                 create a deployment: stores, recovery password, administrator key
+  config               print what the daemon is running (signs the request)
   --help               this text
 
 init options:
@@ -37,6 +37,11 @@ init options:
   --key-out <path>     write the private key to a file instead of the keychain
   --no-client-config   do not write the socket discovery file
   --force              replace an existing deployment
+
+config options:
+  --socket <path>      where the daemon listens     (default: the client config)
+  --key-id <id>        which key signs               (default: the client config)
+  --key-file <path>    read the private key from a file instead of the keychain
 
 The private key is the one thing that is never written into the stores: it goes to the operating
 system's keychain, or to the file named by --key-out for a machine without a login session.";
@@ -133,4 +138,24 @@ fn nucleosd_layout(root: Option<PathBuf>, socket: Option<PathBuf>) -> (PathBuf, 
         }
     });
     (root, socket)
+}
+
+fn config(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut options = nucleos_cli::config::Options::default();
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        let mut value = |what: &str| -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+            rest.next()
+                .cloned()
+                .ok_or_else(|| Box::from(format!("{what} needs a value")))
+        };
+        match arg.as_str() {
+            "--socket" => options.socket = Some(PathBuf::from(value("--socket")?)),
+            "--key-id" => options.key_id = Some(value("--key-id")?),
+            "--key-file" => options.key_file = Some(PathBuf::from(value("--key-file")?)),
+            other => return Err(Box::from(format!("unknown option {other:?}\ntry --help"))),
+        }
+    }
+    nucleos_cli::config::run(&options)?;
+    Ok(())
 }

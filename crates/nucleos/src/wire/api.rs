@@ -204,6 +204,42 @@ pub struct DescribeResponse {
     pub generation: u64,
 }
 
+/// What this daemon is running.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigResponse {
+    /// The configuration schema this build writes.
+    pub schema_version: u32,
+    /// Where the data lives.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
+    /// The policy document in force, as stored — the daemon does not summarise what it enforces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_json: Option<String>,
+    /// The administrator keys enrolled.
+    #[serde(default)]
+    pub admin_keys: Vec<ConfigKey>,
+    /// The tool generation new sessions are pinned to.
+    #[serde(default)]
+    pub generation: u64,
+    /// How many bytes of body the signature covered.
+    ///
+    /// Zero for every read, which is the point: it shows the verifier ran over the request that was
+    /// actually sent rather than over a body it assumed.
+    #[serde(default)]
+    pub signed_body_bytes: u64,
+}
+
+/// One enrolled administrator key, without the key material.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigKey {
+    /// The short identifier the signatures name.
+    pub id: String,
+    /// The tenant it acts for.
+    pub tenant: String,
+    /// The subject within it.
+    pub subject: String,
+}
+
 /// What this daemon has counted since it started.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct MetricsResponse {

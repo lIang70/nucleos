@@ -908,3 +908,125 @@ async fn the_daemon_reads_the_policy_init_wrote_instead_of_a_file() {
         "the daemon must read the row `init` writes"
     );
 }
+
+#[tokio::test]
+async fn the_config_endpoint_needs_a_signature_and_says_so_with_401() {
+    // A built deployment: an admin key exists, so the endpoint is reachable in principle and the
+    // refusal is about *this* request rather than about the daemon being uninitialised.
+    let app = signed_deployment().await;
+
+    let response = router(Arc::clone(&app))
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/config")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // 401, not 403: a missing credential is "who are you", a denied policy verdict is "not you".
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let error = body_json(response).await;
+    assert!(
+        error["reason"].as_str().unwrap().contains("Nucleos-Admin"),
+        "{error}"
+    );
+}
+
+/// A daemon with a system store and one enrolled administrator key.
+async fn signed_deployment() -> Arc<App> {
+    use nucleos::adapter::AllowAll;
+    let system = Arc::new(nucleos_sqlite::SystemStore::in_memory().unwrap());
+    let key = nucleos_auth::KeyPair::generate();
+    system
+        .set(
+            nucleosd::admin::ADMIN_KEYS_KEY,
+            &serde_json::to_string(&vec![key.public("acme", "alice")]).unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let kernel = nucleos::Kernel::builder()
+        .store(Arc::new(nucleos_sqlite::SqliteStore::in_memory().unwrap()))
+        .policy(Arc::new(AllowAll))
+        .build()
+        .unwrap();
+
+    Arc::new(
+        App::new(
+            Arc::new(kernel),
+            nucleos::contract::Principal::default(),
+            Vec::new(),
+        )
+        .with_system(
+            system,
+            std::path::PathBuf::from("/var/lib/nucleos"),
+            Arc::new(nucleos::adapter::SystemClock),
+        ),
+    )
+}
+
+#[tokio::test]
+async fn a_signed_config_request_answers_with_what_the_daemon_is_running() {
+    let system = Arc::new(nucleos_sqlite::SystemStore::in_memory().unwrap());
+    let key = nucleos_auth::KeyPair::generate();
+    let public = key.public("acme", "alice");
+    system
+        .set(
+            nucleosd::admin::ADMIN_KEYS_KEY,
+            &serde_json::to_string(&vec![public.clone()]).unwrap(),
+        )
+        .await
+        .unwrap();
+    system
+        .set(nucleosd::http::POLICY_KEY, r#"{"default":"deny","rules":[]}"#)
+        .await
+        .unwrap();
+
+    use nucleos::adapter::AllowAll;
+    let kernel = nucleos::Kernel::builder()
+        .store(Arc::new(nucleos_sqlite::SqliteStore::in_memory().unwrap()))
+        .policy(Arc::new(AllowAll))
+        .build()
+        .unwrap();
+    let app = Arc::new(
+        App::new(
+            Arc::new(kernel),
+            nucleos::contract::Principal::default(),
+            Vec::new(),
+        )
+        .with_system(
+            system,
+            std::path::PathBuf::from("/var/lib/nucleos"),
+            Arc::new(nucleos::adapter::SystemClock),
+        ),
+    );
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let authorization = key.sign_request(&public.id, "GET", "/v1/config", b"", now);
+
+    let response = router(Arc::clone(&app))
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/config")
+                .header("authorization", authorization)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let config = body_json(response).await;
+    assert_eq!(config["root"], "/var/lib/nucleos");
+    assert_eq!(config["admin_keys"][0]["id"], public.id.as_str());
+    assert_eq!(config["admin_keys"][0]["subject"], "alice");
+    assert_eq!(config["policy_json"], r#"{"default":"deny","rules":[]}"#);
+    assert_eq!(config["signed_body_bytes"], 0, "a read signs an empty body");
+}

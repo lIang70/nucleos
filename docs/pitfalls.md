@@ -865,3 +865,19 @@ at the place that would have needed it.
 **The same reasoning, one layer up.** `PasswordHash` does implement `Display`, and prints
 `<recovery password hash>` — a hash in a log line is a hash somebody can attack offline.
 
+## 63. A missing signature is 401, a denied verdict is 403
+
+**Decision.** The administrative extractor answers `401 Unauthorized` for a missing or invalid
+signature; a policy verdict of deny stays `403`.
+
+**Why.** They are different questions. `401` is "who are you", `403` is "not you" — and a client that
+receives `403` for an absent credential goes looking for a permission it does not lack, which is time
+spent in the wrong file. The first version of the endpoint returned `403` for both, because both are
+`ErrorCode::Denied` inside the kernel; the status code is the transport's to decide, and it has the one
+piece of information the kernel does not: whether a credential was presented at all.
+
+**Why the signature covers the body hash and the path.** A signature over "this request" that omitted
+either would be a signature over a verb. Captured on a `GET`, it would authorise a `PUT` that changes
+the policy — which is why those two are lines in the canonical form and not assumptions about the
+transport.
+

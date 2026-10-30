@@ -142,7 +142,7 @@ pub async fn run(options: &Options) -> Result<Done> {
     // 2. The administrator's key. The private half goes to the keychain; the daemon is told the public
     //    half and nothing else, which is what makes a copy of its database useless for administration.
     let key = KeyPair::generate();
-    let public = key.public(&options.subject);
+    let public = key.public(&options.tenant, &options.subject);
     let store = match &options.key_out {
         Some(path) => KeyStore::File(path.clone()),
         None => KeyStore::keychain(public.id.clone()),
@@ -156,9 +156,9 @@ pub async fn run(options: &Options) -> Result<Done> {
     // 3. The policy it starts from.
     system.set(POLICY_KEY, BOOTSTRAP_POLICY).await?;
 
-    // 4. How a client finds the daemon.
+    // 4. How a client finds the daemon, and which key signs for it.
     if let Some(client_config) = &options.client_config {
-        write_client_config(client_config, &options.socket)?;
+        write_client_config(client_config, &options.socket, &public.id)?;
     }
 
     tracing::info!(
@@ -175,18 +175,21 @@ pub async fn run(options: &Options) -> Result<Done> {
     })
 }
 
-/// Remember where the daemon listens, for a client that was not told.
-fn write_client_config(path: &Path, socket: &Path) -> Result<()> {
+/// Remember where the daemon listens and which key signs, for a client that was not told.
+///
+/// `key=value` lines rather than JSON: two answers to two questions, both of which a person may want
+/// to read or edit by hand. A format with nesting for this would be a schema nobody needs.
+fn write_client_config(path: &Path, socket: &Path, key_id: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| {
             Error::invalid(format!("cannot create {}: {error}", parent.display()))
         })?;
     }
-    // One line, no format: this file answers exactly one question, and a format for one answer is a
-    // schema nobody needs.
-    std::fs::write(path, format!("{}\n", socket.display())).map_err(|error| {
-        Error::invalid(format!("cannot write {}: {error}", path.display()))
-    })
+    std::fs::write(
+        path,
+        format!("socket={}\nkey={key_id}\n", socket.display()),
+    )
+    .map_err(|error| Error::invalid(format!("cannot write {}: {error}", path.display())))
 }
 
 /// `~/.config/nucleos/socket` on Linux, `~/Library/Application Support/nucleos/socket` on macOS.
@@ -245,10 +248,9 @@ mod tests {
         assert!(keys.contains(&done.key_id));
         assert!(root.join("admin.key").exists());
         // A client can find the daemon.
-        assert_eq!(
-            std::fs::read_to_string(root.join("client/socket")).unwrap().trim(),
-            options.socket.display().to_string()
-        );
+        let client = std::fs::read_to_string(root.join("client/socket")).unwrap();
+        assert!(client.contains(&format!("socket={}", options.socket.display())), "{client}");
+        assert!(client.contains(&format!("key={}", done.key_id)), "{client}");
 
         let _ = std::fs::remove_dir_all(&root);
     }

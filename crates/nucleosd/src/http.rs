@@ -19,7 +19,7 @@ use nucleos_sqlite::SqliteStore;
 use nucleos::kernel::{HitlVerdict, Kernel, SessionSpec, StateWrite};
 use nucleos::wire::api::{
     DescribeResponse, ErrorBody, InferenceRequest, InferenceResponse, ProcessInfo,
-    MetricsResponse, ProcessListResponse, ProcessStartRequest, ProcessStartResponse, ReloadResponse,
+    ConfigKey, ConfigResponse, MetricsResponse, ProcessListResponse, ProcessStartRequest, ProcessStartResponse, ReloadResponse,
     SessionView, StartRequest,
     StartResponse, StateRequest, StdinRequest, ToolBatchRequest, ToolBatchResponse, VerdictRequest,
 };
@@ -93,6 +93,12 @@ pub struct App {
     /// attributed to one principal — a decision about where the daemon is listening, not one this
     /// struct can make for it.
     tokens: crate::auth::Tokens,
+    /// Administrator signatures, when a system store holds keys to check them against.
+    admins: Option<Arc<crate::admin::Verifier>>,
+    /// The configuration database: what this daemon is, as opposed to what it is doing.
+    system: Option<Arc<nucleos_sqlite::SystemStore>>,
+    /// Where the data lives, reported by `GET /v1/config`.
+    root: Option<std::path::PathBuf>,
 }
 
 impl App {
@@ -106,6 +112,9 @@ impl App {
             models,
             tools: std::sync::RwLock::new(Vec::new()),
             source: None,
+            admins: None,
+            system: None,
+            root: None,
             metrics: crate::metrics::Metrics::started_now(),
         }
     }
@@ -308,6 +317,11 @@ impl App {
             Self::unconfigured().principal,
             vec![model],
         )
+        .with_system(
+            Arc::new(nucleos_sqlite::SystemStore::open(layout.system_store())?),
+            layout.root.clone(),
+            Arc::new(nucleos::adapter::SystemClock),
+        )
         .with_tools(discovered)
         .with_tokens(tokens);
         Ok(match configured_source {
@@ -329,8 +343,47 @@ impl App {
             tools: std::sync::RwLock::new(Vec::new()),
             source: None,
             tokens: crate::auth::Tokens::default(),
+            admins: None,
+            system: None,
+            root: None,
             metrics: crate::metrics::Metrics::started_now(),
         }
+    }
+
+    /// Give the daemon a system store: `GET /v1/config` reads it, and administrator signatures are
+    /// checked against the keys inside it.
+    #[must_use]
+    pub fn with_system(
+        mut self,
+        system: Arc<nucleos_sqlite::SystemStore>,
+        root: std::path::PathBuf,
+        clock: Arc<dyn nucleos::adapter::Clock>,
+    ) -> Self {
+        self.admins = Some(Arc::new(crate::admin::Verifier::new(
+            Arc::clone(&system),
+            clock,
+        )));
+        self.system = Some(system);
+        self.root = Some(root);
+        self
+    }
+
+    /// The signature verifier, when this deployment has keys to check against.
+    #[must_use]
+    pub fn admins(&self) -> Option<&Arc<crate::admin::Verifier>> {
+        self.admins.as_ref()
+    }
+
+    /// The configuration database.
+    #[must_use]
+    pub fn system(&self) -> Option<&Arc<nucleos_sqlite::SystemStore>> {
+        self.system.as_ref()
+    }
+
+    /// Where the data lives.
+    #[must_use]
+    pub fn root(&self) -> Option<&std::path::Path> {
+        self.root.as_deref()
     }
 
     fn kernel(&self) -> Result<&Arc<Kernel>, ApiError> {
@@ -492,6 +545,17 @@ pub const ROUTES: &[Route] = &[
     Route {
         meta: openapi::Route {
             method: "get",
+            path: "/v1/config",
+            operation: "config",
+            summary: "What this daemon is running, for an administrator who signed the request.",
+            request: None,
+            reply: openapi::Reply::Json("ConfigResponse"),
+        },
+        build: || get(config),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "get",
             path: "/v1/metrics",
             operation: "metrics",
             summary: "What this daemon has counted since it started.",
@@ -648,6 +712,69 @@ async fn describe(State(app): State<Arc<App>>) -> Json<DescribeResponse> {
         tools: app.tools_now(),
         generation: app.kernel.as_ref().map(|kernel| kernel.generation().0).unwrap_or(0),
     })
+}
+
+/// What this daemon is running.
+///
+/// The first signed endpoint, and deliberately a read: the mechanism that proves *who* is asking comes
+/// before the surface that changes anything. An administrator can confirm what the daemon is enforcing
+/// — which policy, which keys, which generation — without a mutation existing yet.
+async fn config(
+    State(app): State<Arc<App>>,
+    admin: crate::admin::Admin,
+) -> Result<Json<ConfigResponse>, ApiError> {
+    let Some(system) = app.system() else {
+        return Err(ApiError::from_error(&nucleos::Error::unavailable(
+            "this daemon has no system store",
+        )));
+    };
+
+    let policy = system
+        .get(POLICY_KEY)
+        .map_err(|error| ApiError::from_error(&error))?;
+    let keys = system
+        .get(crate::admin::ADMIN_KEYS_KEY)
+        .map_err(|error| ApiError::from_error(&error))?;
+    let keys: Vec<nucleos_auth::PublicKey> = keys
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|error| {
+            ApiError::from_error(&nucleos::Error::internal(format!(
+                "stored administrator keys are unreadable: {error}"
+            )))
+        })?
+        .unwrap_or_default();
+
+    tracing::info!(
+        event = "config_read",
+        by = %admin.principal.subject,
+        tenant = %admin.principal.tenant,
+    );
+
+    Ok(Json(ConfigResponse {
+        schema_version: system
+            .schema_version()
+            .map_err(|error| ApiError::from_error(&error))?,
+        root: app.root().map(|root| root.display().to_string()),
+        policy_json: policy,
+        admin_keys: keys
+            .into_iter()
+            .map(|key| ConfigKey {
+                id: key.id,
+                tenant: key.tenant,
+                subject: key.subject,
+            })
+            .collect(),
+        generation: app
+            .kernel
+            .as_ref()
+            .map(|kernel| kernel.generation().0)
+            .unwrap_or(0),
+        // The body is what the signature covered. Reporting its length is the cheapest way for a
+        // caller to see that verification ran over the request they actually sent.
+        signed_body_bytes: admin.body.len() as u64,
+    }))
 }
 
 /// What this daemon has counted.
@@ -1128,7 +1255,18 @@ pub struct ApiError {
 }
 
 impl ApiError {
-    fn from_error(error: &nucleos::Error) -> Self {
+    /// A request whose credentials were missing or wrong.
+    ///
+    /// `401`, not `403`: the difference is "who are you" versus "not you". A denied policy verdict is
+    /// the second; an unsigned or badly signed request is the first, and a client that sees `403` for a
+    /// missing credential will look for a permission it does not lack.
+    pub(crate) fn unauthorized(error: &nucleos::Error) -> Self {
+        let mut refused = Self::from_error(error);
+        refused.status = StatusCode::UNAUTHORIZED;
+        refused
+    }
+
+    pub(crate) fn from_error(error: &nucleos::Error) -> Self {
         let status = match error.code() {
             ErrorCode::Invalid => StatusCode::BAD_REQUEST,
             ErrorCode::NotFound => StatusCode::NOT_FOUND,

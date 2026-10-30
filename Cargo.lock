@@ -950,6 +950,7 @@ dependencies = [
  "nucleos-sqlite",
  "rand_core 0.6.4",
  "serde",
+ "sha2",
  "tokio",
  "tracing",
 ]
@@ -1039,6 +1040,7 @@ dependencies = [
  "axum",
  "nucleos",
  "nucleos-agent",
+ "nucleos-auth",
  "nucleos-cli",
  "nucleos-mcp",
  "nucleos-openai",

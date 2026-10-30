@@ -16,6 +16,11 @@ Built, today:
   half goes to the keychain (or `--key-out` for a machine with no login session), the bootstrap policy
   written into the system store, and the client's socket discovery file. The daemon reads that policy
   instead of a file, so a fresh deployment needs no `NUCLEOS_POLICY` at all.
+- **Signed requests, and one endpoint to use them on.** `GET /v1/config` is the first
+  administrator-authenticated route, and `nucleos config` is the first command that presents the key
+  `init` created. The canonical form, the header, and the verifier share one definition
+  (`nucleos-auth::signature`), the daemon refuses a replay by nonce, and an unsigned request is `401`
+  rather than `403` — "who are you" is not "not you".
 
 Today every deployment decision is an environment variable — fifteen of them, read in four places,
 validated at whatever line happens to need them. There is no file, no single check that says "this
@@ -199,6 +204,14 @@ ends up with a permission model nobody can explain:
 | May this host user talk to the daemon at all? | socket mode + directory mode | all callers |
 | Which tenant is this? | bearer token, or a signed request | tenant callers |
 | May this change configuration? | Ed25519 signature + `Gated::Config` | administrators |
+
+`nucleos config` reads its two settings from the client config `init` writes, one `key=value` per
+line, and both are overridable — a script may know better than a file:
+
+```text
+socket=/run/nucleos/nucleosd.sock
+key=87af1de5
+```
 
 | Socket mode | Who can connect | Effect on an application |
 | --- | --- | --- |
@@ -406,8 +419,17 @@ Each step is useful on its own, and none of them requires the next.
    exists, `init` creates an identity that nothing yet presents.
 4. **Configuration ABI** — `/v1/config`, models, sources, tokens, policy; one event per change.
 5. **CLI** — a thin client: send the request, print the event that was recorded.
-6. **Ed25519 signatures** — last, because it protects what steps 1–5 built. Until then, a single
-   bootstrap administrator token (§7) stands in, and the token is understood to be temporary.
+6. **Ed25519 signatures — done.** `KeyPair::sign_request` and the daemon's `Verifier`, with a
+   canonical form defined once:
+
+   ```text
+   nucleos-admin-v1\n<METHOD>\n<PATH>\n<sha256(body) hex>\n<unix_millis>\n<nonce>
+   ```
+
+   Three checks, each a test: freshness within sixty seconds, first sight of the nonce, and the
+   signature over the same string the CLI built. `GET /v1/config` is the first route behind it and
+   `nucleos config` the first command that signs. What is still missing is everything the signature is
+   *for*: the mutating configuration ABI (§8), which is step 4.
 
 ## 11. Open questions
 

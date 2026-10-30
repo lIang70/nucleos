@@ -31,8 +31,25 @@ pub struct PublicKey {
     pub id: String,
     /// Base64 of the 32-byte verifying key.
     pub key: String,
-    /// Who this key belongs to, for the audit line.
-    pub owner: String,
+    /// The tenant this key acts for.
+    ///
+    /// A key *is* an identity, so it carries the whole one: without the tenant, a verified signature
+    /// would produce a principal that cannot be scoped, and every configuration change would have to
+    /// arrive with its own tenant claim — a second thing to verify and a second thing to get wrong.
+    pub tenant: String,
+    /// The subject within it.
+    pub subject: String,
+}
+
+impl PublicKey {
+    /// The principal this key authenticates.
+    #[must_use]
+    pub fn principal(&self) -> nucleos::contract::Principal {
+        nucleos::contract::Principal {
+            tenant: self.tenant.clone(),
+            subject: self.subject.clone(),
+        }
+    }
 }
 
 impl KeyPair {
@@ -67,12 +84,13 @@ impl KeyPair {
 
     /// The public half, ready to be stored.
     #[must_use]
-    pub fn public(&self, owner: impl Into<String>) -> PublicKey {
+    pub fn public(&self, tenant: impl Into<String>, subject: impl Into<String>) -> PublicKey {
         let verifying = self.signing.verifying_key();
         PublicKey {
             id: fingerprint(verifying.as_bytes()),
             key: base64_encode(verifying.as_bytes()),
-            owner: owner.into(),
+            tenant: tenant.into(),
+            subject: subject.into(),
         }
     }
 
@@ -137,12 +155,12 @@ mod tests {
         let canonical = b"nucleos-admin-v1\nPOST\n/v1/models\n";
 
         let signature = mine.sign(canonical);
-        assert!(mine.public("alice").verifies(canonical, &signature).unwrap());
+        assert!(mine.public("acme", "alice").verifies(canonical, &signature).unwrap());
         // The property the whole design rests on: a signature is not transferable to another key.
-        assert!(!theirs.public("mallory").verifies(canonical, &signature).unwrap());
+        assert!(!theirs.public("acme", "mallory").verifies(canonical, &signature).unwrap());
         // Nor to another request.
         assert!(!mine
-            .public("alice")
+            .public("acme", "alice")
             .verifies(b"nucleos-admin-v1\nPOST\n/v1/policy\n", &signature)
             .unwrap());
     }
@@ -152,23 +170,23 @@ mod tests {
         // The keychain holds bytes; a restart has to rebuild the same key from them.
         let original = KeyPair::generate();
         let restored = KeyPair::from_secret(&original.secret()).unwrap();
-        assert_eq!(original.public("alice"), restored.public("alice"));
+        assert_eq!(original.public("acme", "alice"), restored.public("acme", "alice"));
         assert_eq!(
-            original.public("alice").key,
-            restored.public("alice").key
+            original.public("acme", "alice").key,
+            restored.public("acme", "alice").key
         );
     }
 
     #[test]
     fn the_identifier_is_short_and_derived_from_the_key() {
-        let key = KeyPair::generate().public("alice");
+        let key = KeyPair::generate().public("acme", "alice");
         assert_eq!(key.id.len(), 8, "{}", key.id);
         assert!(key.id.chars().all(|c| c.is_ascii_hexdigit()));
 
         // Same key, same name; different key, different name.
         let again = KeyPair::from_secret(&KeyPair::generate().secret())
             .unwrap()
-            .public("alice");
+            .public("acme", "alice");
         assert_ne!(key.id, again.id);
     }
 
@@ -185,7 +203,8 @@ mod tests {
         let key = PublicKey {
             id: "00000000".to_owned(),
             key: "not base64".to_owned(),
-            owner: "alice".to_owned(),
+            tenant: "acme".to_owned(),
+            subject: "alice".to_owned(),
         };
         assert!(key.verifies(b"x", "AAAA").is_err());
     }

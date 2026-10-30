@@ -197,6 +197,29 @@
         },
         "type": "object"
       },
+      "ConfigKey": {
+        "description": "One enrolled administrator key, without the key material.",
+        "properties": {
+          "id": {
+            "description": "The short identifier the signatures name.",
+            "type": "string"
+          },
+          "subject": {
+            "description": "The subject within it.",
+            "type": "string"
+          },
+          "tenant": {
+            "description": "The tenant it acts for.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tenant",
+          "subject"
+        ],
+        "type": "object"
+      },
       "ConfigPatch": {
         "description": "A partial update to a session's mutable configuration.\n\nThe wiring — kind, sandbox, workspace — is not here, because it is decided when the session\nopens and is not the application's to change while it runs. Everything in this struct is\ncontent or strategy, and every field is optional: absent means unchanged, `null` (where the\nfield is doubly optional) means cleared.",
         "properties": {
@@ -273,6 +296,57 @@
             ]
           }
         },
+        "type": "object"
+      },
+      "ConfigResponse": {
+        "description": "What this daemon is running.",
+        "properties": {
+          "admin_keys": {
+            "default": [],
+            "description": "The administrator keys enrolled.",
+            "items": {
+              "$ref": "#/components/schemas/ConfigKey"
+            },
+            "type": "array"
+          },
+          "generation": {
+            "default": 0,
+            "description": "The tool generation new sessions are pinned to.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "policy_json": {
+            "description": "The policy document in force, as stored — the daemon does not summarise what it enforces.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "root": {
+            "description": "Where the data lives.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "schema_version": {
+            "description": "The configuration schema this build writes.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "signed_body_bytes": {
+            "default": 0,
+            "description": "How many bytes of body the signature covered.\n\nZero for every read, which is the point: it shows the verifier ran over the request that was\nactually sent rather than over a body it assumed.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_version"
+        ],
         "type": "object"
       },
       "ConfigureResponse": {
@@ -3170,6 +3244,84 @@
           }
         },
         "summary": "Open a session and run the reference loop to completion."
+      }
+    },
+    "/v1/config": {
+      "get": {
+        "operationId": "config",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigResponse"
+                }
+              }
+            },
+            "description": "The result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "What this daemon is running, for an administrator who signed the request."
       }
     },
     "/v1/describe": {
