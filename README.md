@@ -19,6 +19,7 @@ non-functional skeleton. No working kernel yet.
 - [`docs/architecture.md`](docs/architecture.md) — the kernel: layers, contracts, session model
 - [`docs/abi.md`](docs/abi.md) — the service ABI and its versioning rules
 - [`docs/pitfalls.md`](docs/pitfalls.md) — decisions and the failure modes they prevent
+- [`docs/config.md`](docs/config.md) — **proposal**: configuration and administration, not built
 
 ## What it is not
 

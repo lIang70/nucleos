@@ -842,6 +842,22 @@ What is absent, and why each absence is a decision rather than an omission:
 The counters are the questions an operator asks first. Everything else can be computed from the event
 log, which is the record rather than a statistic.
 
+## 12.9 Configuration, today and proposed
+
+Today every deployment decision is an environment variable: fifteen of them, read in `nucleosd`,
+validated wherever they happen to be needed. Nothing can change without a restart except the tool
+source, and that includes the policy — the one thing an operator most needs to tighten during an
+incident.
+
+[`config.md`](config.md) is the proposal that would replace it: `nucleos init` once, configuration in
+the store, a signed request per change, and two databases with two lifecycles. It is a proposal and
+nothing in it is built; this section exists so that "where does configuration live" has a pointer
+rather than an answer that drifts.
+
+What it does **not** propose to change, because the architecture already decided it: session wiring
+(kind, sandbox, workspace, budget) stays startup-only and lives in the checkpoint; everything a request
+carries stays in the request; and a change to exposure or sandbox narrows and never widens.
+
 ## 13. Non-goals
 
 | Not building                                                          | Why                                                                                          |
