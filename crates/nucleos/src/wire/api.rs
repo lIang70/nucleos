@@ -204,6 +204,34 @@ pub struct DescribeResponse {
     pub generation: u64,
 }
 
+/// An administrator's public key to enrol.
+///
+/// Public by construction: this endpoint hands the daemon the *verifying* half, which is why enrolling
+/// an administrator is safe to do over the wire. The private half never travels.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct AdminKeyRequest {
+    /// Base64 of the 32-byte Ed25519 verifying key.
+    pub key: String,
+    /// The tenant it acts for.
+    pub tenant: String,
+    /// The subject within it.
+    pub subject: String,
+}
+
+/// The administrators this deployment trusts.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct AdminKeyListResponse {
+    /// In the order they were enrolled.
+    #[serde(default)]
+    pub keys: Vec<ConfigKey>,
+    /// Something the caller should know, when a change left the deployment in a state worth naming.
+    ///
+    /// Removing the last key leaves no administrator at all: allowed, because locking yourself out is
+    /// worse than a weaker fallback, and said out loud rather than discovered later.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
 /// An MCP server to run.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct SourceRequest {

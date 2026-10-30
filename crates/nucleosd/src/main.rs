@@ -56,7 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // A deployment file is the next slice; until then the environment is the configuration, so a
     // real model can be served without one.
-    let app = App::from_env(&layout).await?;
+    let app = App::load(&layout).await?;
 
     tracing::info!(
         event = "daemon_started",

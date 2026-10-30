@@ -52,6 +52,10 @@ pub struct Abi {
     pub model_request: api::ModelRequest,
     /// One model, as reported.
     pub model_view: api::ModelView,
+    /// `POST /v1/admin/keys`.
+    pub admin_key_request: api::AdminKeyRequest,
+    /// `GET /v1/admin/keys`.
+    pub admin_key_list_response: api::AdminKeyListResponse,
     /// `POST /v1/sources`.
     pub source_request: api::SourceRequest,
     /// One source, as reported.

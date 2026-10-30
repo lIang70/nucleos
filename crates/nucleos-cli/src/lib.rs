@@ -12,6 +12,7 @@
 //! Keeping the split explicit is what stops the CLI from becoming a second source of truth: it can
 //! create a deployment, and after that it can only ask.
 
+pub mod admin;
 pub mod client;
 pub mod config;
 pub mod init;

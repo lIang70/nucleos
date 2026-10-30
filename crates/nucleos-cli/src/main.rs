@@ -15,6 +15,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Some("models") => models(&args[1..]),
         Some("tokens") => tokens(&args[1..]),
         Some("sources") => sources(&args[1..]),
+        Some("admin") => admin(&args[1..]),
         Some("--help" | "-h") | None => {
             println!("{USAGE}");
             Ok(())
@@ -38,6 +39,7 @@ usage: nucleos <command> [options]
   sources list         the MCP servers this deployment runs
   sources add          run one            (--name --command [--arg …] [--env K=V …])
   sources remove <name> stop one, publishing a generation without its tools
+  admin recover        enrol a new administrator key using the recovery password
   --help               this text
 
 init options:
@@ -318,5 +320,69 @@ fn sources(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Syn
         other => return Err(Box::from(format!("unknown sources subcommand {other:?}"))),
     };
     println!("{text}");
+    Ok(())
+}
+
+/// `nucleos admin recover`: the local command that uses the recovery password.
+///
+/// Local on purpose: it reads the store from the filesystem and never talks to the daemon. A remote
+/// recovery path would be an oracle for guessing the one credential that can recreate administration.
+fn admin(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let (command, rest) = match args.split_first() {
+        Some((command, rest)) => (command.as_str(), rest),
+        None => return Err(Box::from("admin needs a subcommand: recover")),
+    };
+    if command != "recover" {
+        return Err(Box::from(format!("unknown admin subcommand {command:?}")));
+    }
+
+    let mut root = None;
+    let mut key_out = None;
+    let mut tenant = None;
+    let mut subject = None;
+    let mut password_stdin = false;
+
+    let mut iter = rest.iter();
+    while let Some(arg) = iter.next() {
+        let mut value = |what: &str| -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+            iter.next()
+                .cloned()
+                .ok_or_else(|| Box::from(format!("{what} needs a value")))
+        };
+        match arg.as_str() {
+            "--root" => root = Some(PathBuf::from(value("--root")?)),
+            "--key-out" => key_out = Some(PathBuf::from(value("--key-out")?)),
+            "--tenant" => tenant = Some(value("--tenant")?),
+            "--subject" => subject = Some(value("--subject")?),
+            "--password-stdin" => password_stdin = true,
+            other => return Err(Box::from(format!("unknown option {other:?}"))),
+        }
+    }
+
+    let password = if password_stdin {
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        line.trim_end_matches(['\n', '\r']).to_owned()
+    } else {
+        rpassword::prompt_password("recovery password: ")?
+    };
+
+    let layout = nucleosd_layout(root, None);
+    let mut options = nucleos_cli::admin::Options::new(layout.0, password);
+    options.key_out = key_out;
+    if let Some(tenant) = tenant {
+        options.tenant = tenant;
+    }
+    if let Some(subject) = subject {
+        options.subject = subject;
+    }
+
+    let runtime = tokio::runtime::Runtime::new()?;
+    let done = runtime.block_on(nucleos_cli::admin::recover(&options))?;
+    println!("✓ new admin key   {} ({})", done.key_id, done.key_store);
+    println!("✓ {} key(s) enrolled", done.enrolled);
+    println!(
+        "\nno restart needed: the daemon re-reads the key list on every request, so this key works now"
+    );
     Ok(())
 }

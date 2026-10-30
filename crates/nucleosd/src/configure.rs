@@ -25,7 +25,10 @@ use axum::extract::{Path, State};
 use axum::Json;
 use nucleos::adapter::{ConfigScope, Verdict};
 use nucleos::error::{Error, Result};
-use nucleos::wire::api::{ModelListResponse, ModelRequest, ModelView, PutResponse};
+use nucleos::wire::api::{
+    AdminKeyListResponse, AdminKeyRequest, ConfigKey, ModelListResponse, ModelRequest, ModelView,
+    PutResponse,
+};
 use nucleos_sqlite::{Change, SystemStore};
 use std::sync::Arc;
 
@@ -200,6 +203,147 @@ pub fn adapter_for(request: &ModelRequest) -> Result<nucleos_openai::OpenAi> {
         supports_reasoning: request.reasoning,
         timeout: Some(std::time::Duration::from_secs(120)),
     })
+}
+
+/// The administrators this deployment trusts.
+pub async fn list_admin_keys(
+    State(app): State<Arc<App>>,
+    _admin: Admin,
+) -> std::result::Result<Json<AdminKeyListResponse>, ApiError> {
+    Ok(Json(AdminKeyListResponse {
+        keys: enrolled(&app)?
+            .iter()
+            .map(|key| ConfigKey {
+                id: key.id.clone(),
+                tenant: key.tenant.clone(),
+                subject: key.subject.clone(),
+            })
+            .collect(),
+        warning: None,
+    }))
+}
+
+/// Enrol another administrator's public key.
+///
+/// The private half never travels: this endpoint takes the verifying half, which is why enrolling is
+/// safe over the wire and why the daemon can never mint administration for itself.
+pub async fn post_admin_key(
+    State(app): State<Arc<App>>,
+    admin: Admin,
+) -> std::result::Result<Json<AdminKeyListResponse>, ApiError> {
+    let request: AdminKeyRequest = serde_json::from_slice(&admin.body).map_err(|error| {
+        ApiError::from_error(&Error::invalid(format!(
+            "the key is not valid JSON: {error}"
+        )))
+    })?;
+    permit(&app, &admin, "admin_keys").await?;
+
+    let key = nucleos_auth::PublicKey::from_public(
+        &request.key,
+        request.tenant.clone(),
+        request.subject.clone(),
+    )
+    .map_err(|error| ApiError::from_error(&error))?;
+
+    let mut keys = enrolled(&app)?;
+    if keys.iter().any(|existing| existing.id == key.id) {
+        return Err(ApiError::from_error(&Error::invalid(format!(
+            "key {} is already enrolled",
+            key.id
+        ))));
+    }
+    keys.push(key.clone());
+    persist_keys(&app, &keys, &admin, &format!("enrol {}", key.id)).await?;
+
+    tracing::info!(
+        event = "admin_key_enrolled",
+        id = %key.id,
+        subject = %key.subject,
+        by = %admin.principal.subject,
+    );
+    Ok(Json(AdminKeyListResponse {
+        keys: keys.iter().map(view).collect(),
+        warning: None,
+    }))
+}
+
+/// Revoke an administrator's key.
+///
+/// Immediate: the verifier reads the list on every request, so the next request signed with this key
+/// is refused. Removing the *last* key is allowed and warned about — locking yourself out is worse than
+/// a weaker fallback, and the recovery password still exists for exactly this.
+pub async fn delete_admin_key(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+    admin: Admin,
+) -> std::result::Result<Json<AdminKeyListResponse>, ApiError> {
+    permit(&app, &admin, "admin_keys").await?;
+
+    let mut keys = enrolled(&app)?;
+    let before = keys.len();
+    keys.retain(|key| key.id != id);
+    if keys.len() == before {
+        return Err(ApiError::from_error(&Error::not_found(format!(
+            "no administrator key with id {id:?}"
+        ))));
+    }
+    persist_keys(&app, &keys, &admin, &format!("revoke {id}")).await?;
+
+    let warning = keys.is_empty().then(|| {
+        "no administrator key remains: only the recovery password can enrol one now, with \
+         `nucleos admin recover`"
+            .to_owned()
+    });
+    tracing::info!(
+        event = "admin_key_revoked",
+        id = %id,
+        remaining = keys.len(),
+        by = %admin.principal.subject,
+    );
+    Ok(Json(AdminKeyListResponse {
+        keys: keys.iter().map(view).collect(),
+        warning,
+    }))
+}
+
+fn view(key: &nucleos_auth::PublicKey) -> ConfigKey {
+    ConfigKey {
+        id: key.id.clone(),
+        tenant: key.tenant.clone(),
+        subject: key.subject.clone(),
+    }
+}
+
+fn enrolled(app: &Arc<App>) -> std::result::Result<Vec<nucleos_auth::PublicKey>, ApiError> {
+    let Some(raw) = system(app)?
+        .get(crate::admin::ADMIN_KEYS_KEY)
+        .map_err(|error| ApiError::from_error(&error))?
+    else {
+        return Ok(Vec::new());
+    };
+    serde_json::from_str(&raw).map_err(|error| {
+        ApiError::from_error(&Error::internal(format!(
+            "stored administrator keys are unreadable: {error}"
+        )))
+    })
+}
+
+async fn persist_keys(
+    app: &Arc<App>,
+    keys: &[nucleos_auth::PublicKey],
+    admin: &Admin,
+    what: &str,
+) -> std::result::Result<(), ApiError> {
+    let text = serde_json::to_string(keys).map_err(|error| {
+        ApiError::from_error(&Error::internal(format!(
+            "cannot encode the administrator keys: {error}"
+        )))
+    })?;
+    system(app)?
+        .set(crate::admin::ADMIN_KEYS_KEY, &text)
+        .await
+        .map_err(|error| ApiError::from_error(&error))?;
+    record(app, admin, "admin_keys", what).await
 }
 
 /// Issue a tenant token.

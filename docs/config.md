@@ -433,14 +433,16 @@ Each step is useful on its own, and none of them requires the next.
 
    *Still missing:* the remote half — signed requests, and the ABI that carries them (§8). Until it
    exists, `init` creates an identity that nothing yet presents.
-4. **Configuration ABI — done except `admin_keys`.** `/v1/config`, policy, models, sources and tokens.
+4. **Configuration ABI — done.** `admin_keys` enrols another administrator's *public* key and revokes
+   one immediately; removing the last key is allowed and answered with a warning, because locking
+   yourself out is worse than a weaker fallback and the recovery password exists for exactly that. `/v1/config`, policy, models, sources and tokens.
    Each change is gated by `check_config`, applied to the running kernel, stored, and appended to a
    history table in the **system store** — not to the session event log, because a deployment that
    prunes session data must not prune its own audit trail, which is the reason the two databases are
    separate. A source additionally publishes a generation, which is why adding one is a tool change
    that does not disturb a session mid-call.
 5. **CLI** — a thin client: send the request, print the event that was recorded.
-6. **Ed25519 signatures — done.** `KeyPair::sign_request` and the daemon's `Verifier`, with a
+6. **Ed25519 signatures and recovery — done.** `KeyPair::sign_request` and the daemon's `Verifier`, with a
    canonical form defined once:
 
    ```text
@@ -448,9 +450,13 @@ Each step is useful on its own, and none of them requires the next.
    ```
 
    Three checks, each a test: freshness within sixty seconds, first sight of the nonce, and the
-   signature over the same string the CLI built. `GET /v1/config` is the first route behind it and
-   `nucleos config` the first command that signs. What is still missing is everything the signature is
-   *for*: the mutating configuration ABI (§8), which is step 4.
+   signature over the same string the CLI built.
+
+   `nucleos admin recover` closes the loop the password exists for: it verifies the password against the
+   stored hash, generates a new keypair, and enrols the public half beside the existing keys — locally,
+   reading the store from the filesystem, because a remote recovery path would be an oracle for guessing
+   the one credential that can recreate administration. It does not revoke the keys that still exist:
+   losing one machine is not a decision to revoke every other administrator.
 
 ## 11. Open questions
 

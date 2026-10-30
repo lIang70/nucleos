@@ -981,3 +981,23 @@ command.
 a list of servers that exist. The tools are discovered rather than stored, for the same reason: a stored
 tool list is a cache that goes stale the moment the server is upgraded.
 
+## 70. A recovery path that is remote is an oracle
+
+**Decision.** `nucleos admin recover` reads the store from the filesystem and never talks to a daemon.
+Enrolment of a *public* key is over the ABI; recovery of a *lost* key is local.
+
+**Why.** The two look similar and are not. Enrolling a public key is safe on the wire — the private half
+never travels, and the requester must already hold a valid signature. Recovery is the opposite: its whole
+purpose is to work when no key is valid, so a remote path would be a service that answers "is this
+password right?" to anyone who can connect. Local access is the second factor, and the fsync cost of
+reading a file is a cheaper check than any rate limiter could be.
+
+**What recovery deliberately does not do.** It does not revoke the remaining keys. An operator who lost a
+laptop is not an operator who wants every other administrator locked out, and a recovery tool that
+quietly narrows access is one nobody runs during an incident.
+
+**And it says what it did not need.** The daemon re-reads the key list on every request, so the recovered
+key works immediately. The first version of this command printed "restart nucleosd if it is running" and
+then explained that it re-reads per request — two sentences that contradicted each other, in the output
+of the tool people run when they are already having a bad day.
+

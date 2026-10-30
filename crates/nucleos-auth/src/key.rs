@@ -42,6 +42,28 @@ pub struct PublicKey {
 }
 
 impl PublicKey {
+    /// A key from the bytes somebody handed over, as a hex-free base64 string.
+    ///
+    /// The id is derived here rather than accepted from the caller: an id that a submitter chooses is
+    /// an id that can collide with an existing administrator's.
+    pub fn from_public(key: &str, tenant: impl Into<String>, subject: impl Into<String>) -> Result<Self> {
+        let bytes = base64_decode(key)?;
+        let length = bytes.len();
+        let array: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| Error::invalid(format!("a public key is 32 bytes; this is {length}")))?;
+        // Parsed, not just length-checked: a 32-byte string that is not a curve point would fail
+        // every verification later, with a message about the signature rather than the key.
+        VerifyingKey::from_bytes(&array)
+            .map_err(|error| Error::invalid(format!("that is not an Ed25519 public key: {error}")))?;
+        Ok(Self {
+            id: fingerprint(&array),
+            key: base64_encode(&array),
+            tenant: tenant.into(),
+            subject: subject.into(),
+        })
+    }
+
     /// The principal this key authenticates.
     #[must_use]
     pub fn principal(&self) -> nucleos::contract::Principal {

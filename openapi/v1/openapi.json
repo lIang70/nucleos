@@ -19,6 +19,50 @@
         },
         "type": "object"
       },
+      "AdminKeyListResponse": {
+        "description": "The administrators this deployment trusts.",
+        "properties": {
+          "keys": {
+            "default": [],
+            "description": "In the order they were enrolled.",
+            "items": {
+              "$ref": "#/components/schemas/ConfigKey"
+            },
+            "type": "array"
+          },
+          "warning": {
+            "description": "Something the caller should know, when a change left the deployment in a state worth naming.\n\nRemoving the last key leaves no administrator at all: allowed, because locking yourself out is\nworse than a weaker fallback, and said out loud rather than discovered later.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "AdminKeyRequest": {
+        "description": "An administrator's public key to enrol.\n\nPublic by construction: this endpoint hands the daemon the *verifying* half, which is why enrolling\nan administrator is safe to do over the wire. The private half never travels.",
+        "properties": {
+          "key": {
+            "description": "Base64 of the 32-byte Ed25519 verifying key.",
+            "type": "string"
+          },
+          "subject": {
+            "description": "The subject within it.",
+            "type": "string"
+          },
+          "tenant": {
+            "description": "The tenant it acts for.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "tenant",
+          "subject"
+        ],
+        "type": "object"
+      },
       "Attempt": {
         "description": "One attempt, recorded whether or not it produced anything.",
         "properties": {
@@ -3460,6 +3504,248 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/v1/admin/keys": {
+      "get": {
+        "operationId": "listAdminKeys",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminKeyListResponse"
+                }
+              }
+            },
+            "description": "The result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "The administrators this deployment trusts."
+      },
+      "post": {
+        "operationId": "enrolAdminKey",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminKeyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminKeyListResponse"
+                }
+              }
+            },
+            "description": "The result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "Enrol another administrator's public key."
+      }
+    },
+    "/v1/admin/keys/{id}": {
+      "delete": {
+        "operationId": "revokeAdminKey",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminKeyListResponse"
+                }
+              }
+            },
+            "description": "The result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "Revoke an administrator's key. Effective on the next request."
+      }
+    },
     "/v1/agents": {
       "post": {
         "operationId": "runAgent",

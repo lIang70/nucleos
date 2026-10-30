@@ -203,13 +203,15 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// Serve what the deployment has stored.
+    /// Load a deployment: both stores, the policy, the sources, the tokens.
     ///
-    /// The environment contributes nothing to this: models, policy and tokens are rows in the system
-    /// store, written by `nucleos init` and by signed requests afterwards. What is left in the
-    /// environment is the tool source (`NUCLEOS_MCP`) and the policy file fallback
-    /// (`NUCLEOS_POLICY`), both scheduled for removal once their store-backed forms exist.
-    pub async fn from_env(layout: &crate::layout::Layout) -> Result<Self, nucleos::Error> {
+    /// Named for what it does. It used to be `from_env`, and the name was true once — the environment
+    /// configured the models, the policy and the tokens. It configures nothing now, and a method whose
+    /// name describes a source it no longer reads is the kind of comment this project deletes.
+    ///
+    /// A store without a policy is not a deployment: `nucleos init` has not run, and the daemon says so
+    /// rather than serving a refusal it cannot explain.
+    pub async fn load(layout: &crate::layout::Layout) -> Result<Self, nucleos::Error> {
         // No environment variable configures a model. Models are rows in the system store, written
         // by `nucleos models add` through a signed request; a deployment with none starts, serves
         // `describe`, and refuses to open an agent session until somebody adds one.
@@ -540,6 +542,39 @@ pub const ROUTES: &[Route] = &[
             reply: openapi::Reply::Json("PutResponse"),
         },
         build: || put(crate::configure::put_policy),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "get",
+            path: "/v1/admin/keys",
+            operation: "listAdminKeys",
+            summary: "The administrators this deployment trusts.",
+            request: None,
+            reply: openapi::Reply::Json("AdminKeyListResponse"),
+        },
+        build: || get(crate::configure::list_admin_keys),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "post",
+            path: "/v1/admin/keys",
+            operation: "enrolAdminKey",
+            summary: "Enrol another administrator's public key.",
+            request: Some("AdminKeyRequest"),
+            reply: openapi::Reply::Json("AdminKeyListResponse"),
+        },
+        build: || post(crate::configure::post_admin_key),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "delete",
+            path: "/v1/admin/keys/{id}",
+            operation: "revokeAdminKey",
+            summary: "Revoke an administrator's key. Effective on the next request.",
+            request: None,
+            reply: openapi::Reply::Json("AdminKeyListResponse"),
+        },
+        build: || delete(crate::configure::delete_admin_key),
     },
     Route {
         meta: openapi::Route {
@@ -1422,7 +1457,7 @@ mod tests {
 
         // A store that exists and is empty: `init` has not run.
         SystemStore::open(layout.system_store()).unwrap();
-        let Err(error) = crate::http::App::from_env(&layout).await else {
+        let Err(error) = crate::http::App::load(&layout).await else {
             panic!("a store without a policy must not start");
         };
         assert!(error.reason().contains("nucleos init"), "{error:?}");
