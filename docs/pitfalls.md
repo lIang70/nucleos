@@ -698,3 +698,20 @@ pid showed `with_graceful_shutdown` working, and the hand-rolled `tokio::select!
 **The rule.** An observation strong enough to write into the code as a claim is strong enough to
 verify twice: here, `pgrep` would have said the process was alive the whole time.
 
+## 54. A mechanism tested on one platform is tested on one platform
+
+**Decision.** The bubblewrap command line is a pure function tested everywhere; the end-to-end cases
+are `#[cfg(target_os = "linux")]` and skip with a printed reason when user namespaces are unavailable.
+
+**Why.** Writing Linux support on macOS means the part most likely to be wrong — flags, ordering,
+which paths are bound writable — is exactly the part that cannot be exercised locally. Splitting it so
+the command line is asserted on every platform and the execution is asserted where it runs is the most
+that can be honestly claimed from here.
+
+**Why the skip is loud.** A test that returns early in silence is a test that has never run and never
+said so. The message names the test and the reason, so a green suite does not imply a verified
+mechanism.
+
+**Why `bwrap` is looked up first.** A missing binary otherwise surfaces as "No such file or directory"
+from a spawn that reports the *inner* command, which sends the reader to the wrong program entirely.
+

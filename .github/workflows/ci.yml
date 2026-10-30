@@ -25,6 +25,10 @@ jobs:
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets
+      - name: bubblewrap
+        # The Linux sandbox path is only exercised where it can run. Without this the tests
+        # that would catch a broken `bwrap` command line skip, loudly, on every run.
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
       - name: Test
         # Includes the tests that are gates rather than checks: the module graph, the
         # absence of a transport dependency in the kernel, and the committed schema

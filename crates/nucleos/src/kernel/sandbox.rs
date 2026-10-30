@@ -15,6 +15,13 @@
 //! - write under the roots the policy names, and nothing else,
 //! - reach the network, only when the policy says so.
 //!
+//! On Linux the mechanism is **bubblewrap**: `bwrap` with a namespace per command. `--unshare-all`
+//! gives the command its own user, pid, network, ipc and uts namespaces; `/` is bound read-only and
+//! each writable root is bound on top of it; `--die-with-parent` means a killed kernel does not leave
+//! a process nobody can reap. Landlock would add a second layer of path rules *inside* those mounts
+//! and is not wired up: the bind mounts already answer "may this command write here", and a second
+//! mechanism that can disagree with the first is a second thing to get wrong.
+//!
 //! Two deliberate refusals:
 //!
 //! - **No implicit temporary directory.** `workspace_write` means the workspace. A tool that needs
@@ -67,7 +74,22 @@ pub(crate) fn confine(
             Ok(None)
         }
         SandboxPolicy::ReadOnly { .. } | SandboxPolicy::WorkspaceWrite { .. } => {
-            seatbelt(policy, permissions, workspace)
+            #[cfg(target_os = "macos")]
+            {
+                seatbelt(policy, permissions, workspace)
+            }
+            #[cfg(target_os = "linux")]
+            {
+                bubblewrap(policy, permissions, workspace)
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+            {
+                let _ = (policy, permissions, workspace);
+                Err(crate::error::Error::unavailable(
+                    "this platform has no sandbox mechanism; only `danger_full_access` and the \
+                     external sandbox can run here",
+                ))
+            }
         }
     }
 }
@@ -94,10 +116,123 @@ fn seatbelt(
     _workspace: Option<&String>,
 ) -> Result<Option<Confinement>> {
     Err(crate::error::Error::unavailable(
-        "no sandbox mechanism is available on this platform: macOS has seatbelt, and the \
-         bubblewrap and landlock path for Linux is not written yet. Only `danger_full_access` and \
-         the external sandbox can run here",
+        "seatbelt is macOS only; this platform uses bubblewrap when it is Linux, and refuses \
+         otherwise",
     ))
+}
+
+/// The Linux mechanism: one `bwrap` command line per process.
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+fn bubblewrap(
+    policy: &SandboxPolicy,
+    permissions: &SandboxPermissions,
+    workspace: Option<&String>,
+) -> Result<Option<Confinement>> {
+    // Checked before building anything, so the refusal names the missing program instead of a spawn
+    // error that reads "No such file or directory" and nothing else.
+    if !on_path("bwrap") {
+        return Err(crate::error::Error::unavailable(
+            "bubblewrap (`bwrap`) is not installed, so this policy cannot be enforced. Install \
+             bubblewrap, or run under `danger_full_access` and say so",
+        ));
+    }
+    let Some(prefix) = bwrap_args(policy, permissions, workspace)? else {
+        return Ok(None);
+    };
+    Ok(Some(Confinement {
+        program: "bwrap".to_owned(),
+        mechanism: "bubblewrap",
+        // The command line *is* the profile here: it names every bind and every namespace, so it is
+        // the record that answers "why was this refused" without re-deriving anything.
+        profile: Some(prefix.join(" ")),
+        prefix,
+    }))
+}
+
+/// On a platform that is not Linux, the Linux mechanism refuses rather than disappears, so the
+/// dispatch in `confine` has one shape everywhere.
+#[cfg(not(target_os = "linux"))]
+#[allow(dead_code)]
+fn bubblewrap(
+    _policy: &SandboxPolicy,
+    _permissions: &SandboxPermissions,
+    _workspace: Option<&String>,
+) -> Result<Option<Confinement>> {
+    Err(crate::error::Error::unavailable(
+        "bubblewrap is Linux only; this platform has no mechanism for a confining policy",
+    ))
+}
+
+/// The `bwrap` command line for a policy, or `None` when nothing should be confined.
+///
+/// Pure, and therefore tested on every platform rather than only where it runs.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn bwrap_args(
+    policy: &SandboxPolicy,
+    permissions: &SandboxPermissions,
+    workspace: Option<&String>,
+) -> Result<Option<Vec<String>>> {
+    if matches!(
+        policy,
+        SandboxPolicy::DangerFullAccess | SandboxPolicy::ExternalSandbox { .. }
+    ) || matches!(permissions, SandboxPermissions::RequireEscalated)
+    {
+        return Ok(None);
+    }
+
+    let (network, roots) = writable(policy, permissions, workspace);
+    let mut args: Vec<String> = vec![
+        // Every namespace at once: user, pid, net, ipc, uts, cgroup. Splitting them would let one
+        // flag be forgotten later; the network exception below is the only carve-out.
+        "--unshare-all".to_owned(),
+        // A killed kernel must not leave a process behind that nobody can reap.
+        "--die-with-parent".to_owned(),
+        // No controlling terminal: a command cannot reach the host's tty behind the bind mounts.
+        "--new-session".to_owned(),
+        // Reading is not restricted by any policy in this ABI, so the root is bound read-only and
+        // each writable root is bound on top of it.
+        "--ro-bind".to_owned(),
+        "/".to_owned(),
+        "/".to_owned(),
+        "--dev".to_owned(),
+        "/dev".to_owned(),
+        "--proc".to_owned(),
+        "/proc".to_owned(),
+    ];
+    if network {
+        // `--unshare-all` already removed the network namespace; sharing it back is the exception,
+        // stated where a reader will see it next to the rule it bends.
+        args.push("--share-net".to_owned());
+    }
+
+    for root in roots {
+        // bwrap refuses to bind a path that is not there, with an error that names nothing. Naming
+        // it here is the difference between a five-second fix and a search.
+        if !std::path::Path::new(&root).exists() {
+            return Err(crate::error::Error::invalid(format!(
+                "the sandbox cannot bind {root:?}: it does not exist. A writable root has to be a \
+                 real directory at the moment the command starts"
+            )));
+        }
+        args.push("--bind".to_owned());
+        args.push(root.clone());
+        args.push(root);
+    }
+    Ok(Some(args))
+}
+
+/// Whether a program is on `PATH`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn on_path(program: &str) -> bool {
+    std::env::var_os("PATH")
+        .map(|path| {
+            std::env::split_paths(&path).any(|directory| {
+                let candidate = directory.join(program);
+                std::fs::metadata(&candidate).is_ok_and(|meta| meta.is_file())
+            })
+        })
+        .unwrap_or(false)
 }
 
 /// The writable roots and network setting a policy and one command's permissions add up to.
@@ -356,5 +491,159 @@ mod tests {
                 .any(|line| line.trim_start().starts_with("(allow network*)")),
             "the injection became a rule:\n{profile}"
         );
+    }
+}
+
+#[cfg(test)]
+mod bwrap_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    /// A directory that exists, so a writable root can be bound.
+    fn real_dir(name: &str) -> String {
+        let path = std::env::temp_dir().join(format!("nucleos-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&path).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn nothing_is_confined_for_full_access_an_external_sandbox_or_an_escalation() {
+        for policy in [
+            SandboxPolicy::DangerFullAccess,
+            SandboxPolicy::ExternalSandbox {
+                network_access: false,
+            },
+        ] {
+            assert!(
+                bwrap_args(&policy, &SandboxPermissions::UseDefault, None)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        assert!(
+            bwrap_args(
+                &SandboxPolicy::read_only(),
+                &SandboxPermissions::RequireEscalated,
+                None
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn a_read_only_policy_binds_nothing_writable() {
+        let args = bwrap_args(&SandboxPolicy::read_only(), &SandboxPermissions::UseDefault, None)
+            .unwrap()
+            .unwrap();
+
+        assert!(args.contains(&"--unshare-all".to_owned()));
+        assert!(args.contains(&"--die-with-parent".to_owned()));
+        assert!(args.contains(&"--ro-bind".to_owned()));
+        assert!(
+            !args.contains(&"--bind".to_owned()),
+            "read-only must not name a writable root: {args:?}"
+        );
+    }
+
+    #[test]
+    fn a_workspace_policy_binds_the_workspace_writable() {
+        let workspace = real_dir("bwrap-ws");
+        let args = bwrap_args(
+            &SandboxPolicy::WorkspaceWrite {
+                extra_writable_roots: Vec::new(),
+                network_access: false,
+            },
+            &SandboxPermissions::UseDefault,
+            Some(&workspace),
+        )
+        .unwrap()
+        .unwrap();
+
+        // Bound twice: bwrap takes <source> <destination>, and both are the same path here.
+        let bound = args.windows(3).any(|window| {
+            window[0] == "--bind" && window[1] == workspace && window[2] == workspace
+        });
+        assert!(bound, "{args:?}");
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    #[test]
+    fn the_network_is_shared_back_only_when_the_policy_allows_it() {
+        let denied = bwrap_args(
+            &SandboxPolicy::read_only(),
+            &SandboxPermissions::UseDefault,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(!denied.contains(&"--share-net".to_owned()));
+
+        let allowed = bwrap_args(
+            &SandboxPolicy::ReadOnly {
+                network_access: true,
+            },
+            &SandboxPermissions::UseDefault,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(allowed.contains(&"--share-net".to_owned()));
+    }
+
+    #[test]
+    fn a_root_that_does_not_exist_is_refused_by_name() {
+        // bwrap would fail with "No such file or directory" and no path. Naming it is the whole
+        // difference between a five-second fix and a search.
+        let error = bwrap_args(
+            &SandboxPolicy::WorkspaceWrite {
+                extra_writable_roots: vec!["/definitely/not/here".to_owned()],
+                network_access: false,
+            },
+            &SandboxPermissions::UseDefault,
+            None,
+        )
+        .expect_err("a missing root is a configuration error");
+        assert!(error.reason().contains("/definitely/not/here"), "{error:?}");
+    }
+
+    #[test]
+    fn permissions_widen_and_never_narrow() {
+        let workspace = real_dir("bwrap-widen");
+        let extra = real_dir("bwrap-extra");
+        let args = bwrap_args(
+            &SandboxPolicy::WorkspaceWrite {
+                extra_writable_roots: Vec::new(),
+                network_access: false,
+            },
+            &SandboxPermissions::WithAdditionalPermissions {
+                additional: crate::contract::AdditionalPermissions {
+                    writable_roots: vec![extra.clone()],
+                    network_access: true,
+                },
+            },
+            Some(&workspace),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert!(args.windows(3).any(|w| w[1] == workspaced(&workspace)), "{args:?}");
+        assert!(args.contains(&extra), "{args:?}");
+        assert!(args.contains(&"--share-net".to_owned()), "the widening asked for it");
+
+        let _ = std::fs::remove_dir_all(&workspace);
+        let _ = std::fs::remove_dir_all(&extra);
+    }
+
+    /// Identity, named so the assertion above reads as "the workspace, however it is spelled".
+    fn workspaced(path: &str) -> String {
+        path.to_owned()
+    }
+
+    #[test]
+    fn path_lookup_finds_what_exists_and_not_what_does_not() {
+        assert!(on_path("sh"), "every unix has a shell on PATH");
+        assert!(!on_path("definitely-not-a-real-command-xyz"));
     }
 }

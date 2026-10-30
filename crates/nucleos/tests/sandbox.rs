@@ -716,3 +716,135 @@ async fn narrowing_is_enforced_not_just_recorded() {
 
     let _ = std::fs::remove_dir_all(&directory);
 }
+
+// ---------------------------------------------------------------------------
+// The same mechanism on Linux, through bubblewrap
+//
+// Written but not exercised on macOS. CI is Linux, so these run there — and skip *loudly* when the
+// kernel forbids unprivileged user namespaces, because a silent skip is a test that passes by
+// accident.
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "linux")]
+fn bwrap_usable() -> bool {
+    // The same probe a person would run by hand: can this kernel start a namespaced command at all?
+    let probe = std::process::Command::new("bwrap")
+        .args(["--unshare-all", "--ro-bind", "/", "/", "/bin/true"])
+        .status();
+    match probe {
+        Ok(status) => status.success(),
+        Err(_) => false,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn require_bwrap(test: &str) -> bool {
+    if bwrap_usable() {
+        return true;
+    }
+    eprintln!(
+        "skipping {test}: bubblewrap cannot start here (missing, or unprivileged user namespaces \
+         are disabled). The mechanism is unverified in this environment rather than passing."
+    );
+    false
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_workspace_write_policy_is_enforced_by_bubblewrap() {
+    if !require_bwrap("a_workspace_write_policy_is_enforced_by_bubblewrap") {
+        return;
+    }
+    let directory = workspace("bwrap-write");
+    let inside = directory.join("inside.txt");
+    let outside = std::env::temp_dir().join(format!("nucleos-bwrap-out-{}", std::process::id()));
+    let _ = std::fs::remove_file(&outside);
+
+    let ok = run(
+        Some(directory.to_str().unwrap()),
+        SandboxPolicy::WorkspaceWrite {
+            extra_writable_roots: Vec::new(),
+            network_access: false,
+        },
+        SandboxPermissions::UseDefault,
+        &["/bin/sh", "-c", &format!("printf hi > {}", inside.display())],
+    )
+    .await
+    .unwrap();
+    assert!(ok, "a write inside the workspace is the point of the policy");
+    assert_eq!(std::fs::read_to_string(&inside).unwrap(), "hi");
+
+    let denied = run(
+        Some(directory.to_str().unwrap()),
+        SandboxPolicy::WorkspaceWrite {
+            extra_writable_roots: Vec::new(),
+            network_access: false,
+        },
+        SandboxPermissions::UseDefault,
+        &["/bin/sh", "-c", &format!("printf hi > {}", outside.display())],
+    )
+    .await
+    .unwrap();
+    assert!(!denied, "a write outside the workspace must fail");
+    assert!(!outside.exists());
+
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_read_only_policy_refuses_every_write_on_linux_too() {
+    if !require_bwrap("a_read_only_policy_refuses_every_write_on_linux_too") {
+        return;
+    }
+    let directory = workspace("bwrap-readonly");
+    let target = directory.join("should-not-exist.txt");
+
+    let ok = run(
+        Some(directory.to_str().unwrap()),
+        SandboxPolicy::read_only(),
+        SandboxPermissions::UseDefault,
+        &["/bin/sh", "-c", &format!("printf hi > {}", target.display())],
+    )
+    .await
+    .unwrap();
+
+    assert!(!ok, "read-only means read only");
+    assert!(!target.exists());
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn the_log_records_bubblewrap_as_the_mechanism() {
+    if !require_bwrap("the_log_records_bubblewrap_as_the_mechanism") {
+        return;
+    }
+    let directory = workspace("bwrap-record");
+    let root = directory.to_str().unwrap().to_owned();
+    let (ok, events) = run_with(
+        Some(&root),
+        SandboxPolicy::read_only(),
+        SandboxPermissions::UseDefault,
+        &["/bin/echo", "hi"],
+    )
+    .await
+    .unwrap();
+    assert!(ok);
+
+    let started = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            nucleos::contract::EventKind::ExecStarted {
+                mechanism, profile, ..
+            } => Some((mechanism.clone(), profile.clone())),
+            _ => None,
+        })
+        .expect("the start is recorded");
+    assert_eq!(started.0.as_deref(), Some("bubblewrap"));
+    let command = started.1.expect("bwrap records the command line it was given");
+    assert!(command.contains("--unshare-all"), "{command}");
+    assert!(command.contains("--ro-bind"), "{command}");
+
+    let _ = std::fs::remove_dir_all(&directory);
+}

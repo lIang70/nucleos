@@ -141,10 +141,22 @@ rebuilding a profile from a policy that may since have changed. `mechanism: null
 it says nothing confined this command, which is the difference between `danger_full_access` and a
 sandbox that failed to start.
 
-Linux is not done: bubblewrap plus landlock is a separate mechanism with a separate file, and until
-it exists a Linux deployment gets `Unavailable` for every confining policy rather than a promise it
-cannot keep. The refusal is the same shape as before; what changed is that on macOS it is no longer
-the answer.
+**Linux is bubblewrap.** `bwrap --unshare-all` gives the command its own user, pid, network, ipc and
+uts namespaces; `/` is bound read-only and each writable root is bound on top; `--die-with-parent`
+means a killed kernel leaves no unreapable process, and `--new-session` keeps a command off the host's
+terminal. `--share-net` appears only when the policy allows the network — the one place the blanket
+`--unshare-all` is bent, said in the same breath as the rule it bends.
+
+Landlock is not wired up. It would add path rules *inside* those mounts, and the bind mounts already
+answer "may this command write here"; a second mechanism that can disagree with the first is a second
+thing to get wrong. It becomes interesting the day a policy needs to restrict *reading*, which none
+in this ABI do.
+
+What is verified where is stated rather than implied: the command line is built by a pure function
+tested on every platform, the end-to-end cases run on Linux (CI installs bubblewrap), and they **skip
+loudly** where the kernel forbids unprivileged user namespaces instead of passing by accident. The
+`bwrap` binary is checked for before the command starts, so a missing dependency is a sentence naming
+the dependency rather than a spawn error naming nothing.
 
 ### 2.3 Session identity is `(tenant, session)`
 
