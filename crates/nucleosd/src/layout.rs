@@ -30,15 +30,14 @@ impl Layout {
     /// Resolve the layout from what the operator said, falling back to the platform's convention.
     ///
     /// `root` and `socket` are the two flags: one decides the data, the other the address, and
-    /// nothing else is configurable because nothing else has a reason to be.
+    /// nothing else is configurable here because everything else is configuration — which lives in
+    /// the store and arrives through the ABI.
     pub fn resolve(root: Option<PathBuf>, socket: Option<PathBuf>) -> Self {
+        // Flags or the platform's convention. The environment is not consulted: a path that changes
+        // because a shell exported something is a path nobody can predict from the unit file.
         Self {
-            root: root
-                .or_else(|| std::env::var_os("NUCLEOS_ROOT").map(PathBuf::from))
-                .unwrap_or_else(default_root),
-            socket: socket
-                .or_else(|| std::env::var_os("NUCLEOS_SOCKET").map(PathBuf::from))
-                .unwrap_or_else(default_socket),
+            root: root.unwrap_or_else(default_root),
+            socket: socket.unwrap_or_else(default_socket),
         }
     }
 

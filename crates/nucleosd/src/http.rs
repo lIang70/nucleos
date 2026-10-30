@@ -252,7 +252,12 @@ impl App {
                 );
                 Arc::new(nucleos_policy::Ruleset::new(document)?) as Arc<dyn nucleos::adapter::Policy>
             }
-            None => load_policy(std::env::var("NUCLEOS_POLICY").ok())?,
+            None => {
+                return Err(nucleos::Error::invalid(format!(
+                    "{} has no policy: run `nucleos init` to write the bootstrap one",
+                    layout.root.display()
+                )));
+            }
         };
         // The routing a session inherits names the first stored model: a session that does not
         // choose one still has somewhere to go, and a deployment with no models has an empty chain
@@ -1357,58 +1362,31 @@ impl IntoResponse for ApiError {
     }
 }
 
-/// The policy a deployment declared, or a refusal to start.
-///
-/// There is no default. The previous version of this function ran `AllowAll`, so every refusal this
-/// daemon could report was a sentence in a document; and the version after that *claimed* to read a
-/// file while still running `AllowAll`, which is worse. A daemon that cannot say what it refuses has
-/// nothing to say, so it does not start.
-///
-/// Takes the path rather than reading the environment, so the decision is testable without a test
-/// mutating process-wide state.
-fn load_policy(path: Option<String>) -> Result<Arc<dyn nucleos::adapter::Policy>, nucleos::Error> {
-    let Some(path) = path else {
-        return Err(nucleos::Error::invalid(
-            "NUCLEOS_POLICY is not set: name a policy file. Every call is gated by it, so there is \
-             no safe default — see crates/nucleos-policy/examples/policy.json",
-        ));
-    };
-    let ruleset = nucleos_policy::Ruleset::load(&path)?;
-    // Said out loud at startup, because "which policy am I running under" is the first question
-    // asked after an incident and the last one a log usually answers.
-    tracing::info!(
-        event = "policy_loaded",
-        path = %path,
-        default = ?ruleset.document().unmatched,
-        rules = ruleset.document().rules.len(),
-    );
-    Ok(Arc::new(ruleset))
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use super::load_policy;
+    use nucleos_sqlite::SystemStore;
 
-    #[test]
-    fn a_daemon_with_no_policy_refuses_to_start() {
-        let Err(error) = load_policy(None) else {
-            panic!("there is no default policy");
+    /// A deployment with no policy in its store cannot start, and says what to run.
+    ///
+    /// The policy used to come from a file named by an environment variable. That is gone: one source
+    /// for the rules a daemon enforces, and a deployment missing it is uninitialised rather than
+    /// unconfigured.
+    #[tokio::test]
+    async fn a_store_without_a_policy_is_not_a_deployment() {
+        let root = std::env::temp_dir().join(format!("nucleos-nopolicy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let layout = crate::layout::Layout::resolve(Some(root.clone()), None);
+
+        // A store that exists and is empty: `init` has not run.
+        SystemStore::open(layout.system_store()).unwrap();
+        let Err(error) = crate::http::App::from_env(&layout).await else {
+            panic!("a store without a policy must not start");
         };
-        assert!(
-            error.reason().contains("NUCLEOS_POLICY"),
-            "the message has to name the variable: {error:?}"
-        );
-    }
+        assert!(error.reason().contains("nucleos init"), "{error:?}");
 
-    #[test]
-    fn a_policy_file_is_loaded_and_an_unreadable_one_is_refused() {
-        let example = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../nucleos-policy/examples/policy.json"
-        );
-        assert!(load_policy(Some(example.to_owned())).is_ok());
-        assert!(load_policy(Some("/nonexistent/policy.json".to_owned())).is_err());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

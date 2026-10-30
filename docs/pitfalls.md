@@ -951,3 +951,18 @@ deployment's first model instead of failing. The alternative — requiring every
 turns a deployment default into a per-call responsibility, and the error a client saw ("routing chain is
 empty") was about the daemon's configuration, not about anything the client did.
 
+## 68. A second source for a value is a value nobody rotates
+
+**Decision.** `NUCLEOS_POLICY`, `NUCLEOS_ROOT`, `NUCLEOS_SOCKET` and `NUCLEOS_LOG` are gone. Policy,
+models and tokens come from the system store; paths and the log level are flags.
+
+**Why policy was the last one to go.** It had a file fallback, which read as flexibility and was a
+second answer to "what is this daemon enforcing". Two answers disagree in exactly the situations people
+care about: an incident, an upgrade, a config that was changed in one place and not the other. With one
+source, a missing policy is not a configuration gap — it is an uninitialised deployment, and the daemon
+says so and names `nucleos init`.
+
+**Why the log level is a flag rather than a store row.** Verbosity is needed *before* the store is
+readable — the first thing a broken deployment has to tell you is why it broke, and a setting it cannot
+read yet is not a setting. A flag is in the unit file, in `ps`, and in the deployment's revision history.
+

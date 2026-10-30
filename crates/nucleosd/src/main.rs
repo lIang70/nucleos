@@ -24,13 +24,14 @@ use std::sync::Arc;
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Before anything else: a start-up failure has to be readable, and a subscriber installed after
     // the first mistake is a subscriber that missed it.
-    telemetry::install();
-    let layout = match args(&std::env::args().skip(1).collect::<Vec<_>>())? {
-        Flags::Paths(layout) => {
+    let parsed = args(&std::env::args().skip(1).collect::<Vec<_>>())?;
+    telemetry::install(&parsed.log);
+    let layout = match parsed.mode {
+        Mode::Paths(layout) => {
             println!("{}", layout.describe());
             return Ok(());
         }
-        Flags::Run(layout) => layout,
+        Mode::Run(layout) => layout,
     };
 
     // Directories first, with the modes the socket's permissions depend on. `Layout::create` narrows
@@ -103,7 +104,16 @@ async fn shutdown() {
 
 /// What the command line asked for.
 #[derive(Debug)]
-enum Flags {
+struct Flags {
+    mode: Mode,
+    /// The `tracing` filter directive. A flag, because a daemon whose verbosity comes from the
+    /// environment logs differently on the machine you are debugging.
+    log: String,
+}
+
+/// What to do.
+#[derive(Debug)]
+enum Mode {
     /// Print the paths and stop.
     Paths(Layout),
     /// Serve.
@@ -117,6 +127,7 @@ enum Flags {
 /// than on a command line.
 fn args(args: &[String]) -> Result<Flags, Box<dyn std::error::Error + Send + Sync>> {
     let (mut root, mut socket, mut print) = (None, None, false);
+    let mut log = "info".to_owned();
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
@@ -130,10 +141,16 @@ fn args(args: &[String]) -> Result<Flags, Box<dyn std::error::Error + Send + Syn
                     Box::<dyn std::error::Error + Send + Sync>::from("--socket needs a path")
                 })?));
             }
+            "--log" => {
+                log = rest.next().cloned().ok_or_else(|| {
+                    Box::<dyn std::error::Error + Send + Sync>::from("--log needs a level")
+                })?;
+            }
             "--print-paths" => print = true,
             other if other.starts_with('-') => {
                 return Err(Box::from(format!(
-                    "unknown flag {other}; this daemon takes --root <dir>, --socket <path>, --print-paths"
+                    "unknown flag {other}; this daemon takes --root <dir>, --socket <path>, \
+                     --log <level>, --print-paths"
                 )));
             }
             other => {
@@ -145,10 +162,13 @@ fn args(args: &[String]) -> Result<Flags, Box<dyn std::error::Error + Send + Syn
     }
 
     let layout = Layout::resolve(root, socket);
-    Ok(if print {
-        Flags::Paths(layout)
-    } else {
-        Flags::Run(layout)
+    Ok(Flags {
+        mode: if print {
+            Mode::Paths(layout)
+        } else {
+            Mode::Run(layout)
+        },
+        log,
     })
 }
 
@@ -167,16 +187,18 @@ mod tests {
             "/run/a/s.sock".to_owned(),
         ])
         .unwrap();
-        let Flags::Run(layout) = flags else {
+        let Mode::Run(layout) = flags.mode else {
             panic!("expected a run");
         };
         assert_eq!(layout.root, PathBuf::from("/srv/a"));
         assert_eq!(layout.socket, PathBuf::from("/run/a/s.sock"));
 
         assert!(matches!(
-            args(&["--print-paths".to_owned()]).unwrap(),
-            Flags::Paths(_)
+            args(&["--print-paths".to_owned()]).unwrap().mode,
+            Mode::Paths(_)
         ));
+        assert_eq!(args(&["--log".to_owned(), "debug".to_owned()]).unwrap().log, "debug");
+        assert_eq!(args(&[]).unwrap().log, "info", "the default is a level, not a guess");
     }
 
     #[test]

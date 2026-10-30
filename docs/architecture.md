@@ -858,17 +858,21 @@ log, which is the record rather than a statistic.
 
 ## 12.9 Configuration, today and proposed
 
-Nine of the fifteen environment variables are gone, and the pattern of their removal is the design:
+Fourteen of the fifteen environment variables are gone, and the pattern of their removal is the design:
 
 | Removed | Replaced by |
 | --- | --- |
 | `NUCLEOS_TOKEN`, `NUCLEOS_TOKENS`, `NUCLEOS_TENANT`, `NUCLEOS_SUBJECT` | `nucleos tokens add`, hashed into the system store |
 | `NUCLEOS_MODEL_URL`, `_NAME`, `_KEY`, `_CONTEXT`, `_STRICT_TOOLS`, `_REASONING` | `nucleos models add`, a row in the system store |
+| `NUCLEOS_POLICY` | the system store; a deployment without one is uninitialised, not unconfigured |
+| `NUCLEOS_ROOT`, `NUCLEOS_SOCKET` | `--root`, `--socket` — a deployment's filesystem is a fact about where it runs |
+| `NUCLEOS_LOG` | `--log <directive>` |
 
-What remains is `NUCLEOS_MCP` and `NUCLEOS_POLICY`, both scheduled for the same treatment once their
-store-backed forms exist. Bootstrap paths are flags (`--root`, `--socket`) rather than variables,
-because a deployment's filesystem is a fact about where it runs, not configuration somebody types into
-a manifest.
+What remains is `NUCLEOS_MCP`, scheduled for the same treatment once `POST /v1/sources` exists.
+
+The rule the removals share: **a variable is a second source, and the second source is always the one
+nobody rotates.** Where a value has one home, an upgrade can change its default; where it has two, the
+deployment keeps whichever one it was told, quietly, forever.
 
 The daemon now starts with **no models at all** when the store has none: `describe` says so, and an
 agent session is refused with "routing chain is empty: a session needs at least one model" — which is a
