@@ -61,16 +61,19 @@ The minimum a daemon needs before it can be told anything:
 ```jsonc
 // /etc/nucleos/bootstrap.json — the only file, and it is small on purpose
 {
-  "store": "/var/lib/nucleos",
-  "socket": "/run/nucleos/nucleosd.sock",
-  "log": { "format": "json", "level": "info" }
+  "root":   "/var/lib/nucleos",              // data: both stores, derived names
+  "socket": "/run/nucleos/nucleosd.sock",    // runtime, often a different filesystem
+  "log":    { "format": "json", "level": "info" }
 }
 ```
 
 Three keys, and each is here for a reason that cannot be deferred:
 
-- **store** — without a database there is nowhere to write the configuration that arrives later.
-- **socket** — the address has to be known before anyone can connect to change anything.
+- **root** — without a database there is nowhere to write the configuration that arrives later, and
+  one prefix is enough to derive everything else. Two flags, `--root` and `--socket`, override these;
+  a second instance on one host is then one more `--root`.
+- **socket** — the address has to be known before anyone can connect to change anything. It is not
+  derived from `root` because it usually belongs on a different filesystem (§4.1).
 - **log format** — a daemon that cannot report why it failed is one you debug blind. The *level* is
   mutable afterwards; the *format* is not, because half a log in JSON and half in text is not a log.
 
@@ -97,6 +100,113 @@ the model registry with it.
 **One tenant database, not one per tenant.** Per-tenant files mean scanning a directory to enumerate
 tenants and migrating N databases on upgrade. Tenancy stays a `scope` column, exactly like the
 `(tenant, session)` key that already made isolation structural rather than checked.
+
+### 4.1 Paths
+
+Three rules, and everything below follows from them.
+
+1. **One root, everything else derived.** `--root` names the data directory; the rest is computed.
+   Only `--socket` may point elsewhere, because a runtime directory is routinely a different
+   filesystem (tmpfs, or a per-user temporary directory).
+2. **Three kinds of directory, with different permissions and different backup rules.** Mixing them
+   is how a credential ends up in a backup.
+3. **The working directory never matters.** A relative default is not a default, it is a bug — today
+   `NUCLEOS_STORE=nucleos.db` writes to wherever the daemon was started from.
+
+| Kind | Holds | Copied / backed up | Mode |
+| --- | --- | --- | --- |
+| **config** | `bootstrap.json`, `seal.key` | the file yes; **the seal key never alongside data** | `0400`/`0644` |
+| **data** | both stores | **yes** — backups, copies to a laptop, support bundles | `0600` |
+| **runtime** | socket, pid | never; recreated on start | `0600`, directory `0700` |
+
+The seal key is **config, not data**. That is the answer to "where does the key-encryption key go":
+the data directory is the thing that gets copied, so the key that makes copies useless lives outside
+it.
+
+#### Linux, as a system service
+
+| Path | What | Mode | Backup |
+| --- | --- | --- | --- |
+| `/etc/nucleos/bootstrap.json` | root, socket, log format | `0644` | yes |
+| `/etc/nucleos/seal.key` | the key that unwraps stored credentials | `0400 root` | **no** — a secret manager, if at all |
+| `/var/lib/nucleos/system.db` | models, sources, policy versions, token hashes, admin keys | `0600` | yes |
+| `/var/lib/nucleos/sessions.db` | sessions, events, snapshots | `0600` | optional — only to resume elsewhere |
+| `/run/nucleos/nucleosd.sock` | the listener | `0600`, directory `0700` | never |
+| `/run/nucleos/nucleosd.pid` | the pid | `0644` | never |
+| stdout | logs, to the journal | — | never |
+| `/etc/systemd/system/nucleosd.service` | the unit — the one place these paths are written down | `0644` | yes |
+
+#### macOS, as a LaunchDaemon
+
+Apple's layout, same three kinds:
+
+| Path | What | Mode |
+| --- | --- | --- |
+| `/Library/Application Support/nucleos/bootstrap.json` | bootstrap | `0644` |
+| `/etc/nucleos/seal.key` | seal key | `0400` |
+| `/Library/Application Support/nucleos/system.db` | system store | `0600` |
+| `/Library/Application Support/nucleos/sessions.db` | tenant store | `0600` |
+| `/var/run/nucleos/nucleosd.sock` | listener (`/var/run` → `/private/var/run`) | `0600` |
+| `/Library/LaunchDaemons/com.nucleos.daemon.plist` | the launchd job | `0644` |
+
+As a **LaunchAgent** — the development case — macOS gives every user a private `$TMPDIR`, so the
+socket needs no special handling:
+
+| Path | What |
+| --- | --- |
+| `~/Library/Application Support/nucleos/` | both stores |
+| `$TMPDIR/nucleos/nucleosd.sock` | listener, private to the user by construction |
+
+#### Client side
+
+| Path | What | Note |
+| --- | --- | --- |
+| `~/.config/nucleos/socket` (Linux), `~/Library/Application Support/nucleos/socket` (macOS) | one line: the socket path | written by `nucleos init`; this is how a client finds the daemon |
+| *(the keychain)* | the administrator's private key | **not a file**; service `nucleos-admin` |
+
+#### Backup classes
+
+| Class | Paths | Why |
+| --- | --- | --- |
+| **must** | `system.db`, `bootstrap.json` | losing them means re-initialising |
+| **optional** | `sessions.db` | only to resume sessions after a machine change |
+| **never with data** | `seal.key` | backed up beside the store, the encryption is decorative |
+| **disposable** | socket, pid | recreated at start |
+
+One sentence to remember it by: **the seal key is never in the same backup as the store it seals.**
+
+#### Socket permissions: what they mean for the application
+
+Three different questions, answered in three different places, and conflating them is how a service
+ends up with a permission model nobody can explain:
+
+| Question | Answered by | Applies to |
+| --- | --- | --- |
+| May this host user talk to the daemon at all? | socket mode + directory mode | all callers |
+| Which tenant is this? | bearer token, or a signed request | tenant callers |
+| May this change configuration? | Ed25519 signature + `Gated::Config` | administrators |
+
+| Socket mode | Who can connect | Effect on an application |
+| --- | --- | --- |
+| `0600` (default) | the daemon's own user, and root | an application under another user gets `EACCES` — it needs `sudo` or group membership |
+| `0660` + group `nucleos` | members of that group | the usual shape for "service plus clients on one host", as `docker.sock` is `0660 root:docker` |
+
+Two details that are easy to miss:
+
+- **The directory mode matters as much as the socket's.** A `0660` socket inside a `0700` directory is
+  unreachable: a client cannot traverse the path. The pair is `0750 <user>:nucleos` on the directory
+  and `0660` on the socket.
+- **Nothing in the protocol changes.** A refused connection is `EACCES` from `connect()`, which is a
+  different failure from an invalid token or a bad signature, and should stay distinguishable.
+
+`init` prints the two commands needed to open the socket to a group and does not run them: changing
+group membership is a system change, not something an installer should do silently.
+
+#### Diagnosis
+
+`nucleosd --print-paths` prints every path it will use with its mode and whether it exists. Path
+problems are almost entirely "which directory did it actually choose", and a table in a document rots
+faster than a command that reads the same values.
 
 **What this is not: atomic across both.** "Refuse to delete a model that a live session routes to"
 reads the tenant store and writes the system store with no transaction between them. A session created
@@ -174,6 +284,9 @@ store [/var/lib/nucleos]:
 recovery password: ****
 repeat: ****
 
+✓ root              /var/lib/nucleos
+✓ socket            /run/nucleos/nucleosd.sock
+✓ seal key          /etc/nucleos/seal.key (0400, not in backups)
 ✓ system store      /var/lib/nucleos/system.db
 ✓ tenant store      /var/lib/nucleos/sessions.db
 ✓ admin key         kid=7f3a… (private key in the keychain, service "nucleos-admin")
@@ -186,7 +299,7 @@ next: start nucleosd, then `nucleos models add …`
 Non-interactive, because containers and CI cannot answer a prompt:
 
 ```text
-nucleos init --store /srv/nucleos --password-stdin --key-out /run/secrets/admin.key
+nucleos init --root /srv/nucleos --password-stdin --key-out /run/secrets/admin.key
 ```
 
 Properties it must have:
@@ -247,7 +360,8 @@ Deletion is the hard direction, and each kind has its own answer:
 Each step is useful on its own, and none of them requires the next.
 
 1. **Split the store** — system and tenant, `scope` column, two files. This decides the shape of every
-   table that follows.
+   table that follows, and it is the step that makes `--root` meaningful: until there are two files,
+   there is nothing for a root to contain.
 2. **`Gated::Config`** — the gate before the interface. Deny by default.
 3. **`nucleos init`** + bootstrap file + recovery password. Until this exists, step 4 has no bootstrap
    credential.
@@ -260,7 +374,8 @@ Each step is useful on its own, and none of them requires the next.
 
 1. **Where does the bootstrap file live when `/etc` is not writable** (a container with a read-only
    root)? `NUCLEOS_DEPLOY` is a stopgap; a "configuration from the environment once, then never"
-   mode may be needed.
+   mode may be needed. The same question applies to `seal.key`, which cannot live in the data
+   directory by design (§4.1).
 2. **Tenant tokens**: keep bearer tokens, or move to short-lived EdDSA tokens signed by the daemon?
    The second needs the daemon to hold a signing key, which is a smaller risk than an admin one but
    not zero.
@@ -269,3 +384,6 @@ Each step is useful on its own, and none of them requires the next.
 4. **Versioning and rollback of policy**: keep the last N versions and allow `nucleos policy rollback`?
    The events already record every version; the question is whether the store keeps the documents.
 5. **What `GET /v1/config` exposes to a tenant caller** — nothing, probably; this is an admin surface.
+6. **Whether `seal.key` is one file per root or one per host.** Per root keeps instances independent
+   and means a copy of one instance's data is useless without its own key; per host is fewer things to
+   lose. Currently written as per root, which is also what the paths table implies.
