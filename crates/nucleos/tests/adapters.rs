@@ -362,6 +362,7 @@ async fn a_snapshot_cannot_claim_more_than_the_log_holds() -> Result<()> {
         tool_policy: Default::default(),
         discovered: Default::default(),
         round: 0,
+        stop: None,
         kind: Default::default(),
         process: None,
     };
@@ -409,6 +410,7 @@ async fn a_valid_snapshot_round_trips() -> Result<()> {
             tool_policy: Default::default(),
         discovered: Default::default(),
         round: 0,
+        stop: None,
             kind: Default::default(),
             process: None,
         })

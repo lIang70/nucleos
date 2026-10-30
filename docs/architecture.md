@@ -465,6 +465,22 @@ lives.
 
 ## 9. Budget is credit
 
+The check is the kernel's, and it runs before the spend: `Session::exhausted` used to have exactly
+one caller — the reference loop — so a driver that forgot to ask could spend past every limit, and
+the event recording the stop was written by that driver. A budget enforced by one cooperative caller
+is not a budget.
+
+So `inference` and `invoke_tools` both begin by asking. A session that is out of room is closed with
+the reason, `budget_exhausted` is written once, and the call returns `Budget` without spending
+anything. `Session::stop_reason` carries the decision, so a driver translates it instead of
+re-deriving it.
+
+There is no generic "record an event" syscall either. It existed, and it was how the loop outsourced
+this enforcement; with the enforcement moved, its only remaining use was forging events the kernel
+would have to accept as fact. A caller writes *state*; the kernel writes the record.
+
+
+
 Budget is enforced as flow control, not as a post-hoc check: the caller grants credit,
 each `usage` event spends it, exhaustion drains the session and writes a checkpoint.
 

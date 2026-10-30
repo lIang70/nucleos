@@ -37,11 +37,6 @@ impl Kernel {
     }
     /// Append an event to the session's log.
     ///
-    /// A syscall, and an honest one: an application that drives its own loop needs to say what
-    /// happened, and the log is the record.
-    pub async fn record(&self, session: &mut session::Session, kind: EventKind) -> Result<()> {
-        self.emit(session, kind).await
-    }
     pub(crate) async fn emit(&self, session: &mut session::Session, kind: EventKind) -> Result<()> {
         let event = Event {
             seq: session.seq,

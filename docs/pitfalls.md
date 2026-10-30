@@ -518,3 +518,31 @@ numbers, so the caller knows whether to compact or to lower the reserve.
 truncation the check exists to prevent — just attributed to the provider instead of the kernel. A
 limit that cannot be shown to hold is not a limit.
 
+## 41. A budget enforced by one cooperative caller is not a budget
+
+**Decision.** `inference` and `invoke_tools` refuse to run when the session is out of room. They
+close it with the reason and write `budget_exhausted` themselves.
+
+**Why.** `Session::exhausted` had exactly one caller, in the reference loop, and that loop wrote the
+event. Every other driver could run a thousand turns with zero credit — and did: turning the gate on
+made sixty existing tests fail because their sessions had never been granted anything. The tests were
+honest about what the kernel allowed; the kernel was not.
+
+**What it also fixed.** Refusing twice is now impossible: the first refusal closes the session, and a
+second call reads `Closed` rather than writing a second identical event. A log with two stops for one
+stop is a log a replay has to interpret.
+
+## 42. A commit message is a claim, and it needs a test
+
+**Decision.** The daemon's policy wiring has a unit test, and `load_policy` takes its path as an
+argument rather than reading the environment.
+
+**Why.** Commit `1696f9a` says "the daemon now refuses to start without `NUCLEOS_POLICY`". It did not.
+The edit that was meant to wire it silently matched nothing, and the tests passed, because no test
+ever called `from_env`. The documentation said the same thing. Three artefacts agreed with each
+other and none of them was the code.
+
+**Why the signature changed.** A test that sets `NUCLEOS_POLICY` mutates process-wide state that other
+tests read in parallel. Taking the path as a parameter makes the decision testable and keeps the
+reading of the environment in one line.
+

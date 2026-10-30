@@ -161,7 +161,11 @@ async fn a_session_survives_the_process_that_wrote_it() {
                     subject: "alice".to_owned(),
                 },
                 SessionId::new("s1"),
-                nucleos::kernel::SessionSpec::default(),
+                nucleos::kernel::SessionSpec {
+                    // The store test is about durability, not about the budget gate.
+                    credit_tokens: 1_000_000,
+                    ..nucleos::kernel::SessionSpec::default()
+                },
             )
             .await
             .unwrap();
@@ -234,6 +238,7 @@ fn snapshot_for(session: &SessionId) -> nucleos::contract::Snapshot {
         tool_policy: nucleos::contract::ToolPolicy::default(),
         discovered: std::collections::BTreeMap::new(),
         round: 0,
+        stop: None,
         kind: SessionKind::Agent,
         process: None,
     }

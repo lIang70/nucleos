@@ -55,6 +55,10 @@ impl Kernel {
         if calls.is_empty() {
             return Ok(Vec::new());
         }
+        // A tool may report a cost, and a session with no room left must not start one. The gate is
+        // here rather than in the driver for the same reason the model gate is: a driver that
+        // forgets to ask is a driver that spends.
+        self.spend(session).await?;
 
         let mut verdicts = Vec::with_capacity(calls.len());
         for call in calls {

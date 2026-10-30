@@ -23,6 +23,9 @@ impl Kernel {
                 "a process session has no model calls: it runs one command",
             ));
         }
+        // Before anything is spent, and before the round counter moves: a turn that will not run
+        // should leave no trace of having started.
+        self.spend(session).await?;
         // A turn is the unit the discovery pool expires against, so the counter moves before the
         // prompt is built: what a session shows this turn is decided with this turn's clock.
         self.begin_round(session);

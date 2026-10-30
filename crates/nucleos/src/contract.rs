@@ -872,6 +872,9 @@ pub struct Snapshot {
     /// Turns taken, which the pool expires against.
     #[serde(default)]
     pub round: u64,
+    /// Why the session stopped, once it has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop: Option<StopReason>,
     /// The application's own state.
     ///
     /// Opaque: the kernel stores it, updates it atomically and restores it, and never reads a

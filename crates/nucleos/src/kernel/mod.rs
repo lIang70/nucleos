@@ -9,6 +9,7 @@
 //! policy, and the tool set a generation pinned.
 
 pub(crate) mod bm25;
+pub(crate) mod budget;
 pub(crate) mod config;
 pub(crate) mod inference;
 pub(crate) mod lifecycle;

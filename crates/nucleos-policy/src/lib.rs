@@ -596,7 +596,7 @@ mod tests {
 
     #[test]
     fn the_shipped_example_is_a_document_that_loads() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/example/policy.json");
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/policy.json");
         let document = Document::load(path).expect("the example policy loads");
 
         // And it is a policy, not decoration: something is allowed and something is refused.

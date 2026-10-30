@@ -77,7 +77,7 @@ impl Kernel {
     }
     /// Close a session. Further calls are refused.
     pub async fn close(&self, session: &mut session::Session, reason: StopReason) -> Result<()> {
-        if !session.close()? {
+        if !session.close_with(reason)? {
             return Ok(());
         }
         self.emit(

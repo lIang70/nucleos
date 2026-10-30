@@ -40,7 +40,7 @@ impl Kernel {
             return Ok(changed);
         }
 
-        self.record(session, EventKind::SessionConfigured { patch })
+        self.emit(session, EventKind::SessionConfigured { patch })
             .await?;
         self.checkpoint(session).await?;
         Ok(changed)

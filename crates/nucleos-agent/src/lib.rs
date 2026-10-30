@@ -11,7 +11,7 @@
 //! again.
 
 use nucleos::adapter::FinishReason;
-use nucleos::contract::Principal;
+use nucleos::contract::{ErrorCode, Principal};
 use nucleos::contract::{
     EventKind, Message, PartKind, Role, SessionId, SessionState, StopReason, ToolCall,
 };
@@ -87,22 +87,37 @@ pub async fn answer(
 /// The escape hatch for an application that wants to drive: it calls this in whatever order its
 /// own loop requires, and the kernel still owns every invariant inside a turn.
 pub async fn step(kernel: &Kernel, session: &mut Session) -> Result<Step> {
-    if let Some(reason) = session.exhausted(kernel.now()) {
-        kernel
-            .record(session, EventKind::BudgetExhausted { reason })
-            .await?;
-        kernel.close(session, reason).await?;
-        return Ok(Step::Stopped(reason));
-    }
+    // The kernel enforces its own budget: a caller that never asked would otherwise spend past it,
+    // and the event that records the stop would be the caller's claim rather than the kernel's
+    // decision. This loop only translates the refusal into its own vocabulary.
     if session.is_closed() {
-        return Ok(Step::Stopped(StopReason::Completed));
+        return Ok(Step::Stopped(session.stop_reason().unwrap_or(StopReason::Completed)));
     }
 
     let outstanding = outstanding_calls(session);
-    if outstanding.is_empty() {
-        return inference_turn(kernel, session).await;
+    let result = if outstanding.is_empty() {
+        inference_turn(kernel, session).await
+    } else {
+        tool_turn(kernel, session, &outstanding).await
+    };
+
+    match result {
+        // A budget refusal is a stop, not a failure. The kernel has already closed the session and
+        // recorded why, so relabelling it here would be the driver overriding a decision it did not
+        // make — and it was exactly what this loop used to do.
+        Err(error) if error.code() == ErrorCode::Budget => Ok(Step::Stopped(
+            session.stop_reason().unwrap_or(StopReason::Tokens),
+        )),
+        // Anything else ends the *session*, which is an outcome rather than an error of the call:
+        // the attempt's own code and reason are already in the log, and `close` records the stop on
+        // the state change. Handing back an `Err` here would say the driver's call was wrong when
+        // what happened is that the session ended.
+        Err(_) => {
+            kernel.close(session, StopReason::Failed).await?;
+            Ok(Step::Stopped(StopReason::Failed))
+        }
+        Ok(step) => Ok(step),
     }
-    tool_turn(kernel, session, &outstanding).await
 }
 
 /// What one turn did.
@@ -131,22 +146,8 @@ pub async fn drive(kernel: &Kernel, session: &mut Session) -> Result<Outcome> {
 
 async fn inference_turn(kernel: &Kernel, session: &mut Session) -> Result<Step> {
     let messages = session.messages().to_vec();
-    let inference = match kernel.inference(session, &messages).await {
-        Ok(inference) => inference,
-        Err(error) => {
-            kernel
-                .record(
-                    session,
-                    EventKind::Failed {
-                        code: error.code(),
-                        reason: error.reason().to_owned(),
-                    },
-                )
-                .await?;
-            kernel.close(session, StopReason::Failed).await?;
-            return Ok(Step::Stopped(StopReason::Failed));
-        }
-    };
+    // Errors propagate: what a failure *means* is decided once, in `step`.
+    let inference = kernel.inference(session, &messages).await?;
 
     // The provider's reason is the first of four stop conditions and the least trustworthy.
     let stop = match inference.finish {

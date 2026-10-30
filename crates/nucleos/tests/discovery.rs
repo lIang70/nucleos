@@ -71,13 +71,22 @@ fn kernel(count: usize) -> (Kernel, Arc<SqliteStore>) {
     (builder.build().unwrap(), store)
 }
 
+/// A session with room to spend. The budget gate is real now, and a corpus test that ran on zero
+/// credit would be testing the gate instead of discovery.
+fn funded() -> SessionSpec {
+    SessionSpec {
+        credit_tokens: 1_000_000,
+        ..SessionSpec::default()
+    }
+}
+
 fn spec(names: &[&str]) -> SessionSpec {
     SessionSpec {
         config: ConfigPatch {
             tools: Some(names.iter().map(|name| (*name).to_owned()).collect()),
             ..ConfigPatch::default()
         },
-        ..SessionSpec::default()
+        ..funded()
     }
 }
 
@@ -131,7 +140,7 @@ async fn an_always_exposure_is_the_configured_baseline() {
                     tool_policy: Some(policy(&[("read_file", Exposure::Always)])),
                     ..ConfigPatch::default()
                 },
-                ..SessionSpec::default()
+                ..funded()
             },
         )
         .await
@@ -157,7 +166,7 @@ async fn a_hidden_tool_is_never_in_the_prompt_but_is_still_callable() {
                     tool_policy: Some(policy(&[("read_file", Exposure::Hidden)])),
                     ..ConfigPatch::default()
                 },
-                ..SessionSpec::default()
+                ..funded()
             },
         )
         .await
@@ -194,7 +203,7 @@ async fn a_catalog_shown_in_full_costs_no_search_schema() {
                     }),
                     ..ConfigPatch::default()
                 },
-                ..SessionSpec::default()
+                ..funded()
             },
         )
         .await
@@ -230,7 +239,7 @@ async fn a_hidden_tool_stays_hidden_however_small_the_catalog() {
                     }),
                     ..ConfigPatch::default()
                 },
-                ..SessionSpec::default()
+                ..funded()
             },
         )
         .await
@@ -313,7 +322,7 @@ async fn the_ceiling_still_wins_over_a_search() {
                     tool_policy: Some(policy(&[("read_file", Exposure::Always)])),
                     ..ConfigPatch::default()
                 },
-                ..SessionSpec::default()
+                ..funded()
             },
         )
         .await
@@ -357,7 +366,7 @@ async fn an_exposure_outside_the_ceiling_is_refused() {
                     tools: Some(vec!["read_file".to_owned()]),
                     ..ConfigPatch::default()
                 },
-                ..SessionSpec::default()
+                ..funded()
             },
         )
         .await
@@ -481,7 +490,7 @@ async fn the_pool_forgets_what_has_gone_quiet() {
                     }),
                     ..ConfigPatch::default()
                 },
-                ..SessionSpec::default()
+                ..funded()
             },
         )
         .await
@@ -546,7 +555,7 @@ async fn one_enormous_schema_does_not_evict_the_smaller_tools_behind_it() {
                     }),
                     ..ConfigPatch::default()
                 },
-                ..SessionSpec::default()
+                ..funded()
             },
         )
         .await
@@ -586,7 +595,7 @@ async fn the_event_names_what_reached_the_prompt_not_what_entered_the_pool() {
                     }),
                     ..ConfigPatch::default()
                 },
-                ..SessionSpec::default()
+                ..funded()
             },
         )
         .await

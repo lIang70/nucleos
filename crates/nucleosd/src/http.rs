@@ -149,13 +149,11 @@ impl App {
         } else {
             SqliteStore::open(&path)?
         };
+        let policy = load_policy(std::env::var("NUCLEOS_POLICY").ok())?;
         let mut builder = Kernel::builder()
             .model(&model, Arc::new(adapter))
             .store(Arc::new(store))
-            // No policy engine yet, and saying so beats implying one: every tool call is allowed,
-            // including a process launch. A deployment that needs a gate supplies one; this line is
-            // the whole of the current answer.
-            .policy(Arc::new(nucleos::adapter::AllowAll))
+            .policy(policy)
             .routing(routing);
         for tool in tools {
             builder = builder.tool(tool);
@@ -830,5 +828,60 @@ impl ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         (self.status, Json(self.body)).into_response()
+    }
+}
+
+/// The policy a deployment declared, or a refusal to start.
+///
+/// There is no default. The previous version of this function ran `AllowAll`, so every refusal this
+/// daemon could report was a sentence in a document; and the version after that *claimed* to read a
+/// file while still running `AllowAll`, which is worse. A daemon that cannot say what it refuses has
+/// nothing to say, so it does not start.
+///
+/// Takes the path rather than reading the environment, so the decision is testable without a test
+/// mutating process-wide state.
+fn load_policy(path: Option<String>) -> Result<Arc<dyn nucleos::adapter::Policy>, nucleos::Error> {
+    let Some(path) = path else {
+        return Err(nucleos::Error::invalid(
+            "NUCLEOS_POLICY is not set: name a policy file. Every call is gated by it, so there is \
+             no safe default — see crates/nucleos-policy/examples/policy.json",
+        ));
+    };
+    let ruleset = nucleos_policy::Ruleset::load(&path)?;
+    // Said out loud at startup, because "which policy am I running under" is the first question
+    // asked after an incident and the last one a log usually answers.
+    eprintln!(
+        "policy: {path} (default: {:?}, {} rule(s))",
+        ruleset.document().unmatched,
+        ruleset.document().rules.len()
+    );
+    Ok(Arc::new(ruleset))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::load_policy;
+
+    #[test]
+    fn a_daemon_with_no_policy_refuses_to_start() {
+        let Err(error) = load_policy(None) else {
+            panic!("there is no default policy");
+        };
+        assert!(
+            error.reason().contains("NUCLEOS_POLICY"),
+            "the message has to name the variable: {error:?}"
+        );
+    }
+
+    #[test]
+    fn a_policy_file_is_loaded_and_an_unreadable_one_is_refused() {
+        let example = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../nucleos-policy/examples/policy.json"
+        );
+        assert!(load_policy(Some(example.to_owned())).is_ok());
+        assert!(load_policy(Some("/nonexistent/policy.json".to_owned())).is_err());
     }
 }

@@ -49,6 +49,9 @@ pub struct Session {
     pub(crate) discovered: std::collections::BTreeMap<String, u64>,
     /// Turns taken. The clock the pool expires against.
     pub(crate) round: u64,
+    /// Why it stopped, once it has. The kernel decides this for a budget, a driver for anything
+    /// else, and either way it belongs to the session rather than to a log the caller has to parse.
+    pub(crate) stop: Option<crate::contract::StopReason>,
     /// What this session is for.
     pub(crate) kind: crate::contract::SessionKind,
     /// The process, when this is a process session.
@@ -124,6 +127,12 @@ impl Session {
     #[must_use]
     pub fn tools(&self) -> &[String] {
         &self.tools
+    }
+
+    /// Why the session stopped, once it has.
+    #[must_use]
+    pub fn stop_reason(&self) -> Option<crate::contract::StopReason> {
+        self.stop
     }
 
     /// The exposure policy in force.
@@ -215,6 +224,7 @@ impl Session {
             tool_policy: crate::contract::ToolPolicy::default(),
             discovered: std::collections::BTreeMap::new(),
             round: 0,
+            stop: None,
             kind: crate::contract::SessionKind::Agent,
             process: None,
             routing: crate::contract::Routing::default(),
@@ -236,6 +246,12 @@ impl Session {
         }
         self.state = SessionState::Closed;
         Ok(true)
+    }
+
+    /// Close, and remember why.
+    pub(crate) fn close_with(&mut self, reason: crate::contract::StopReason) -> Result<bool> {
+        self.stop = Some(reason);
+        self.close()
     }
 
     /// Whether the session has run out of room in any dimension.
@@ -298,6 +314,7 @@ impl Session {
             tool_policy: self.tool_policy.clone(),
             discovered: self.discovered.clone(),
             round: self.round,
+            stop: self.stop,
             kind: self.kind,
             process: self.process.clone(),
             data: self.data.clone(),
@@ -339,6 +356,7 @@ impl Session {
             tool_policy: snapshot.tool_policy,
             discovered: snapshot.discovered,
             round: snapshot.round,
+            stop: snapshot.stop,
             kind: snapshot.kind,
             process: snapshot.process,
             system: snapshot.system,
