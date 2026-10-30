@@ -116,6 +116,22 @@ impl Kernel {
         let deadline = self.deadline(session);
         let session_id = session.id.clone();
         let started = self.now();
+
+        // Progress is written by a task, not by the calls: the session is borrowed here and the
+        // batch runs concurrently, so a tool that waited for `&mut Session` to report would block the
+        // very work it is describing. One writer, one channel, then nothing until the batch ends.
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel::<Reported>(64);
+        let writer = super::writer::EventWriter::new(
+            Arc::clone(&self.store),
+            session.id.clone(),
+            Arc::clone(&session.seq),
+            Arc::clone(&self.clock),
+        );
+        let progress_writer = tokio::spawn(async move {
+            while let Some(report) = progress_rx.recv().await {
+                let _ = progress_writer_append(&writer, report).await;
+            }
+        });
         // Resolved once, against the generation this session is pinned to: a call is answered by the
         // set that built the prompt, even if a newer generation has been published since.
         let resolved: Vec<Option<Arc<dyn Tool>>> = calls
@@ -123,15 +139,25 @@ impl Kernel {
             .map(|call| self.tool_in(session, &call.name))
             .collect();
 
-        let futures = calls.iter().zip(verdicts).zip(resolved).map(|((call, denial), tool)| {
+        let futures = calls
+            .iter()
+            .zip(verdicts)
+            .zip(resolved)
+            .map(|((call, denial), tool)| {
+                let progress_tx = progress_tx.clone();
             let args = call.arguments_json.clone();
             let call_id = call.id.clone();
             let session_id = session_id.clone();
             async move {
+                let sink = Sink {
+                    call_id: call_id.clone(),
+                    sender: progress_tx,
+                };
                 let ctx = crate::adapter::ToolCtx {
                     session: &session_id,
                     call_id: &call_id,
                     deadline_unix_millis: deadline,
+                    progress: &sink,
                 };
                 match denial {
                     None => match tool {
@@ -153,6 +179,10 @@ impl Kernel {
             }
         });
         let outputs = futures_util::future::join_all(futures).await;
+        // Closing the channel is what ends the writer: awaiting it afterwards means every progress
+        // event a tool reported is in the log before the caller sees the results.
+        drop(progress_tx);
+        let _ = progress_writer.await;
         let duration = self.now().saturating_sub(started);
 
         for (call, output) in calls.iter().zip(outputs.iter()) {
@@ -430,4 +460,46 @@ impl Kernel {
 /// exists so pruning does not allocate a JSON document per tool per turn.
 fn definition_bytes(spec: &crate::contract::ToolSpec) -> u64 {
     (spec.name.len() + spec.description.len() + spec.input_schema_json.len() + 32) as u64
+}
+
+/// One progress report, on its way to the log.
+struct Reported {
+    token: String,
+    done: u64,
+    total: u64,
+    message: String,
+}
+
+/// The sink a tool holds: it can only send, so a tool cannot write events itself.
+struct Sink {
+    call_id: String,
+    sender: tokio::sync::mpsc::Sender<Reported>,
+}
+
+impl crate::adapter::Progress for Sink {
+    fn report(&self, done: u64, total: u64, message: &str) {
+        // A full channel drops the report rather than blocking the call: a tool that stalls because
+        // nobody is reading progress is worse than one whose report is missing.
+        let _ = self.sender.try_send(Reported {
+            token: self.call_id.clone(),
+            done,
+            total,
+            message: message.to_owned(),
+        });
+    }
+}
+
+/// Write one report as an event.
+async fn progress_writer_append(
+    writer: &super::writer::EventWriter,
+    report: Reported,
+) -> Result<()> {
+    writer
+        .append(EventKind::Progress {
+            token: report.token,
+            done: report.done,
+            total: report.total,
+            message: report.message,
+        })
+        .await
 }

@@ -338,14 +338,21 @@ impl Tool for McpTool {
             Err(error) => return ToolOutput::failed(error.to_string()),
         };
 
+        // Progress from the server is not forwarded. `rmcp` assigns the progress token itself, per
+        // request, and overwrites one a caller puts in `_meta`; reading the assigned token back needs
+        // `send_cancellable_request`, whose request value the library does not let a caller build.
+        // So a server's `notifications/progress` never reaches the sink — the kernel's own events are
+        // wired, the transport is not. See docs/pitfalls.md.
         let call = server.call_tool(
             CallToolRequestParams::new(self.spec.name.clone()).with_arguments(arguments),
         );
 
+        let forwarding = call;
+
         let result = match self.timeout_for(cx) {
             // The transport cancels the request in flight when the future is dropped, which is what
             // makes this a real timeout rather than a client that stops listening.
-            Some(timeout) => match tokio::time::timeout(timeout, call).await {
+            Some(timeout) => match tokio::time::timeout(timeout, forwarding).await {
                 Ok(result) => result,
                 Err(_) => {
                     return ToolOutput::failed(format!(
@@ -354,7 +361,7 @@ impl Tool for McpTool {
                     ));
                 }
             },
-            None => call.await,
+            None => forwarding.await,
         };
 
         match result {

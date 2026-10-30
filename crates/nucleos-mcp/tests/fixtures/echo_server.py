@@ -11,6 +11,9 @@ Three switches exist so the tests can make a source behave like one in productio
 - `ECHO_EXTRA_TOOL` makes the server advertise a second tool, so a reconnect can be made to
   disagree with what the session was promised.
 - `ECHO_SPAWN_LOG` appends one line per start, so a test can count how often it was spawned.
+
+It also honours `_meta.progressToken`: a call whose text is `slow` reports two progress
+notifications before answering, which is what a long tool looks like on the wire.
 """
 import json
 import os
@@ -86,6 +89,24 @@ def main():
             params = message.get("params") or {}
             arguments = params.get("arguments") or {}
             text = arguments.get("text")
+            meta = params.get("_meta") or {}
+            if os.environ.get("ECHO_DEBUG"):
+                with open(os.environ["ECHO_DEBUG"], "a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(params) + "\n")
+            token = meta.get("progressToken")
+            if token is not None and text == "slow":
+                # A notification, not a response: no id, and the token the client asked with.
+                for step in (1, 2):
+                    send({
+                        "jsonrpc": "2.0",
+                        "method": "notifications/progress",
+                        "params": {
+                            "progressToken": token,
+                            "progress": step,
+                            "total": 2,
+                            "message": f"step {step}",
+                        },
+                    })
             if text and text == os.environ.get("ECHO_DIE_ON"):
                 # Leave without answering: the client sees a closed pipe, which is the failure a
                 # crashed server produces.

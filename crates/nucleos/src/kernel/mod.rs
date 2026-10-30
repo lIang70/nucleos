@@ -21,6 +21,7 @@ pub(crate) mod sandbox;
 pub(crate) mod session;
 pub(crate) mod state;
 pub(crate) mod tool_search;
+pub(crate) mod writer;
 pub(crate) mod tools;
 
 pub use session::Session;

@@ -786,6 +786,15 @@ refused, how many sessions opened, how many stopped on budget, how many reloads,
 daemon has been counting. Keyed by route _template_: a thousand sessions would otherwise be a
 thousand keys, and a counter with unbounded cardinality is a memory leak wearing a metric's name.
 
+**Progress, from the kernel's side.** `ToolCtx::progress` is a sink: a tool reports steps while it
+runs, the kernel writes one `progress` event per report with the call id as the token, and a tool that
+says nothing produces no record. The events are written by a task sharing the session's sequence
+counter, so a batch of eight concurrent calls still leaves one ordered log.
+
+MCP servers' own `notifications/progress` are **not** forwarded: the client library assigns the
+progress token per request and does not expose it to the caller. See `docs/pitfalls.md` §56 — the gap
+is documented at the line that would need it rather than implied by silence.
+
 **One record per request.** Method, route, status, duration, through the same subscriber as
 everything else — so a deployment has one stream, one format and one filter, and a collector builds
 its own histogram from the durations.

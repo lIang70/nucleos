@@ -13,7 +13,7 @@
 
 use super::{Kernel, Session, SessionSpec};
 use crate::contract::{
-    Event, EventKind, ExecOutput, ExecStream, OutputChunk, ProcessSpec, ProcessState,
+    EventKind, ExecOutput, ExecStream, OutputChunk, ProcessSpec, ProcessState,
     ProcessStatus, SandboxPolicy, SessionId,
 };
 use crate::contract::{Principal, StopReason};
@@ -38,32 +38,6 @@ enum Control {
     Stdin(String),
     /// End it.
     Kill,
-}
-
-/// The session's log, as the tasks that write to it see it.
-///
-/// One writer per process session, so this travels as one value rather than as three arguments that
-/// always move together.
-#[derive(Clone)]
-struct Log {
-    store: Arc<dyn crate::adapter::Store>,
-    session: SessionId,
-    seq: Arc<AtomicU64>,
-}
-
-impl Log {
-    async fn append(&self, kind: EventKind) -> Result<()> {
-        let seq = self.seq.fetch_add(1, Ordering::SeqCst);
-        let event = Event {
-            seq,
-            session: self.session.clone(),
-            at_unix_millis: 0,
-            schema_version: Event::SCHEMA_VERSION,
-            kind,
-            meta: BTreeMap::new(),
-        };
-        self.store.append(&self.session, &[event]).await
-    }
 }
 
 /// What a process wrote, kept so that `wait` can answer with it.
@@ -102,17 +76,29 @@ pub(crate) struct Spawned {
     pub pid: Option<u32>,
 }
 
+/// Everything a launch needs that the supervisor does not own.
+pub(crate) struct Launch<'a> {
+    pub store: Arc<dyn crate::adapter::Store>,
+    pub session: &'a SessionId,
+    pub spec: &'a ProcessSpec,
+    pub workspace: Option<&'a String>,
+    pub sandbox: &'a SandboxPolicy,
+    pub seq: &'a Arc<AtomicU64>,
+    pub clock: Arc<dyn crate::adapter::Clock>,
+}
+
 impl Supervisor {
     /// Start a process for a session, and write its events as they happen.
-    pub(crate) async fn spawn(
-        &self,
-        store: Arc<dyn crate::adapter::Store>,
-        session: &SessionId,
-        spec: &ProcessSpec,
-        workspace: Option<&String>,
-        sandbox: &SandboxPolicy,
-        seq: &Arc<AtomicU64>,
-    ) -> Result<Spawned> {
+    pub(crate) async fn spawn(&self, launch: Launch<'_>) -> Result<Spawned> {
+        let Launch {
+            store,
+            session,
+            spec,
+            workspace,
+            sandbox,
+            seq,
+            clock,
+        } = launch;
         if spec.argv.is_empty() {
             return Err(Error::invalid("a process needs an argv"));
         }
@@ -155,14 +141,14 @@ impl Supervisor {
         let pid = child.id();
 
         // The counter starts where the session's log ends: this task is the only writer from here.
-        let log = Log {
-            store: Arc::clone(&store),
-            session: session.clone(),
-            // The same counter the kernel's handle uses, not a copy of its value: this task and
-            // the caller both append to one log, and a copy is a second truth about where the log
-            // ends.
-            seq: Arc::clone(seq),
-        };
+        let log = super::writer::EventWriter::new(
+            Arc::clone(&store),
+            session.clone(),
+            // The same counter the kernel's handle uses, not a copy of its value: this task and the
+            // caller both append to one log, and a copy is a second truth about where the log ends.
+            Arc::clone(seq),
+            clock,
+        );
         let captured = Arc::new(Mutex::new(Captured::default()));
         let (drained_tx, drained_rx) = mpsc::channel::<()>(2);
         let (exited_tx, exited_rx) = oneshot::channel();
@@ -305,7 +291,7 @@ impl Supervisor {
 /// thread-unsafe; one task with a mailbox is what makes it a single writer for the session.
 async fn supervise(
     mut child: Child,
-    log: Log,
+    log: super::writer::EventWriter,
     captured: Arc<Mutex<Captured>>,
     mut control: mpsc::Receiver<Control>,
     mut drained: mpsc::Receiver<()>,
@@ -394,7 +380,7 @@ async fn supervise(
 }
 
 async fn reader(
-    log: Log,
+    log: super::writer::EventWriter,
     captured: Arc<Mutex<Captured>>,
     drained: mpsc::Sender<()>,
     stream: ExecStream,
@@ -551,14 +537,15 @@ impl Kernel {
 
         let started = self
             .supervisor
-            .spawn(
-                Arc::clone(&self.store),
-                &session.id,
-                &process.spec,
-                session.workspace.as_ref(),
-                &session.sandbox,
-                &session.seq,
-            )
+            .spawn(Launch {
+                store: Arc::clone(&self.store),
+                session: &session.id,
+                spec: &process.spec,
+                workspace: session.workspace.as_ref(),
+                sandbox: &session.sandbox,
+                seq: &session.seq,
+                clock: Arc::clone(&self.clock),
+            })
             .await?;
 
         session.process = Some(

@@ -735,3 +735,24 @@ partial stays in the event stream (a caller can read it), the session does not a
 `attempt_failed` says what happened. The next `load` appends nothing more: the record itself counts as
 a completed unit, which is what makes recovery idempotent instead of cumulative.
 
+## 56. A library that assigns the token decides who can subscribe
+
+**Decision.** Progress from an MCP server is **not** forwarded. The kernel's own `progress` events
+are wired (`ToolCtx::progress` → one event per report); the transport half is not.
+
+**Why not.** `rmcp` 3.8 assigns the progress token itself, per request, and **overwrites** one a
+caller sets in `_meta` — the wire shows the library's counter, not the caller's value. Reading the
+assigned token back is possible (`RequestHandle::progress_token`) but only through
+`send_cancellable_request`, which needs a `ClientRequest::CallToolRequest` value that the library does
+not let a caller construct.
+
+**What the alternatives were.** Guess the token from the library's counter (wrong the moment two calls
+are in flight, which a batch always is), forward every notification to every running call (attributes
+progress to the wrong call), or patch the dependency. None of them is worth shipping; the honest
+output is a documented gap and a note in the code at the exact line that would need it.
+
+**What this cost to learn.** Two wrong implementations: forwarding through a custom `ClientHandler`
+(the subscription never matched, because the token was not ours) and reading the token off a request
+handle (unreachable). Both compiled. Neither worked. A test against the real fixture caught the first;
+reading the dependency's source caught the second.
+

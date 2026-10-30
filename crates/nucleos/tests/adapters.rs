@@ -268,6 +268,7 @@ async fn a_failed_tool_answers_with_content_not_an_error() {
         session: &session,
         call_id: "call-1",
         deadline_unix_millis: 9_000,
+        progress: &nucleos::adapter::NoProgress,
     };
 
     let output = tool.invoke("{}", &cx).await;

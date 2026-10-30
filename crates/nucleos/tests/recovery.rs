@@ -9,8 +9,8 @@
 
 use nucleos::adapter::{AllowAll, Store};
 use nucleos::contract::{
-    AttemptOutcome, ConfigPatch, Content, ErrorCode, Event, EventKind, Message, Part,
-    PartKind, Principal, Role, Routing, SessionId, TextPart, Usage,
+    AttemptOutcome, ConfigPatch, Content, ErrorCode, Event, EventKind, Message, Part, PartKind,
+    Principal, Role, Routing, SessionId, TextPart, Usage,
 };
 use nucleos::kernel::{Kernel, SessionSpec};
 use nucleos_sqlite::SqliteStore;
@@ -101,7 +101,10 @@ async fn spend_written_after_the_checkpoint_is_not_forgotten() {
 
     let loaded = kernel.load(&principal(), &id).await.unwrap();
     assert_eq!(loaded.usage().total_tokens(), before + 1_000);
-    assert!(loaded.usage().total_tokens() < 10_000, "the credit was spent");
+    assert!(
+        loaded.usage().total_tokens() < 10_000,
+        "the credit was spent"
+    );
     assert_eq!(
         loaded.ledger().attempts.len(),
         1,
@@ -257,7 +260,10 @@ async fn a_turn_the_runtime_did_not_survive_is_recorded_rather_than_inferred() {
         .into_iter()
         .filter(|event| matches!(event.kind, EventKind::AttemptFailed { .. }))
         .count();
-    assert_eq!(records, 1, "the second load found no evidence left to infer");
+    assert_eq!(
+        records, 1,
+        "the second load found no evidence left to infer"
+    );
 }
 
 #[tokio::test]

@@ -20,11 +20,29 @@ pub trait Tool: Send + Sync {
     async fn invoke(&self, args_json: &str, cx: &ToolCtx<'_>) -> ToolOutput;
 }
 
+/// Where a long call says how far it has got.
+///
+/// Synchronous and infallible on purpose: a tool reporting progress is describing work it is doing,
+/// and a tool that could block on, or fail at, telling somebody about it would make the reporting a
+/// second thing to get right. The kernel turns these into `progress` events beside the session's
+/// other ones.
+pub trait Progress: Send + Sync {
+    /// Report one step. `total == 0` means "unknown", not "zero work".
+    fn report(&self, done: u64, total: u64, message: &str);
+}
+
+/// A sink that discards: for a caller with no session, and for tests that do not care.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoProgress;
+
+impl Progress for NoProgress {
+    fn report(&self, _done: u64, _total: u64, _message: &str) {}
+}
+
 /// What a tool may know about the call it is answering.
 ///
 /// Deliberately narrow. A tool that can reach the session has a way to change state the
 /// kernel believes it owns.
-#[derive(Debug)]
 pub struct ToolCtx<'a> {
     /// The session this call belongs to.
     pub session: &'a SessionId,
@@ -32,6 +50,20 @@ pub struct ToolCtx<'a> {
     pub call_id: &'a str,
     /// The wall-clock deadline for this call, in unix milliseconds.
     pub deadline_unix_millis: u64,
+    /// Where to report progress. A tool with nothing to say ignores it.
+    pub progress: &'a dyn Progress,
+}
+
+impl std::fmt::Debug for ToolCtx<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The sink is a trait object with no useful representation, and printing its address would
+        // make two identical contexts look different.
+        f.debug_struct("ToolCtx")
+            .field("session", &self.session)
+            .field("call_id", &self.call_id)
+            .field("deadline_unix_millis", &self.deadline_unix_millis)
+            .finish_non_exhaustive()
+    }
 }
 
 /// What a tool answered.

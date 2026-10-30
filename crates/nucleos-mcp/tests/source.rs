@@ -24,6 +24,7 @@ fn ctx<'a>(session: &'a SessionId, call_id: &'a str) -> ToolCtx<'a> {
         session,
         call_id,
         deadline_unix_millis: u64::MAX,
+        progress: &nucleos::adapter::NoProgress,
     }
 }
 

@@ -168,6 +168,7 @@ mod tests {
             session: &session,
             call_id: "call-1",
             deadline_unix_millis: u64::MAX,
+            progress: &crate::adapter::NoProgress,
         };
         catalog.invoke(args, &cx).await
     }
