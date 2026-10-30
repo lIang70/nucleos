@@ -1,0 +1,23 @@
+[package]
+name = "nucleos-auth"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Credentials for the nucleos daemon: the recovery password, and the administrator's keys."
+readme = "../../README.md"
+keywords = ["agent", "kernel", "auth", "argon2"]
+categories = ["development-tools"]
+
+[dependencies]
+argon2 = { version = "0.5", features = ["std"] }
+nucleos = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+nucleos-sqlite = { path = "../nucleos-sqlite" }
+tokio = { workspace = true }
+
+[lints]
+workspace = true

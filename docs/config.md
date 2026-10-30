@@ -319,7 +319,10 @@ Properties it must have:
   lost. It never authenticates an ordinary request.
 - **Recovery needs local access.** It reads the store file; it is not reachable over the socket, or a
   remote attacker would have an unlimited oracle to grind against.
-- **Rate-limited**, in memory: five attempts a minute, regardless of source.
+- **Rate-limited**, in memory: five attempts a minute, regardless of source. This stops a person at a
+  keyboard, not an attacker with the database file — that one is answered by the hash cost, and the
+  document says so rather than implying the limiter is a boundary (§6, and the module note in
+  `nucleos-auth`).
 
 ## 8. The administrative surface
 
@@ -389,6 +392,11 @@ Each step is useful on its own, and none of them requires the next.
    refusal, because there is no session to park.
 3. **`nucleos init`** + bootstrap file + recovery password. Until this exists, step 4 has no bootstrap
    credential.
+   *Partly done: the recovery password exists — Argon2id, PHC-encoded so raised costs do not
+   invalidate it, stored under `auth/recovery_password` in the system store, verified only where the
+   store file is readable. 64 MiB and three passes cost about 1.5 s per hash on a laptop, which is the
+   intended trade and the reason nothing on a request path may verify one. Still missing: the `init`
+   command that asks for it, and the key enrolment it exists for.*
 4. **Configuration ABI** — `/v1/config`, models, sources, tokens, policy; one event per change.
 5. **CLI** — a thin client: send the request, print the event that was recorded.
 6. **Ed25519 signatures** — last, because it protects what steps 1–5 built. Until then, a single

@@ -832,3 +832,22 @@ deployment's configuration is the operator's, and a tenant's narrowing is the te
 for `tenant` must not reach `system` even when the subject is spelled the same, which only holds if the
 request says which scope it is being judged against.
 
+## 61. A rate limiter inside the process is not a boundary
+
+**Decision.** Recovery attempts are limited to five a minute, in memory, per process. The hash is
+Argon2id at 64 MiB and three passes, about 1.5 seconds per attempt on a laptop.
+
+**Why the limiter is not the protection.** Recovery runs locally, in a process that already has the
+database file. Anyone holding that file can attack the hash offline at whatever rate their hardware
+allows, and no counter in this process can reach them. The thing that actually bounds them is the
+memory cost. The limiter addresses the case it can: a person at a keyboard, guessing, in the one
+process that is running.
+
+**Why say it out loud.** A limiter that is believed to be a boundary is worse than no limiter, because
+it relaxes the choice of parameters — "five attempts a minute" sounds like it buys the right to a cheap
+hash, and it does not.
+
+**Why the parameters are in the stored string.** The PHC encoding carries algorithm and cost, so
+raising them later does not invalidate existing hashes, and a deployment can be re-hashed lazily at the
+next enrolment instead of at a migration.
+

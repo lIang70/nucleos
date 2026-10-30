@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/nucleos",
     "crates/nucleos-agent",
+    "crates/nucleos-auth",
     "crates/nucleos-mcp",
     "crates/nucleos-openai",
     "crates/nucleos-policy",
