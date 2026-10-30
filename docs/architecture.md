@@ -705,17 +705,30 @@ request, which is a change to this file and a larger one to the ABI.
 
 ## 12. Telemetry
 
-Names are not ours to invent. Attribute names follow the OpenTelemetry GenAI conventions
-(`gen_ai.usage.input_tokens`, `gen_ai.request.model`, `gen_ai.operation.name`), and trace
-context follows W3C Trace Context: a `traceparent` rides in session metadata so one span
-continues across SDK → daemon → provider.
+Two things, and the absence of the rest is deliberate.
 
-The reason is not tidiness. A bespoke naming scheme means a bespoke pipeline, which means the
-traces exist and nobody looks at them.
+**Counters, at `GET /v1/metrics`.** Which route was called how many times, how many requests were
+refused, how many sessions opened, how many stopped on budget, how many reloads, and how long the
+daemon has been counting. Keyed by route *template*: a thousand sessions would otherwise be a
+thousand keys, and a counter with unbounded cardinality is a memory leak wearing a metric's name.
 
-The kernel emits rather than exports: it produces events, and the daemon turns them into
-spans, metrics and logs. The kernel has no OTLP dependency, and adding one would put network
-I/O on the hot path of every turn.
+**One JSON line per request on stdout.** Method, route, status, duration. That is the input a
+collector needs for its own histogram, and it costs no dependency: there is one format, one sink and
+one level, and a logging crate that exists to print one line grows a configuration language.
+
+What is absent, and why each absence is a decision rather than an omission:
+
+- **No histograms in the daemon.** A p99 needs a sink that can aggregate, and a daemon exporting to
+  nowhere is a promise about dashboards nobody has. The duration is in the line; aggregation belongs
+  where the data lands.
+- **No trace context.** The event log is already a better trace: it has sequence numbers, it is
+  durable, and it replays. A second trace would be a second ordering of the same facts, and the two
+  would disagree eventually.
+- **No exporter.** Files, sockets and scrapers are deployment decisions, and the deployment file does
+  not exist yet. Adding one now means choosing for every deployment at once.
+
+The counters are the questions an operator asks first. Everything else can be computed from the event
+log, which is the record rather than a statistic.
 
 ## 13. Non-goals
 

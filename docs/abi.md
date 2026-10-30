@@ -241,6 +241,13 @@ change the meaning of a prompt already sent. A compatible set (same names, nothi
 adopted at the next turn boundary and recorded as `generation_migrated`; an incompatible one leaves
 the session pinned until it ends. `GET /v1/describe` reports the generation in force.
 
+## 4.3 Metrics and reload
+
+`GET /v1/metrics` returns counters keyed by route template. The request that produced a snapshot is
+counted after the body is built, so it cannot appear in its own response.
+
+`POST /v1/tools/reload` reconnects the configured source and publishes a new generation; see 4.2.
+
 ## 5. Credit
 
 `Credit` extends budget; `Run` carries an initial credit grant. Each `usage` event debits

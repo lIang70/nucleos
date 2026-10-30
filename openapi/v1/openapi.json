@@ -1565,6 +1565,57 @@
         ],
         "type": "object"
       },
+      "MetricsResponse": {
+        "description": "What this daemon has counted since it started.",
+        "properties": {
+          "budget_stops": {
+            "default": 0,
+            "description": "Sessions that ended because a budget ran out.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reloads": {
+            "default": 0,
+            "description": "Tool sources reloaded.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "requests": {
+            "additionalProperties": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "default": {},
+            "description": "`\"GET /v1/describe\"` → how many times, keyed by route template.",
+            "type": "object"
+          },
+          "sessions": {
+            "default": 0,
+            "description": "Sessions opened.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "unauthorized": {
+            "default": 0,
+            "description": "Requests refused by authentication.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "uptime_millis": {
+            "default": 0,
+            "description": "How long the daemon has been counting.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
       "OutputChunk": {
         "description": "A piece of captured output, and whether it was cut.\n\nTruncation is carried rather than applied silently: a model that cannot see that its output\nwas shortened will reason about a file it only half read.",
         "properties": {
@@ -3134,6 +3185,84 @@
           }
         },
         "summary": "Capabilities, models, and the ABI version."
+      }
+    },
+    "/v1/metrics": {
+      "get": {
+        "operationId": "metrics",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricsResponse"
+                }
+              }
+            },
+            "description": "The result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "What this daemon has counted since it started."
       }
     },
     "/v1/processes": {

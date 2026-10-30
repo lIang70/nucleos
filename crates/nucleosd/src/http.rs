@@ -19,7 +19,8 @@ use nucleos_sqlite::SqliteStore;
 use nucleos::kernel::{HitlVerdict, Kernel, SessionSpec, StateWrite};
 use nucleos::wire::api::{
     DescribeResponse, ErrorBody, InferenceRequest, InferenceResponse, ProcessInfo,
-    ProcessListResponse, ProcessStartRequest, ProcessStartResponse, ReloadResponse, SessionView, StartRequest,
+    MetricsResponse, ProcessListResponse, ProcessStartRequest, ProcessStartResponse, ReloadResponse,
+    SessionView, StartRequest,
     StartResponse, StateRequest, StdinRequest, ToolBatchRequest, ToolBatchResponse, VerdictRequest,
 };
 use nucleos::wire::openapi;
@@ -48,6 +49,8 @@ pub struct App {
     tools: std::sync::RwLock<Vec<String>>,
     /// The source a reload reconnects, when the deployment configured one.
     source: Option<nucleos_mcp::McpSource>,
+    /// What this daemon has done since it started.
+    metrics: crate::metrics::Metrics,
     /// The bearer token every request must present, when one is configured.
     ///
     /// `None` means the daemon trusts its socket's permissions, which is a decision about where it
@@ -66,7 +69,14 @@ impl App {
             tools: std::sync::RwLock::new(Vec::new()),
             source: None,
             token: None,
+            metrics: crate::metrics::Metrics::started_now(),
         }
+    }
+
+    /// The counters, for a handler and for a test.
+    #[must_use]
+    pub fn metrics(&self) -> &crate::metrics::Metrics {
+        &self.metrics
     }
 
     /// Require a bearer token on every request.
@@ -230,6 +240,7 @@ impl App {
             tools: std::sync::RwLock::new(Vec::new()),
             source: None,
             token: None,
+            metrics: crate::metrics::Metrics::started_now(),
         }
     }
 
@@ -391,6 +402,17 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            method: "get",
+            path: "/v1/metrics",
+            operation: "metrics",
+            summary: "What this daemon has counted since it started.",
+            request: None,
+            reply: openapi::Reply::Json("MetricsResponse"),
+        },
+        build: || get(metrics),
+    },
+    Route {
+        meta: openapi::Route {
             method: "post",
             path: "/v1/tools/reload",
             operation: "reloadTools",
@@ -459,7 +481,35 @@ pub fn router(app: Arc<App>) -> Router {
             Arc::clone(&app),
             authenticate,
         ))
+        // Outside the authentication layer: a request refused for its token is still a request, and
+        // a counter that ignores refusals hides the one number an operator looks at first.
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&app),
+            observe,
+        ))
         .with_state(app)
+}
+
+/// Count one request, and write one line about it.
+async fn observe(
+    State(app): State<Arc<App>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let started = std::time::Instant::now();
+    let method = request.method().to_string();
+    // The template, not the path: `/v1/sessions/{id}` is one route, however many sessions exist.
+    let route = request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(|path| path.as_str().to_owned())
+        .unwrap_or_else(|| request.uri().path().to_owned());
+
+    let response = next.run(request).await;
+    let millis = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    app.metrics.observe(&method, &route, response.status().as_u16());
+    println!("{}", crate::metrics::line(&method, &route, response.status().as_u16(), millis));
+    response
 }
 
 /// Refuse a request that does not carry the token, when one is configured.
@@ -498,6 +548,11 @@ async fn describe(State(app): State<Arc<App>>) -> Json<DescribeResponse> {
     })
 }
 
+/// What this daemon has counted.
+async fn metrics(State(app): State<Arc<App>>) -> Json<MetricsResponse> {
+    Json(app.metrics().snapshot())
+}
+
 /// Reconnect the tool source and publish what it advertises now.
 ///
 /// This is the whole point of generations from the outside: a source is a process somebody else
@@ -524,6 +579,7 @@ async fn reload(State(app): State<Arc<App>>) -> Result<Json<ReloadResponse>, Api
     let generation = kernel
         .publish(tools)
         .map_err(|error| ApiError::from_error(&error))?;
+    app.metrics().reloaded();
 
     let added: Vec<String> = names
         .iter()
@@ -553,6 +609,7 @@ async fn run_agent(
     Json(request): Json<StartRequest>,
 ) -> Result<Json<StartResponse>, ApiError> {
     let kernel = app.kernel()?.clone();
+    app.metrics().session_opened();
     let spec: SessionSpec = request.clone().into();
     let id = SessionId::new(request.session_id());
     let outcome = if request.resume {
@@ -570,6 +627,7 @@ async fn open(
     Json(request): Json<StartRequest>,
 ) -> Result<Json<StartResponse>, ApiError> {
     let kernel = app.kernel()?.clone();
+    app.metrics().session_opened();
     let spec: SessionSpec = request.clone().into();
     let session = kernel
         .open(&app.principal, SessionId::new(request.session_id()), spec)
@@ -677,6 +735,7 @@ async fn start_process(
     Json(request): Json<ProcessStartRequest>,
 ) -> Result<Json<ProcessStartResponse>, ApiError> {
     let kernel = app.kernel()?.clone();
+    app.metrics().session_opened();
     let id = SessionId::new(format!(
         "proc-{:016x}",
         std::time::SystemTime::now()

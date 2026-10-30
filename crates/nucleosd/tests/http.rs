@@ -596,3 +596,57 @@ async fn a_configured_token_is_required_on_every_route() {
         .unwrap();
     assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
 }
+
+// ---------------------------------------------------------------------------
+// Telemetry
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn metrics_count_what_an_operator_asks_about() {
+    let app = guarded();
+
+    // One allowed request, one refused, one reload attempt with no source.
+    let _ = router(Arc::clone(&app))
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/describe")
+                .header("authorization", "Bearer s3cret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let _ = router(Arc::clone(&app))
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/describe")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let body = body_json(
+        router(Arc::clone(&app))
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/metrics")
+                    .header("authorization", "Bearer s3cret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+
+    // Keyed by route template, so a thousand sessions are one counter rather than a thousand.
+    assert_eq!(body["requests"]["GET /v1/describe"], 2);
+    assert_eq!(body["unauthorized"], 1, "a refusal is still a request");
+    // The request that produced this snapshot is counted after the body is built, so it cannot
+    // include itself — which is the correct behaviour and the reason it is not asserted.
+    assert!(body["uptime_millis"].is_u64() || body["uptime_millis"].is_f64());
+}

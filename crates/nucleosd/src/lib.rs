@@ -5,5 +5,6 @@
 
 pub mod auth;
 pub mod http;
+pub mod metrics;
 
 pub use http::{App, router};

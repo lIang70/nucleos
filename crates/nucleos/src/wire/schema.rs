@@ -46,6 +46,8 @@ pub struct Abi {
     pub tool_batch_request: api::ToolBatchRequest,
     /// What that returns.
     pub tool_batch_response: api::ToolBatchResponse,
+    /// `GET /v1/metrics`.
+    pub metrics_response: api::MetricsResponse,
     /// `POST /v1/tools/reload`.
     pub reload_response: api::ReloadResponse,
     /// `POST /v1/sessions/{id}/state`.

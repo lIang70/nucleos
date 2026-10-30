@@ -204,6 +204,29 @@ pub struct DescribeResponse {
     pub generation: u64,
 }
 
+/// What this daemon has counted since it started.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct MetricsResponse {
+    /// `"GET /v1/describe"` → how many times, keyed by route template.
+    #[serde(default)]
+    pub requests: BTreeMap<String, u64>,
+    /// Requests refused by authentication.
+    #[serde(default)]
+    pub unauthorized: u64,
+    /// Sessions opened.
+    #[serde(default)]
+    pub sessions: u64,
+    /// Tool sources reloaded.
+    #[serde(default)]
+    pub reloads: u64,
+    /// Sessions that ended because a budget ran out.
+    #[serde(default)]
+    pub budget_stops: u64,
+    /// How long the daemon has been counting.
+    #[serde(default)]
+    pub uptime_millis: u64,
+}
+
 /// What a tool reload did.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct ReloadResponse {
