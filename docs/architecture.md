@@ -534,28 +534,36 @@ Three refusals, each for a failure that is otherwise silent:
 The check runs inside the route, so a fallback model with a larger window still gets its chance —
 the prompt did not fit *that* model, which is a fact about one target, not about the call.
 
-### 11.2 Compaction is the caller's
+### 11.2 Compaction is the caller's, record included
 
-The kernel offers no summariser, no window policy, no "recent N turns". What it offers is a way to
-say what happened:
+The kernel offers no summariser, no window policy, no "recent N turns", and **no way to report one
+either**. What it offers is the measurement above and a refusal that says what is wrong.
 
-```rust
-kernel.compact(&mut session, replaced_from, replaced_to, summary)
-```
+The tempting addition is a `compact(from, to, summary)` syscall that appends a `history_compacted`
+event, so an auditor could see what the model was told. It was written, and then removed, because it
+fails the test every other field in this design has to pass: **the kernel cannot verify it.** The
+span addresses the caller's message list, which the kernel has never seen; the summary is the
+caller's word for what it sent; and nothing stops a caller from reporting a compaction it did not
+perform, or from compacting and not reporting. That is a claim, not a fact — and it would sit in the
+one place that claims to be the record.
 
-That appends `history_compacted` and does nothing else. The span addresses the messages the caller
-passed, and the summary is what the model was given instead. An empty or backwards span is refused:
-a caller reporting that it dropped nothing is reporting a bug, and a log entry saying so would be
-worse than the error.
+Two things follow, and neither is a gap:
 
-What this buys, for one event: a replay can reconstruct the prompt the model actually saw. Without
-it, the log says one thing and the request said another, and an auditor cannot tell compaction from
-a bug.
+- **Replay does not need it.** A replay reconstructs the session from `messages`, which the kernel
+  owns and the caller's compaction never touches. So the log is complete without it.
+- **Audit is the caller's too.** Whatever assembles a prompt is the only thing that can say truthfully
+  what went into it. A caller that needs that record keeps it where it made the decision.
 
-What it costs, stated plainly: **the kernel no longer promises that a long conversation keeps
-running.** Its promise is "you are told, not truncated" — a session whose caller never compacts ends
-at `StopReason::Tokens`. A kernel that answered one question for everyone would be answering it
-wrongly for most.
+There is also no generic "emit my own event" syscall, and that is deliberate: a caller able to emit
+arbitrary events could forge `budget_exhausted` and poison every replay that followed. `compact` would
+have been a back door around that prohibition, addressed to the one event kind it wanted.
+
+The divergence this leaves is the honest one: after a compaction, `load` returns the full history and
+therefore **more** than the last prompt carried. The kernel's copy is the record; the prompt is a view.
+
+What the kernel does promise is the part a caller cannot do for itself — measure, and refuse instead of
+truncate. A session whose caller never compacts ends at `StopReason::Tokens`, and the kernel does not
+pretend otherwise.
 
 ### 11.3 Page-in
 

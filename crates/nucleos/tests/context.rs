@@ -11,7 +11,7 @@
 
 use nucleos::adapter::{AllowAll, Store};
 use nucleos::contract::{
-    Capability, ConfigPatch, ErrorCode, EventKind, GenerateParams, Principal, Routing, SessionId,
+    Capability, ConfigPatch, ErrorCode, GenerateParams, Principal, Routing, SessionId,
 };
 use nucleos::kernel::{Kernel, SessionSpec};
 use nucleos_sqlite::SqliteStore;
@@ -147,52 +147,4 @@ async fn the_model_declares_a_reserve_and_the_request_may_lower_it() {
         .await
         .unwrap();
     kernel.inference(&mut session, &[]).await.unwrap();
-}
-
-#[tokio::test]
-async fn a_compaction_is_recorded_and_the_original_messages_stay() {
-    let (kernel, store) = build(FakeModel::text(["unused"]));
-    let mut session = kernel
-        .open(&principal(), SessionId::new("s1"), SessionSpec::default())
-        .await
-        .unwrap();
-
-    kernel
-        .compact(&mut session, 2, 9, "the user asked about invoices, then about refunds")
-        .await
-        .unwrap();
-
-    let events = store.events_since(session.id(), 0).await.unwrap();
-    let recorded = events
-        .iter()
-        .find_map(|event| match &event.kind {
-            EventKind::HistoryCompacted {
-                replaced_from,
-                replaced_to,
-                summary,
-            } => Some((*replaced_from, *replaced_to, summary.clone())),
-            _ => None,
-        })
-        .expect("the compaction is in the log");
-    assert_eq!(recorded.0, 2);
-    assert_eq!(recorded.1, 9);
-    assert!(recorded.2.contains("invoices"));
-
-    // Compaction adds a record; it never edits history. The kernel's copy of the conversation is
-    // what a replay rebuilds from, and it is untouched.
-    assert!(session.messages().is_empty());
-}
-
-#[tokio::test]
-async fn an_empty_compaction_is_refused() {
-    let (kernel, _store) = build(FakeModel::text(["unused"]));
-    let mut session = kernel
-        .open(&principal(), SessionId::new("s1"), SessionSpec::default())
-        .await
-        .unwrap();
-
-    // A caller reporting that it dropped nothing is reporting a bug, and a log entry saying so
-    // would be worse than the error.
-    assert!(kernel.compact(&mut session, 4, 4, "nothing").await.is_err());
-    assert!(kernel.compact(&mut session, 9, 2, "backwards").await.is_err());
 }

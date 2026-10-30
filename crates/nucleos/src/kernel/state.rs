@@ -3,7 +3,7 @@
 use super::{Kernel, StateWrite, session};
 use crate::adapter::Clock;
 use crate::contract::{Event, EventKind};
-use crate::error::{Error, Result};
+use crate::error::Result;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -14,35 +14,6 @@ impl Kernel {
             session.data.insert(key, value);
         }
         session.messages.extend(write.messages);
-        self.write_checkpoint(session).await
-    }
-    /// Record that the caller compacted history before building a prompt.
-    ///
-    /// The kernel does not compact and cannot check this claim: the caller assembled the prompt, the
-    /// caller replaced a span, and what it must not do is leave the log describing a prompt that
-    /// was never sent. The span is checked for sanity — an empty or backwards range is a bug in the
-    /// caller, not a compaction — and the summary is stored as given.
-    pub async fn compact(
-        &self,
-        session: &mut session::Session,
-        replaced_from: u32,
-        replaced_to: u32,
-        summary: impl Into<String>,
-    ) -> Result<()> {
-        if replaced_from >= replaced_to {
-            return Err(Error::invalid(format!(
-                "a compaction replaces a non-empty span; {replaced_from}..{replaced_to} is empty"
-            )));
-        }
-        self.emit(
-            session,
-            EventKind::HistoryCompacted {
-                replaced_from,
-                replaced_to,
-                summary: summary.into(),
-            },
-        )
-        .await?;
         self.write_checkpoint(session).await
     }
     /// Park a call on a human.

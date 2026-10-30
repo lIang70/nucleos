@@ -486,20 +486,29 @@ same mutex that serialises reconnects.
 session — a fork bomb that looks like an unhealthy tool. Without the mutex, a batch of eight
 concurrent calls to a dead source produces eight children and seven orphans.
 
-## 39. Compaction is not a kernel feature
+## 39. Compaction is not a kernel feature, and neither is recording it
 
 **Decision.** The kernel measures a prompt and refuses one that cannot fit. It does not summarise,
-window, evict or rank. `compact` records what the caller did; it never performs it.
+window, evict or rank — and it does not accept a `history_compacted` event either. That syscall was
+added and then deleted.
 
-**Why.** The kernel never assembles prompts — `inference` takes the message list from the caller — so
-compaction is editing data the kernel does not own. Strategies differ in ways that matter: a summary
-loses detail but keeps intent, a sliding window keeps detail and loses intent, evicting tool results
-keeps both and loses evidence. A kernel that picked one would be wrong for most callers, and it would
-have to charge a model call it did not decide to spend.
+**Why the syscall was wrong.** The kernel cannot verify it. `from`/`to` index the caller's message
+list, which the kernel has never seen; the summary is the caller's word for what it sent; and nothing
+prevents reporting a compaction that did not happen. That is a claim in the log that claims to be the
+record — the same defect as `Tool::isolation` and as `tools_exposed` reporting the pool instead of
+the prompt.
+
+**Why deleting it costs nothing.** Replay rebuilds the session from `messages`, which the kernel owns
+and a caller's compaction never touches. Audit of "what the model was told" belongs to whatever built
+the prompt, because only that thing can say it truthfully.
+
+**Why there is no generic emit-my-own-event syscall.** A caller who could emit arbitrary events could
+forge `budget_exhausted`, and every later replay would be wrong. `compact` was a back door around
+that prohibition, aimed at exactly one event kind.
 
 **What the kernel still owes.** Two things a caller cannot do for itself: `count_tokens` before the
-call (the contract method that existed while nothing called it), and a `history_compacted` event so
-that a replay reconstructs the prompt the model saw rather than the history the log happens to hold.
+call — the contract method that existed while nothing called it — and a refusal that names the
+numbers, so the caller knows whether to compact or to lower the reserve.
 
 ## 40. A model with no declared window is not unlimited
 
