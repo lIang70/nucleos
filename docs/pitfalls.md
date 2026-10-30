@@ -546,3 +546,31 @@ other and none of them was the code.
 tests read in parallel. Taking the path as a parameter makes the decision testable and keeps the
 reading of the environment in one line.
 
+## 43. A sandbox profile names resolved paths
+
+**Decision.** Every writable root is written into the seatbelt profile twice when it resolves to
+something else: as given, and as `canonicalize` returns it.
+
+**Why.** Seatbelt matches against the resolved path. On macOS `std::env::temp_dir()` is
+`/var/folders/...` and `/var` is a symlink to `/private/var`, so a profile naming only the first form
+denies writes to the directory it was written to allow — the sandbox fails closed, for a reason
+nobody can see, on the most ordinary path in the system. The first end-to-end test caught it; no
+amount of reading the profile would have.
+
+**A root that does not exist yet is kept as written.** A caller may be granting a directory the
+command is about to create, and refusing to name it would refuse a legitimate grant.
+
+## 44. A sandbox policy is enforced or refused, never ignored
+
+**Decision.** `SandboxPolicy` is either carried out by a mechanism or refused with `Unavailable`.
+There is no third path where the command runs unconfined.
+
+**Why.** The previous version refused everything but `danger_full_access`, which was honest and
+useless. The tempting fix — run the command and log that the sandbox was unavailable — is worse than
+the original: the caller believes it has isolation, the log says otherwise only to whoever reads it,
+and the command that most needs confining runs unconfined because a platform is incomplete.
+
+**What the platform changes.** macOS enforces; Linux refuses until bubblewrap and landlock exist. The
+tests assert the disjunction rather than one branch, so "enforced" and "refused" both count and
+"ignored" does not.
+

@@ -15,6 +15,7 @@ pub(crate) mod inference;
 pub(crate) mod lifecycle;
 pub(crate) mod process;
 pub(crate) mod route;
+pub(crate) mod sandbox;
 pub(crate) mod session;
 pub(crate) mod state;
 pub(crate) mod tool_search;

@@ -114,3 +114,217 @@ async fn the_policy_is_session_state_and_survives_a_checkpoint() -> nucleos::Res
     assert_eq!(reloaded.workspace().map(String::as_str), Some("/work"));
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// The mechanism
+//
+// A policy that nothing enforces is a document. These run a real command under a real sandbox and
+// look at whether the file it wrote exists.
+// ---------------------------------------------------------------------------
+
+/// A temporary directory to use as a workspace, outside the system temp root that the profile does
+/// not allow.
+fn workspace(name: &str) -> std::path::PathBuf {
+    let directory = std::env::temp_dir().join(format!("nucleos-sandbox-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    directory
+}
+
+/// Run one command and wait for it, returning whether it succeeded.
+async fn run(
+    workspace: Option<&str>,
+    policy: SandboxPolicy,
+    permissions: SandboxPermissions,
+    argv: &[&str],
+) -> nucleos::Result<bool> {
+    let store = Arc::new(SqliteStore::in_memory().expect("an in-memory database"));
+    let kernel = Kernel::builder()
+        .model("primary", Arc::new(FakeModel::text(["unused"])))
+        .store(Arc::clone(&store) as Arc<dyn Store>)
+        .policy(Arc::new(AllowAll))
+        .clock(Arc::new(FixedClock::at(0)))
+        .routing(Routing {
+            chain: vec!["primary".to_owned()],
+            retries: 0,
+        })
+        .build()?;
+
+    let session = kernel
+        .spawn(
+            &principal(),
+            SessionId::new("p1"),
+            SessionSpec {
+                workspace: workspace.map(ToString::to_string),
+                sandbox: policy,
+                credit_tokens: 1_000,
+                process: Some(nucleos::contract::ProcessSpec {
+                    argv: argv.iter().map(|part| (*part).to_string()).collect(),
+                    cwd: None,
+                    env: std::collections::BTreeMap::new(),
+                    permissions,
+                }),
+                ..SessionSpec::default()
+            },
+        )
+        .await?;
+    let output = kernel.wait(&session).await?;
+    Ok(output.exit_code == 0)
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_workspace_write_policy_writes_in_the_workspace_and_nowhere_else() {
+    let directory = workspace("write");
+    let inside = directory.join("inside.txt");
+    let outside = std::env::temp_dir().join(format!("nucleos-outside-{}.txt", std::process::id()));
+    let _ = std::fs::remove_file(&outside);
+
+    let ok = run(
+        Some(directory.to_str().unwrap()),
+        SandboxPolicy::WorkspaceWrite {
+            extra_writable_roots: Vec::new(),
+            network_access: false,
+        },
+        SandboxPermissions::UseDefault,
+        &[
+            "/bin/sh",
+            "-c",
+            &format!("printf hi > {}", inside.display()),
+        ],
+    )
+    .await
+    .unwrap();
+    assert!(ok, "a write inside the workspace is the point of the policy");
+    assert_eq!(std::fs::read_to_string(&inside).unwrap(), "hi");
+
+    // The same write one directory up: the profile has no rule for it, so the kernel refuses it.
+    let denied = run(
+        Some(directory.to_str().unwrap()),
+        SandboxPolicy::WorkspaceWrite {
+            extra_writable_roots: Vec::new(),
+            network_access: false,
+        },
+        SandboxPermissions::UseDefault,
+        &[
+            "/bin/sh",
+            "-c",
+            &format!("printf hi > {}", outside.display()),
+        ],
+    )
+    .await
+    .unwrap();
+    assert!(!denied, "a write outside the workspace must fail");
+    assert!(!outside.exists(), "and must not have happened");
+
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_read_only_policy_refuses_the_workspace_write_too() {
+    let directory = workspace("readonly");
+    let target = directory.join("should-not-exist.txt");
+
+    let ok = run(
+        Some(directory.to_str().unwrap()),
+        SandboxPolicy::read_only(),
+        SandboxPermissions::UseDefault,
+        &[
+            "/bin/sh",
+            "-c",
+            &format!("printf hi > {}", target.display()),
+        ],
+    )
+    .await
+    .unwrap();
+
+    assert!(!ok, "read-only means read only");
+    assert!(!target.exists());
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_command_that_asks_for_more_gets_more() {
+    let directory = workspace("widen");
+    let outside = workspace("widen-outside");
+    let target = outside.join("allowed.txt");
+
+    let denied = run(
+        Some(directory.to_str().unwrap()),
+        SandboxPolicy::WorkspaceWrite {
+            extra_writable_roots: Vec::new(),
+            network_access: false,
+        },
+        SandboxPermissions::UseDefault,
+        &[
+            "/bin/sh",
+            "-c",
+            &format!("printf hi > {}", target.display()),
+        ],
+    )
+    .await
+    .unwrap();
+    assert!(!denied, "not allowed by the session policy");
+
+    // The same command, asking for the one root it needs. Widening is additive and per-command.
+    let allowed = run(
+        Some(directory.to_str().unwrap()),
+        SandboxPolicy::WorkspaceWrite {
+            extra_writable_roots: Vec::new(),
+            network_access: false,
+        },
+        SandboxPermissions::WithAdditionalPermissions {
+            additional: AdditionalPermissions {
+                writable_roots: vec![outside.to_str().unwrap().to_owned()],
+                network_access: false,
+            },
+        },
+        &[
+            "/bin/sh",
+            "-c",
+            &format!("printf hi > {}", target.display()),
+        ],
+    )
+    .await
+    .unwrap();
+    assert!(allowed, "the widened root is writable for this command");
+
+    let _ = std::fs::remove_dir_all(&directory);
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_confining_policy_that_cannot_be_enforced_is_refused_not_ignored() {
+    // Nothing to prove about the command: the point is that no unconfined process was started for
+    // a policy that claims confinement. On macOS this cannot happen, so it documents the contract
+    // rather than exercising a branch.
+    let directory = workspace("enforced");
+    let ok = run(
+        Some(directory.to_str().unwrap()),
+        SandboxPolicy::read_only(),
+        SandboxPermissions::UseDefault,
+        &["/bin/echo", "hello"],
+    )
+    .await
+    .unwrap();
+    assert!(ok, "a read-only policy still runs a command that only reads");
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tokio::test]
+async fn a_confining_policy_is_refused_on_a_platform_without_a_mechanism() {
+    // Honest refusal beats a sandbox that is not there.
+    let error = run(
+        None,
+        SandboxPolicy::read_only(),
+        SandboxPermissions::UseDefault,
+        &["/bin/echo", "hello"],
+    )
+    .await
+    .expect_err("no mechanism, no promise");
+    assert_eq!(error.code(), nucleos::contract::ErrorCode::Unavailable);
+}

@@ -78,9 +78,34 @@ session's policy and what was asked for — and the usual answer applies: allow,
 human. `with_additional_permissions` only ever adds; there is no field for removing a restriction,
 because narrowing by request would let one command change what a later command may assume.
 
-The mechanism — seatbelt, bwrap with landlock, a Windows restricted token — sits behind the
-`exec` syscall and is never named in the contract. A deployment that runs on none of them still
-has a working `exec`; it just runs with the isolation the platform can give.
+The mechanism sits behind the `exec` syscall and is never named in the contract. macOS has one:
+**seatbelt**, via `sandbox-exec` and a profile generated from the policy.
+
+The profile denies by default and allows exactly what the policy names: reading everywhere (no
+policy in this ABI restricts reading, and a sandbox that breaks library loading is one nobody
+keeps), spawning processes, signalling itself, writing to the standard devices, writing under the
+roots the policy names, and reaching the network only when the policy says so.
+
+Three decisions worth stating, because each is a place where a friendlier implementation would be
+lying:
+
+- **No implicit temporary directory.** `workspace_write` means the workspace. A tool that needs
+  `TMPDIR` names it in `extra_writable_roots`. Quietly widening so one program is comfortable makes
+  the edge of the sandbox unpredictable, which is the one property it must have.
+- **Roots are named twice when they are symlinks.** Seatbelt matches resolved paths, and on macOS
+  `/var` is a symlink to `/private/var` — so a profile naming only what the caller typed denies
+  writes to the very directory it meant to allow. This was found by the first end-to-end test.
+- **Paths are escaped, not trusted.** A workspace under a directory with a quote in its name would
+  otherwise close the string literal and turn the rest of the path into profile syntax.
+
+`require_escalated` that the gate has approved runs **outside** the sandbox, because that is what
+an escalation means; the gate is then the only protection, which is why the contract says the gate
+turns it into a question rather than a formality.
+
+Linux is not done: bubblewrap plus landlock is a separate mechanism with a separate file, and until
+it exists a Linux deployment gets `Unavailable` for every confining policy rather than a promise it
+cannot keep. The refusal is the same shape as before; what changed is that on macOS it is no longer
+the answer.
 
 ### 2.3 Session identity is `(tenant, session)`
 

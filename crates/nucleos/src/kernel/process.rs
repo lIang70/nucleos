@@ -113,24 +113,31 @@ impl Supervisor {
         sandbox: &SandboxPolicy,
         seq: u64,
     ) -> Result<Spawned> {
-        // No mechanism, no promise. Running unconfined while the policy claims otherwise is worse
-        // than refusing: the caller would believe the isolation was real.
-        if !matches!(
-            sandbox,
-            SandboxPolicy::DangerFullAccess | SandboxPolicy::ExternalSandbox { .. }
-        ) {
-            return Err(Error::unavailable(format!(
-                "no sandbox mechanism is wired up yet; this kernel can only run commands under \
-`sandbox: danger_full_access` (asked for {sandbox:?})"
-            )));
-        }
         if spec.argv.is_empty() {
             return Err(Error::invalid("a process needs an argv"));
         }
+        // No mechanism, no promise: this refuses rather than running unconfined, so a policy that
+        // says "confined" is never quietly a policy that does nothing.
+        let confinement = super::sandbox::confine(sandbox, &spec.permissions, workspace)?;
 
-        let mut command = Command::new(&spec.argv[0]);
+        let mut command = match &confinement {
+            Some(confinement) => {
+                // The mechanism wraps the command rather than replacing it: the supervisor keeps
+                // owning one child, and the child happens to be `sandbox-exec`.
+                let mut command = Command::new(&confinement.program);
+                command
+                    .args(&confinement.prefix)
+                    .arg(&spec.argv[0])
+                    .args(&spec.argv[1..]);
+                command
+            }
+            None => {
+                let mut command = Command::new(&spec.argv[0]);
+                command.args(&spec.argv[1..]);
+                command
+            }
+        };
         command
-            .args(&spec.argv[1..])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

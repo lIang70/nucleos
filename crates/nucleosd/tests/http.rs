@@ -200,8 +200,12 @@ async fn a_process_runs_over_the_abi_and_its_output_is_in_the_stream() {
     assert!(stream.contains("nucleos.v1.exec_exited"), "{stream}");
 }
 
+/// A confining policy is enforced or refused, never quietly ignored.
+///
+/// The ABI has to answer one of the two on every platform: a `read_only` process that runs
+/// unconfined would leave the caller believing the isolation was real.
 #[tokio::test]
-async fn a_policy_without_a_mechanism_is_refused_over_the_abi() {
+async fn a_confining_policy_is_enforced_or_refused_over_the_abi() {
     let app = router(running());
     let response = app
         .oneshot(
@@ -217,15 +221,23 @@ async fn a_policy_without_a_mechanism_is_refused_over_the_abi() {
         .await
         .unwrap();
 
-    // Running unconfined while the policy claims otherwise is worse than refusing.
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let error = body_json(response).await;
-    assert!(
-        error["reason"]
-            .as_str()
-            .unwrap()
-            .contains("danger_full_access")
-    );
+    #[cfg(target_os = "macos")]
+    {
+        // Seatbelt is available, so the process starts confined instead of being refused.
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Running unconfined while the policy claims otherwise is worse than refusing.
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let error = body_json(response).await;
+        assert!(
+            error["reason"]
+                .as_str()
+                .unwrap()
+                .contains("danger_full_access")
+        );
+    }
 }
 
 #[tokio::test]

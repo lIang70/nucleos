@@ -12,7 +12,7 @@ use nucleos::adapter::{AllowAll, Store};
 use nucleos_sqlite::SqliteStore;
 use nucleos_testkit::{FakeModel, FixedClock};
 use nucleos::contract::{
-    ErrorCode, EventKind, ExecStream, Principal, ProcessSpec, SandboxPolicy, SessionId, SessionKind,
+    EventKind, ExecStream, Principal, ProcessSpec, SandboxPolicy, SessionId, SessionKind,
 };
 use nucleos::kernel::{Kernel, SessionSpec};
 use std::sync::Arc;
@@ -164,27 +164,38 @@ async fn a_command_runs_and_its_output_lands_in_the_log() -> nucleos::Result<()>
     Ok(())
 }
 
+/// A confining policy is either enforced or refused — never ignored.
+///
+/// Which of the two depends on the platform, and both are correct answers: what is not allowed is
+/// running the command unconfined while the policy claims otherwise, because then the caller would
+/// believe the isolation was real.
 #[tokio::test]
-async fn a_policy_without_a_mechanism_is_refused_rather_than_ignored() {
+async fn a_confining_policy_is_enforced_or_refused_never_ignored() {
     let (kernel, _) = kernel();
-    let error = kernel
+    let spawned = kernel
         .spawn(
             &principal(),
             SessionId::new("p1"),
             spec(&["sh", "-c", "printf hi"], SandboxPolicy::read_only()),
         )
-        .await
-        .err()
-        .unwrap();
+        .await;
 
-    // Running unconfined while the policy claims otherwise is worse than refusing: the caller
-    // would believe the isolation was real.
-    assert_eq!(error.code(), ErrorCode::Unavailable);
-    assert!(
-        error.reason().contains("danger_full_access"),
-        "{}",
-        error.reason()
-    );
+    #[cfg(target_os = "macos")]
+    {
+        let session = spawned.expect("seatbelt is available here");
+        let output = kernel.wait(&session).await.unwrap();
+        assert_eq!(output.exit_code, 0, "a read-only policy still runs a command");
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let error = spawned.err().expect("no mechanism on this platform");
+        assert_eq!(error.code(), nucleos::contract::ErrorCode::Unavailable);
+        assert!(
+            error.reason().contains("danger_full_access"),
+            "{}",
+            error.reason()
+        );
+    }
 }
 
 #[tokio::test]
