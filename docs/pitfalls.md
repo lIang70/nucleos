@@ -599,3 +599,33 @@ and on the day the host changes its certificate. A loopback port exercises the s
 sandbox either permits the `network*` operation or it does not — and it asserts the positive case
 too, so a refusal cannot be mistaken for a broken fixture.
 
+## 47. A sandbox may narrow, never widen
+
+**Decision.** `ConfigPatch.sandbox` applies when `SandboxPolicy::narrows_to` holds and is refused
+otherwise.
+
+**Why the first version was wrong.** It declared the policy immutable after the session opened. That
+is one rule stricter than the design: the codebase already says "narrowing is a configuration change,
+widening is an escalation" for tools, and a sandbox is the same shape. The cost of the stricter
+version is paid at the worst moment — an operator watching a session misbehave cannot take room away
+without killing it and losing the history that explains what happened.
+
+**Why widening stays refused.** An escalation is one command asking for more, decided by the gate
+with a human in the loop. A session that could grant itself more room through `configure` would have
+a door around that gate, and the second door is the one nobody watches.
+
+**Why the order is by capability, not by name.** `read_only` is narrower than `workspace_write`
+despite being a "level" that sounds larger, because it grants no writes at all. `external_sandbox` is
+off the ladder: the kernel enforces nothing there, so entering it from an enforced policy widens and
+leaving it narrows.
+
+## 48. One log, one sequence counter
+
+**Decision.** `Session.seq` is an `Arc<AtomicU64>` shared with the process supervisor.
+
+**Why.** The kernel's handle and the supervisor both append to the same event log, and they each
+counted from their own copy of where it ended. A process that wrote sixteen chunks left the caller's
+handle believing two events existed, so the next `configure` or `close` failed a gap check on a call
+that did nothing wrong — `event seq 1 does not continue the log at 4`. A copy of a counter is a
+second truth about the same log, and the store is right to refuse it.
+

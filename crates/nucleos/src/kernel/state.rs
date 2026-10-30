@@ -39,14 +39,16 @@ impl Kernel {
     ///
     pub(crate) async fn emit(&self, session: &mut session::Session, kind: EventKind) -> Result<()> {
         let event = Event {
-            seq: session.seq,
+            seq: session.seq.load(std::sync::atomic::Ordering::SeqCst),
             session: session.id.clone(),
             at_unix_millis: self.clock.now_unix_millis(),
             schema_version: Event::SCHEMA_VERSION,
             kind,
             meta: BTreeMap::new(),
         };
-        session.seq = session.seq.saturating_add(1);
+        session
+            .seq
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.store.append(&session.id, &[event]).await
     }
     /// `record` the session's current state.

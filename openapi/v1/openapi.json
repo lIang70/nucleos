@@ -233,6 +233,17 @@
             ],
             "description": "The route this session takes. Absent means unchanged."
           },
+          "sandbox": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SandboxPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The sandbox, when the change only narrows it.\n\nWidening is refused here on purpose: more room for the whole session is an escalation, and an\nescalation is a gated decision about one command, not a field in a configuration call."
+          },
           "system": {
             "description": "Standing instructions. `Some(None)` clears them.",
             "type": [

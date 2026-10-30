@@ -9,6 +9,7 @@ use crate::contract::{
     Usage,
 };
 use crate::error::Result;
+use std::sync::Arc;
 
 /// A session in flight.
 ///
@@ -31,7 +32,12 @@ pub struct Session {
     pub(crate) budget: Budget,
     pub(crate) started_unix_millis: u64,
     /// The next event's sequence number.
-    pub(crate) seq: u64,
+    /// One past the last event in the log.
+    ///
+    /// Shared, not copied: a process supervisor appends to the same log, and two counters counting
+    /// the same events disagree the moment one of them writes — which is a sequence gap the store
+    /// refuses, on a call that did nothing wrong.
+    pub(crate) seq: Arc<std::sync::atomic::AtomicU64>,
     /// Calls waiting on a human. A batch can have several.
     pub(crate) pending: Vec<PendingCall>,
     /// The application's own state, opaque to the kernel.
@@ -192,7 +198,7 @@ impl Session {
     /// The next event sequence number.
     #[must_use]
     pub fn next_seq(&self) -> u64 {
-        self.seq
+        self.seq.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub(crate) fn new(
@@ -215,7 +221,7 @@ impl Session {
             credit_tokens,
             budget,
             started_unix_millis: now_unix_millis,
-            seq: 0,
+            seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             pending: Vec::new(),
             data: std::collections::BTreeMap::new(),
             workspace: None,
@@ -291,12 +297,12 @@ impl Session {
     /// `None` before anything has been recorded: a snapshot that includes no event would claim
     /// a `seq` the log does not have.
     pub(crate) fn snapshot(&self) -> Option<Snapshot> {
-        if self.seq == 0 {
+        if self.seq.load(std::sync::atomic::Ordering::SeqCst) == 0 {
             return None;
         }
         Some(Snapshot {
             session: self.id.clone(),
-            seq: self.seq - 1,
+            seq: self.seq.load(std::sync::atomic::Ordering::SeqCst) - 1,
             generation: self.generation,
             state: self.state,
             messages: self.messages.clone(),
@@ -344,7 +350,7 @@ impl Session {
             // wall-clock budget meaningless the first time somebody thought about it.
             started_unix_millis: now_unix_millis,
             // The next event continues the log; the snapshot's `seq` is the last one included.
-            seq: snapshot.seq.saturating_add(1),
+            seq: Arc::new(std::sync::atomic::AtomicU64::new(snapshot.seq.saturating_add(1))),
             pending: snapshot.pending,
             data: snapshot.data,
             routing: snapshot.routing,

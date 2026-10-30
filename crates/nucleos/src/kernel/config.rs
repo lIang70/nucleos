@@ -80,6 +80,18 @@ impl Kernel {
             session.retries = routing.retries;
             changed.push("routing");
         }
+        if let Some(sandbox) = &patch.sandbox {
+            // Narrowing is a configuration change; widening is an escalation with a different shape
+            // and a different answer, so it is refused here rather than quietly obeyed.
+            if !session.sandbox.narrows_to(sandbox) {
+                return Err(Error::denied(format!(
+                    "a session may only narrow its sandbox: {:?} does not narrow {:?}. More room is                      an escalation on one command, which the policy decides",
+                    sandbox, session.sandbox
+                )));
+            }
+            session.sandbox = sandbox.clone();
+            changed.push("sandbox");
+        }
         if let Some(tools) = &patch.tools {
             narrow_only(&session.tools, tools)?;
             session.tools = tools.clone();

@@ -119,10 +119,20 @@ POST /v1/processes
 }
 ```
 
-`config.tools`-style narrowing does not apply here, because there is nothing to narrow: the policy is
-fixed when the process session opens and `configure` cannot touch it. A caller who wants different
-sandboxing opens a different session, which is what "the wiring is startup-only" means everywhere
-else in this ABI.
+`config.tools`-style narrowing **does** apply, and the first draft of this section said it did not:
+the policy was declared immutable, which was one rule stricter than the design needed and denied the
+one operation an operator actually wants mid-incident.
+
+So `ConfigPatch.sandbox` exists and `narrows_to` decides. Narrowing is a configuration change:
+`workspace_write` → `read_only`, dropping an extra root, turning the network off. Widening is
+refused — `read_only` → `workspace_write`, adding a root, `danger_full_access` — because more room
+for a whole session is an escalation, and an escalation is decided about *one command* by the gate,
+with a human in the loop. The two are different acts and they keep different doors.
+
+The order is by what a process may touch, not by name: `read_only` is narrower than
+`workspace_write` because it grants no writes at all. `external_sandbox` is not a rung on that ladder
+— it means the kernel enforces nothing — so entering it from an enforced policy is widening, and
+leaving it is not.
 
 **What the log records.** `exec_started` carries `mechanism` and, when the mechanism takes one,
 `profile` — the text handed to `sandbox-exec`. A sandboxed refusal is "Operation not permitted" and

@@ -1206,6 +1206,61 @@ impl SandboxPolicy {
             | Self::ExternalSandbox { network_access } => *network_access,
         }
     }
+
+    /// Whether moving from this policy to `next` only ever takes room away.
+    ///
+    /// The same rule tools follow — narrowing is a configuration change, widening is not — applied
+    /// to the one thing a session is allowed to change about its own confinement. A session that
+    /// wants *more* access does not reconfigure itself; it asks for an escalation on one command,
+    /// which the gate answers.
+    ///
+    /// The order is by what a process may touch, not by name: `read_only` is narrower than
+    /// `workspace_write` because it grants no writes at all, and `danger_full_access` is wider than
+    /// both. `external_sandbox` is not a rung on that ladder — it means the kernel is not enforcing
+    /// anything — so entering it from a policy the kernel *does* enforce is a widening, and leaving
+    /// it is not.
+    #[must_use]
+    pub fn narrows_to(&self, next: &Self) -> bool {
+        match (self, next) {
+            // Widening, in any of its forms.
+            (_, Self::DangerFullAccess) => false,
+            (Self::ReadOnly { .. } | Self::WorkspaceWrite { .. }, Self::ExternalSandbox { .. }) => {
+                false
+            }
+
+            // From full access, or from outside our reach, anything the kernel enforces is
+            // narrower.
+            (Self::DangerFullAccess, _) | (Self::ExternalSandbox { .. }, _) => true,
+
+            // Within one rung: fewer roots, and no network that was not already allowed.
+            (Self::ReadOnly { network_access: was }, Self::ReadOnly { network_access }) => {
+                !network_access || *was
+            }
+            (Self::ReadOnly { .. }, _) => false,
+
+            // A read-only policy grants no writes, so it is narrower from any writing policy.
+            (Self::WorkspaceWrite { network_access: was, .. }, Self::ReadOnly { network_access }) => {
+                !network_access || *was
+            }
+            (
+                Self::WorkspaceWrite {
+                    extra_writable_roots: was,
+                    network_access: was_net,
+                },
+                Self::WorkspaceWrite {
+                    extra_writable_roots,
+                    network_access,
+                },
+            ) => {
+                // Compared as written: a root that only differs by a symlink is a different grant,
+                // and treating it as equal would let a session swap one directory for another.
+                (!network_access || *was_net)
+                    && extra_writable_roots
+                        .iter()
+                        .all(|root| was.contains(root))
+            }
+        }
+    }
 }
 
 /// Extra room asked for by one command.
@@ -1642,6 +1697,12 @@ pub struct ConfigPatch {
     /// Adapter hints. Merged field by field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hints: Option<Hints>,
+    /// The sandbox, when the change only narrows it.
+    ///
+    /// Widening is refused here on purpose: more room for the whole session is an escalation, and an
+    /// escalation is a gated decision about one command, not a field in a configuration call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<SandboxPolicy>,
     /// The tool allow-list. Empty means every registered tool.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<String>>,

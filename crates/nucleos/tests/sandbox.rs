@@ -512,3 +512,207 @@ async fn an_unconfined_command_says_so_rather_than_leaving_it_to_inference() {
 
     let _ = std::fs::remove_dir_all(&directory);
 }
+
+// ---------------------------------------------------------------------------
+// Narrowing
+//
+// A session is allowed to give up room while it runs. The rule is the one tools already follow:
+// narrowing is a configuration change, widening is an escalation, and an escalation is decided
+// about one command by the gate.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_order_is_by_what_a_process_may_touch() {
+    let writable = SandboxPolicy::WorkspaceWrite {
+        extra_writable_roots: vec!["/srv/cache".to_owned()],
+        network_access: true,
+    };
+    let narrower = SandboxPolicy::WorkspaceWrite {
+        extra_writable_roots: Vec::new(),
+        network_access: false,
+    };
+
+    assert!(writable.narrows_to(&narrower), "fewer roots and no network");
+    assert!(writable.narrows_to(&SandboxPolicy::read_only()), "no writes at all");
+    assert!(
+        SandboxPolicy::DangerFullAccess.narrows_to(&writable),
+        "anything is narrower than nothing"
+    );
+
+    assert!(!narrower.narrows_to(&writable), "adding room back is widening");
+    assert!(
+        !SandboxPolicy::read_only().narrows_to(&narrower),
+        "a read-only session may not start writing"
+    );
+    assert!(
+        !writable.narrows_to(&SandboxPolicy::DangerFullAccess),
+        "nothing narrows into full access"
+    );
+    assert!(
+        !writable.narrows_to(&SandboxPolicy::ExternalSandbox {
+            network_access: false
+        }),
+        "leaving the kernel's control is not a narrowing"
+    );
+}
+
+#[test]
+fn a_network_flag_only_turns_off() {
+    let with = SandboxPolicy::ReadOnly {
+        network_access: true,
+    };
+    let without = SandboxPolicy::read_only();
+    assert!(with.narrows_to(&without));
+    assert!(!without.narrows_to(&with));
+}
+
+#[tokio::test]
+async fn a_session_may_narrow_its_sandbox_and_may_not_widen_it() {
+    let store = Arc::new(SqliteStore::in_memory().expect("an in-memory database"));
+    let kernel = Kernel::builder()
+        .model("primary", Arc::new(FakeModel::text(["unused"])))
+        .store(Arc::clone(&store) as Arc<dyn Store>)
+        .policy(Arc::new(AllowAll))
+        .clock(Arc::new(FixedClock::at(0)))
+        .routing(Routing {
+            chain: vec!["primary".to_owned()],
+            retries: 0,
+        })
+        .build()
+        .unwrap();
+
+    let mut session = kernel
+        .open(
+            &principal(),
+            SessionId::new("s1"),
+            SessionSpec {
+                workspace: Some("/srv/ws".to_owned()),
+                sandbox: SandboxPolicy::WorkspaceWrite {
+                    extra_writable_roots: vec!["/srv/cache".to_owned()],
+                    network_access: true,
+                },
+                credit_tokens: 1_000,
+                ..SessionSpec::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    // Narrowing applies, and it is recorded like every other change.
+    let changed = kernel
+        .configure(
+            &mut session,
+            nucleos::contract::ConfigPatch {
+                sandbox: Some(SandboxPolicy::read_only()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(changed, ["sandbox"]);
+    assert_eq!(session.sandbox(), &SandboxPolicy::read_only());
+
+    // Widening is refused, and the refusal names the difference rather than the field.
+    let widened = kernel
+        .configure(
+            &mut session,
+            nucleos::contract::ConfigPatch {
+                sandbox: Some(SandboxPolicy::WorkspaceWrite {
+                    extra_writable_roots: vec!["/srv/cache".to_owned()],
+                    network_access: true,
+                }),
+                ..Default::default()
+            },
+        )
+        .await;
+    let error = widened.expect_err("widening is an escalation, not a configuration change");
+    assert_eq!(error.code(), nucleos::contract::ErrorCode::Denied);
+    assert!(error.reason().contains("escalation"), "{error:?}");
+    assert_eq!(session.sandbox(), &SandboxPolicy::read_only(), "unchanged");
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn narrowing_is_enforced_not_just_recorded() {
+    // A session that gives up its workspace write really cannot write afterwards: the policy the
+    // mechanism reads is the one in force, not the one it was created with.
+    let directory = workspace("narrow");
+    let target = directory.join("after-narrowing.txt");
+    let store = Arc::new(SqliteStore::in_memory().expect("an in-memory database"));
+    let kernel = Kernel::builder()
+        .model("primary", Arc::new(FakeModel::text(["unused"])))
+        .store(Arc::clone(&store) as Arc<dyn Store>)
+        .policy(Arc::new(AllowAll))
+        .clock(Arc::new(FixedClock::at(0)))
+        .routing(Routing {
+            chain: vec!["primary".to_owned()],
+            retries: 0,
+        })
+        .build()
+        .unwrap();
+
+    let mut session = kernel
+        .spawn(
+            &principal(),
+            SessionId::new("p1"),
+            SessionSpec {
+                workspace: Some(directory.to_str().unwrap().to_owned()),
+                sandbox: SandboxPolicy::WorkspaceWrite {
+                    extra_writable_roots: Vec::new(),
+                    network_access: false,
+                },
+                credit_tokens: 1_000,
+                process: Some(nucleos::contract::ProcessSpec {
+                    argv: vec!["/bin/sh".to_owned(), "-c".to_owned(), "true".to_owned()],
+                    cwd: None,
+                    env: std::collections::BTreeMap::new(),
+                    permissions: SandboxPermissions::UseDefault,
+                }),
+                ..SessionSpec::default()
+            },
+        )
+        .await
+        .unwrap();
+    kernel.wait(&session).await.unwrap();
+
+    kernel
+        .configure(
+            &mut session,
+            nucleos::contract::ConfigPatch {
+                sandbox: Some(SandboxPolicy::read_only()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    // Now ask for a write through a second process in the same session.
+    let second = kernel
+        .spawn(
+            &principal(),
+            SessionId::new("p2"),
+            SessionSpec {
+                workspace: Some(directory.to_str().unwrap().to_owned()),
+                sandbox: session.sandbox().clone(),
+                credit_tokens: 1_000,
+                process: Some(nucleos::contract::ProcessSpec {
+                    argv: vec![
+                        "/bin/sh".to_owned(),
+                        "-c".to_owned(),
+                        format!("printf hi > {}", target.display()),
+                    ],
+                    cwd: None,
+                    env: std::collections::BTreeMap::new(),
+                    permissions: SandboxPermissions::UseDefault,
+                }),
+                ..SessionSpec::default()
+            },
+        )
+        .await
+        .unwrap();
+    let output = kernel.wait(&second).await.unwrap();
+    assert_ne!(output.exit_code, 0, "read-only means read only");
+    assert!(!target.exists());
+
+    let _ = std::fs::remove_dir_all(&directory);
+}

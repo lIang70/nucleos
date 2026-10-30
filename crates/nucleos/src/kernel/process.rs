@@ -111,7 +111,7 @@ impl Supervisor {
         spec: &ProcessSpec,
         workspace: Option<&String>,
         sandbox: &SandboxPolicy,
-        seq: u64,
+        seq: &Arc<AtomicU64>,
     ) -> Result<Spawned> {
         if spec.argv.is_empty() {
             return Err(Error::invalid("a process needs an argv"));
@@ -158,7 +158,10 @@ impl Supervisor {
         let log = Log {
             store: Arc::clone(&store),
             session: session.clone(),
-            seq: Arc::new(AtomicU64::new(seq)),
+            // The same counter the kernel's handle uses, not a copy of its value: this task and
+            // the caller both append to one log, and a copy is a second truth about where the log
+            // ends.
+            seq: Arc::clone(seq),
         };
         let captured = Arc::new(Mutex::new(Captured::default()));
         let (drained_tx, drained_rx) = mpsc::channel::<()>(2);
@@ -554,7 +557,7 @@ impl Kernel {
                 &process.spec,
                 session.workspace.as_ref(),
                 &session.sandbox,
-                session.next_seq(),
+                &session.seq,
             )
             .await?;
 
