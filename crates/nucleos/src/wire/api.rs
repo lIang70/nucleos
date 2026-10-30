@@ -408,6 +408,14 @@ pub struct SessionView {
     /// Where they run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
+    /// What the assistant had produced when a turn was cut short.
+    ///
+    /// Absent for a session that has never been interrupted, which is almost every session. Present
+    /// means a turn died mid-generation: the text was paid for and is often the useful part, and it
+    /// is not in the conversation because a half-written message is not something the model should
+    /// reason from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial: Option<crate::contract::PartialTurn>,
 }
 
 /// What a caller sends to answer a parked call.

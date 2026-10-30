@@ -185,6 +185,19 @@ impl Kernel {
             .unwrap_or_default()
     }
 
+    /// What the assistant had produced in a turn the runtime did not survive, if it stopped mid-turn.
+    ///
+    /// The fragment is in the event stream, not in `messages`; this reads it back so a caller can
+    /// decide what to do — report it, or continue the conversation from it. It cannot be resumed:
+    /// no provider continues a generation from the middle.
+    pub async fn partial(
+        &self,
+        session: &session::Session,
+    ) -> Result<Option<crate::contract::PartialTurn>> {
+        let events = self.store.events_since(&session.key(), 0).await?;
+        Ok(replay::partial(&events))
+    }
+
     /// Publish a new tool set, and pin new sessions to it.
     ///
     /// Existing sessions keep theirs until they reach a turn boundary and the sets are compatible.

@@ -167,6 +167,61 @@ pub(crate) fn fold(session: &mut Session, event: &Event) -> Applied {
     }
 }
 
+/// Reassemble what the assistant had produced in a turn that never finished.
+///
+/// Reads the log rather than the session: the fragment is deliberately not in `messages`, because a
+/// half-written message is not something the model should reason from. This is how a caller finds out
+/// what it said before it stopped, without walking SSE events itself.
+pub(crate) fn partial(events: &[Event]) -> Option<crate::contract::PartialTurn> {
+    let mut partial = crate::contract::PartialTurn::default();
+    let mut call: Option<crate::contract::UnfinishedCall> = None;
+    let mut saw_anything = false;
+
+    for event in events {
+        // A completed message, a finished tool or a state change ends the fragment. `attempt_failed`
+        // deliberately does not: an attempt that streamed and then died left exactly the fragment
+        // this function is for, and the record of the abandonment must not erase what it announces.
+        if matches!(
+            &event.kind,
+            EventKind::MessageCompleted { .. }
+                | EventKind::ToolFinished { .. }
+                | EventKind::StateChanged { .. }
+        ) {
+            partial = crate::contract::PartialTurn::default();
+            call = None;
+            saw_anything = false;
+            continue;
+        }
+        match &event.kind {
+            EventKind::TextDelta { text, .. } => {
+                partial.text.push_str(text);
+                saw_anything = true;
+            }
+            EventKind::ToolCallStarted {
+                tool_call_id,
+                name,
+                ..
+            } => {
+                call = Some(crate::contract::UnfinishedCall {
+                    tool_call_id: tool_call_id.clone(),
+                    name: name.clone(),
+                    arguments_json: String::new(),
+                });
+                saw_anything = true;
+            }
+            EventKind::ToolCallArgs { fragment, .. } => {
+                if let Some(call) = call.as_mut() {
+                    call.arguments_json.push_str(fragment);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    partial.unfinished_call = call;
+    saw_anything.then_some(partial)
+}
+
 /// Whether an event completes a unit of work, and therefore ends any earlier evidence of a turn that
 /// did not.
 ///

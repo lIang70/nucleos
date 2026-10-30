@@ -627,7 +627,18 @@ Three details carry the design:
 - **An abandoned turn is recorded, not resumed.** No provider can resume a stream, so the session does
   not pretend the message completed — the model does not get a fragment it never finished writing —
   and the log gains one `attempt_failed` naming the reason. The spend is kept, and the partial text
-  stays in the stream, where a caller can read it.
+  stays in the stream.
+- **The fragment is reported, not left to be reassembled.** `GET /v1/sessions/{id}` carries
+  `partial` — the text the assistant had produced, the step it reached, and any tool call whose
+  arguments were still arriving. Reading it out of the event stream by hand is work every caller would
+  repeat, and doing it slightly differently each time is how two clients end up disagreeing about what
+  the model said. The record of the abandonment does **not** terminate the fragment: the annotation
+  must not erase what it annotates.
+
+The fragment is not resumable and the API says so by shape rather than by prose: there is no "resume"
+field, because there is nothing to resume. What a caller can do with it is continue the
+*conversation* — send the text back as context for a new turn, which is a new generation and billed as
+one.
 - **Recovery is idempotent.** A completed unit of work — a message, a tool result, a failed attempt, a
   state change — clears any evidence before it. That makes a second `load` a no-op, and makes a real
   crash *after* a successful turn still visible.

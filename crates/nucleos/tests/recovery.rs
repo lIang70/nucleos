@@ -311,3 +311,111 @@ async fn a_tail_of_narrative_events_is_not_a_crash() {
         "no turn was abandoned"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The fragment, reported rather than left to be reassembled
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_turn_that_died_mid_generation_reports_what_it_had_said() {
+    let store = store();
+    let kernel = kernel(&store);
+    let id = SessionId::new("s1");
+    kernel.open(&principal(), id.clone(), spec()).await.unwrap();
+
+    append_tail(
+        &store,
+        &id,
+        vec![
+            EventKind::MessageCompleted {
+                message: Message {
+                    role: Role::Assistant,
+                    content: Content::new([Part::new(PartKind::Text(TextPart {
+                        text: "an earlier, finished answer".to_owned(),
+                    }))]),
+                },
+                step_index: 0,
+            },
+            EventKind::TextDelta {
+                part_index: 0,
+                text: "check the config, then run ".to_owned(),
+            },
+            EventKind::TextDelta {
+                part_index: 0,
+                text: "migrate".to_owned(),
+            },
+            EventKind::ToolCallStarted {
+                index: 0,
+                tool_call_id: "call-1".to_owned(),
+                name: "read_file".to_owned(),
+                deadline_unix_millis: 1_000,
+                progress_token: "t1".to_owned(),
+            },
+            EventKind::ToolCallArgs {
+                index: 0,
+                fragment: "{\"path\": \"/etc/nuc".to_owned(),
+            },
+        ],
+    )
+    .await;
+
+    let session = kernel.load(&principal(), &id).await.unwrap();
+    let partial = kernel
+        .partial(&session)
+        .await
+        .unwrap()
+        .expect("the turn was cut short");
+
+    // Only the unfinished turn: the completed answer before it is history, not a fragment.
+    assert_eq!(partial.text, "check the config, then run migrate");
+    let call = partial.unfinished_call.expect("it stopped inside a call");
+    assert_eq!(call.name, "read_file");
+    assert_eq!(call.tool_call_id, "call-1");
+    // Reported as it arrived, truncation and all: it is data for a caller to look at, never something
+    // the kernel executes.
+    assert_eq!(call.arguments_json, "{\"path\": \"/etc/nuc");
+}
+
+#[tokio::test]
+async fn a_finished_turn_has_no_partial() {
+    let store = store();
+    let kernel = kernel(&store);
+    let id = SessionId::new("s1");
+    kernel.open(&principal(), id.clone(), spec()).await.unwrap();
+
+    append_tail(
+        &store,
+        &id,
+        vec![
+            EventKind::TextDelta {
+                part_index: 0,
+                text: "the whole answer".to_owned(),
+            },
+            EventKind::MessageCompleted {
+                message: Message {
+                    role: Role::Assistant,
+                    content: Content::new([Part::new(PartKind::Text(TextPart {
+                        text: "the whole answer".to_owned(),
+                    }))]),
+                },
+                step_index: 0,
+            },
+        ],
+    )
+    .await;
+
+    let session = kernel.load(&principal(), &id).await.unwrap();
+    assert!(
+        kernel.partial(&session).await.unwrap().is_none(),
+        "a completed turn leaves no fragment"
+    );
+}
+
+#[tokio::test]
+async fn a_session_that_never_ran_has_no_partial() {
+    let store = store();
+    let kernel = kernel(&store);
+    let id = SessionId::new("s1");
+    let session = kernel.open(&principal(), id, spec()).await.unwrap();
+    assert!(kernel.partial(&session).await.unwrap().is_none());
+}

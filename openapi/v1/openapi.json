@@ -1751,6 +1751,35 @@
         },
         "type": "object"
       },
+      "PartialTurn": {
+        "description": "A turn the runtime did not survive, as far as it got.\n\nNot a message: a message is something the model finished writing. This is the fragment left in the\nevent stream when a process died mid-generation — kept because it was paid for and because it is\noften the most useful thing available, reported so a caller does not have to reassemble deltas by\nhand to find out what was said.\n\nIt cannot be resumed. No provider continues a generation from the middle: the stream was one HTTP\nresponse, and it ended when the process did. What a caller can do is continue the *conversation* —\nsend this text back as context for a new turn.",
+        "properties": {
+          "step_index": {
+            "default": 0,
+            "description": "How many steps into the turn it got.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "text": {
+            "default": "",
+            "description": "The text the assistant had produced, in order.",
+            "type": "string"
+          },
+          "unfinished_call": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UnfinishedCall"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A tool call whose arguments were still arriving, if that is where it stopped.\n\nThe name is known and the arguments may be truncated, which is why this is reported as data\nrather than executed: half a JSON object is not a call."
+          }
+        },
+        "type": "object"
+      },
       "PendingCall": {
         "description": "How strongly a tool's execution is separated from the kernel.\n\nA call waiting on a human.\n\nPart of the snapshot because the wait outlives any process: a session parked on a\nconfirmation must be resumable tomorrow, and the call it is holding has to come back with\nit.",
         "properties": {
@@ -2458,6 +2487,17 @@
             "minimum": 0,
             "type": "integer"
           },
+          "partial": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PartialTurn"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the assistant had produced when a turn was cut short.\n\nAbsent for a session that has never been interrupted, which is almost every session. Present\nmeans a turn died mid-generation: the text was paid for and is often the useful part, and it\nis not in the conversation because a half-written message is not something the model should\nreason from."
+          },
           "pending": {
             "description": "Calls waiting on a human.",
             "items": {
@@ -2942,6 +2982,29 @@
             "type": "string"
           }
         ]
+      },
+      "UnfinishedCall": {
+        "description": "A call that started and never resolved.",
+        "properties": {
+          "arguments_json": {
+            "default": "",
+            "description": "The arguments as far as they arrived. Possibly incomplete, and possibly not valid JSON.",
+            "type": "string"
+          },
+          "name": {
+            "description": "The tool the model was calling.",
+            "type": "string"
+          },
+          "tool_call_id": {
+            "description": "The correlation id it would have been filed under.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tool_call_id",
+          "name"
+        ],
+        "type": "object"
       },
       "Usage": {
         "description": "What a model call consumed.\n\nA counter the provider did not report stays `None` rather than becoming zero: a budget\nthat charges for silence is worse than one that knows it does not know.",

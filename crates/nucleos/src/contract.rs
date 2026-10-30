@@ -282,6 +282,44 @@ pub struct ToolCall {
     pub meta: BTreeMap<String, String>,
 }
 
+/// A turn the runtime did not survive, as far as it got.
+///
+/// Not a message: a message is something the model finished writing. This is the fragment left in the
+/// event stream when a process died mid-generation — kept because it was paid for and because it is
+/// often the most useful thing available, reported so a caller does not have to reassemble deltas by
+/// hand to find out what was said.
+///
+/// It cannot be resumed. No provider continues a generation from the middle: the stream was one HTTP
+/// response, and it ended when the process did. What a caller can do is continue the *conversation* —
+/// send this text back as context for a new turn.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PartialTurn {
+    /// The text the assistant had produced, in order.
+    #[serde(default)]
+    pub text: String,
+    /// How many steps into the turn it got.
+    #[serde(default)]
+    pub step_index: u32,
+    /// A tool call whose arguments were still arriving, if that is where it stopped.
+    ///
+    /// The name is known and the arguments may be truncated, which is why this is reported as data
+    /// rather than executed: half a JSON object is not a call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unfinished_call: Option<UnfinishedCall>,
+}
+
+/// A call that started and never resolved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct UnfinishedCall {
+    /// The correlation id it would have been filed under.
+    pub tool_call_id: String,
+    /// The tool the model was calling.
+    pub name: String,
+    /// The arguments as far as they arrived. Possibly incomplete, and possibly not valid JSON.
+    #[serde(default)]
+    pub arguments_json: String,
+}
+
 /// How a tool call ended.
 ///
 /// **Failure is a flag, not a branch.** A failed call still carries content, because the

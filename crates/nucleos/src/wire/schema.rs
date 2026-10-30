@@ -46,6 +46,8 @@ pub struct Abi {
     pub tool_batch_request: api::ToolBatchRequest,
     /// What that returns.
     pub tool_batch_response: api::ToolBatchResponse,
+    /// The fragment a turn left behind when it was cut short.
+    pub partial_turn: k::PartialTurn,
     /// `GET /v1/metrics`.
     pub metrics_response: api::MetricsResponse,
     /// `POST /v1/tools/reload`.

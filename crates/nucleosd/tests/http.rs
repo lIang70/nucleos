@@ -819,3 +819,81 @@ async fn a_token_that_is_not_in_the_document_is_refused() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(error["code"], "denied");
 }
+
+#[tokio::test]
+async fn the_session_view_reports_a_turn_that_was_cut_short() {
+    // The store is held here so the test can write what a crash leaves behind: the deltas of a turn
+    // that never completed.
+    let store = Arc::new(nucleos_sqlite::SqliteStore::in_memory().unwrap());
+    let kernel = nucleos::Kernel::builder()
+        .model("primary", Arc::new(nucleos_testkit::FakeModel::text(["unused"])))
+        .store(Arc::clone(&store) as Arc<dyn nucleos::adapter::Store>)
+        .policy(Arc::new(nucleos::adapter::AllowAll))
+        .routing(nucleos::contract::Routing {
+            chain: vec!["primary".to_owned()],
+            retries: 0,
+        })
+        .build()
+        .unwrap();
+    let app = Arc::new(App::new(
+        Arc::new(kernel),
+        nucleos::contract::Principal {
+            tenant: "acme".to_owned(),
+            subject: "alice".to_owned(),
+        },
+        Vec::new(),
+    ));
+
+    request(&app, "POST", "/v1/sessions", "", r#"{"session":"s1"}"#).await;
+    use nucleos::adapter::Store as _;
+
+    let key = nucleos::adapter::SessionKey::new(
+        "acme",
+        nucleos::contract::SessionId::new("s1"),
+    );
+    let head = store.events_since(&key, 0).await.unwrap().len() as u64;
+    let events: Vec<nucleos::contract::Event> = [
+        nucleos::contract::EventKind::TextDelta {
+            part_index: 0,
+            text: "check the config, then run ".to_owned(),
+        },
+        nucleos::contract::EventKind::TextDelta {
+            part_index: 0,
+            text: "migrate".to_owned(),
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(offset, kind)| nucleos::contract::Event {
+        seq: head + offset as u64,
+        session: nucleos::contract::SessionId::new("s1"),
+        at_unix_millis: 1,
+        schema_version: nucleos::contract::Event::SCHEMA_VERSION,
+        kind,
+        meta: Default::default(),
+    })
+    .collect();
+    store.append(&key, &events).await.unwrap();
+
+    let (status, view) = request(&app, "GET", "/v1/sessions/s1", "", "").await;
+    assert_eq!(status, StatusCode::OK);
+    // The caller no longer has to walk the event stream to find out what was said before the crash.
+    assert_eq!(view["partial"]["text"], "check the config, then run migrate");
+    assert!(
+        view["partial"].get("unfinished_call").is_none(),
+        "it stopped in the text, not inside a call: {view}"
+    );
+}
+
+#[tokio::test]
+async fn a_finished_session_has_no_partial_in_its_view() {
+    let app = running();
+    request(&app, "POST", "/v1/sessions", "", r#"{"session":"s1"}"#).await;
+
+    let (status, view) = request(&app, "GET", "/v1/sessions/s1", "", "").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        view.get("partial").is_none(),
+        "absent, not empty: a session that was never interrupted says nothing about it. {view}"
+    );
+}

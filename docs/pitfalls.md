@@ -796,4 +796,17 @@ forever; the heartbeat is for tools that never said anything.
 minutes and wrong for a database call that takes milliseconds. A constant would be one deployment's
 guess baked into every other deployment's logs, and a test would either sleep for it or not exist.
 
+## 59. The record of an abandoned turn must not erase it
+
+**Decision.** `partial` terminates on a completed message, a finished tool or a state change — never on
+`attempt_failed`.
+
+**Why.** The first version reused `completes_a_unit`, which counts `attempt_failed` as ending a turn,
+because for deciding *whether* a turn was abandoned it does. But `load` writes exactly that event when
+it detects an abandonment, so reading the fragment afterwards found the writer's own annotation and
+returned nothing: the recovery record had erased the thing it recorded. The test failed on the first
+run, which is the only reason it was noticed.
+
+**The general shape.** Two questions that look like one: "has this turn ended?" (yes) and "does this
+event belong to the fragment?" (no). Sharing a predicate between them was the bug.
 

@@ -744,6 +744,10 @@ async fn view(
         process: session.process().cloned(),
         sandbox: session.sandbox().clone(),
         workspace: session.workspace().cloned(),
+        partial: kernel
+            .partial(&session)
+            .await
+            .map_err(|error| ApiError::from_error(&error))?,
     }))
 }
 
