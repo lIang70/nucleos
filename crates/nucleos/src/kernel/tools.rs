@@ -9,7 +9,9 @@ use crate::adapter::ToolOutput;
 use crate::contract::{Content, Exposure, Message, Part, PartKind};
 use crate::contract::{EventKind, ToolResultPart};
 use crate::error::{Error, Result};
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 impl Kernel {
     /// Ask policy about one call.
@@ -132,6 +134,29 @@ impl Kernel {
                 let _ = progress_writer_append(&writer, report).await;
             }
         });
+
+        // What is running, so a call that says nothing can still be reported as alive. Keyed by call
+        // id and removed when the call ends, so a finished call never heartbeats.
+        let running: Arc<Mutex<BTreeMap<String, Running>>> = Arc::new(Mutex::new(BTreeMap::new()));
+        for call in calls {
+            running.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(
+                call.id.clone(),
+                Running {
+                    started: Instant::now(),
+                    quiet_since: Instant::now(),
+                    reported: false,
+                },
+            );
+        }
+        let heartbeat = if self.heartbeat.is_zero() {
+            None
+        } else {
+            Some(tokio::spawn(heartbeat_loop(
+                self.heartbeat,
+                Arc::clone(&running),
+                progress_tx.clone(),
+            )))
+        };
         // Resolved once, against the generation this session is pinned to: a call is answered by the
         // set that built the prompt, even if a newer generation has been published since.
         let resolved: Vec<Option<Arc<dyn Tool>>> = calls
@@ -145,6 +170,7 @@ impl Kernel {
             .zip(resolved)
             .map(|((call, denial), tool)| {
                 let progress_tx = progress_tx.clone();
+                let running = Arc::clone(&running);
             let args = call.arguments_json.clone();
             let call_id = call.id.clone();
             let session_id = session_id.clone();
@@ -152,6 +178,13 @@ impl Kernel {
                 let sink = Sink {
                     call_id: call_id.clone(),
                     sender: progress_tx,
+                    running: Arc::clone(&running),
+                };
+                // Removed when this future ends, however it ends: a call that finished must not be
+                // reported as still running by the next tick.
+                let _running = RunningGuard {
+                    call_id: call_id.clone(),
+                    running: Arc::clone(&running),
                 };
                 let ctx = crate::adapter::ToolCtx {
                     session: &session_id,
@@ -180,7 +213,11 @@ impl Kernel {
         });
         let outputs = futures_util::future::join_all(futures).await;
         // Closing the channel is what ends the writer: awaiting it afterwards means every progress
-        // event a tool reported is in the log before the caller sees the results.
+        // event a tool reported is in the log before the caller sees the results. The heartbeat is
+        // stopped first, so it cannot write into a closed channel or after the batch's last event.
+        if let Some(heartbeat) = heartbeat {
+            heartbeat.abort();
+        }
         drop(progress_tx);
         let _ = progress_writer.await;
         let duration = self.now().saturating_sub(started);
@@ -474,10 +511,21 @@ struct Reported {
 struct Sink {
     call_id: String,
     sender: tokio::sync::mpsc::Sender<Reported>,
+    running: Arc<Mutex<BTreeMap<String, Running>>>,
 }
 
 impl crate::adapter::Progress for Sink {
     fn report(&self, done: u64, total: u64, message: &str) {
+        // From here on, this call speaks for itself.
+        if let Some(running) = self
+            .running
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get_mut(&self.call_id)
+        {
+            running.reported = true;
+            running.quiet_since = Instant::now();
+        }
         // A full channel drops the report rather than blocking the call: a tool that stalls because
         // nobody is reading progress is worse than one whose report is missing.
         let _ = self.sender.try_send(Reported {
@@ -502,4 +550,84 @@ async fn progress_writer_append(
             message: report.message,
         })
         .await
+}
+
+/// A call on the books, for the heartbeat.
+struct Running {
+    started: Instant,
+    /// When it was last heartbeated, so one tick produces one record.
+    quiet_since: Instant,
+    /// Whether the tool ever reported for itself.
+    ///
+    /// A tool that reports is not the case the heartbeat is for: adding "still running" between its
+    /// own numbers makes the stream noisier without saying anything new, and a tool that reports and
+    /// then hangs is a bug the deadline bounds, not one the kernel should paper over with a guess.
+    reported: bool,
+}
+
+/// Removes a call when its future ends, however it ends.
+struct RunningGuard {
+    call_id: String,
+    running: Arc<Mutex<BTreeMap<String, Running>>>,
+}
+
+impl Drop for RunningGuard {
+    fn drop(&mut self) {
+        self.running
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&self.call_id);
+    }
+}
+
+/// Say a silent call is still running, every `every`, until the batch is over.
+///
+/// This is the honest half of progress: not "40%", which only the tool knows, but "still alive",
+/// which the kernel knows. A tool that reports gets its own records and is not interrupted; a tool
+/// that says nothing is no longer indistinguishable from a hang.
+async fn heartbeat_loop(
+    every: std::time::Duration,
+    running: Arc<Mutex<BTreeMap<String, Running>>>,
+    sender: tokio::sync::mpsc::Sender<Reported>,
+) {
+    let mut ticker = tokio::time::interval(every);
+    // The first tick of an interval fires immediately; skip it, or every batch opens with a
+    // heartbeat for calls that have not had time to be slow yet.
+    ticker.tick().await;
+    loop {
+        ticker.tick().await;
+        let now = Instant::now();
+
+        let silent: Vec<(String, u64)> = {
+            let mut running = running.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            running
+                .iter_mut()
+                .filter(|(_, call)| !call.reported && now.duration_since(call.quiet_since) >= every)
+                .map(|(token, call)| {
+                    // Marked as heard from, so one tick produces one record rather than one per
+                    // millisecond spent in this loop.
+                    call.quiet_since = now;
+                    let elapsed = now.duration_since(call.started).as_secs().max(1);
+                    (token.clone(), elapsed)
+                })
+                .collect()
+        };
+
+        for (token, elapsed_secs) in silent {
+            if sender
+                .send(Reported {
+                    token,
+                    done: elapsed_secs,
+                    // Zero is this ABI's "unknown", which is exactly right: nobody has told the
+                    // kernel how much work is left.
+                    total: 0,
+                    message: "still running".to_owned(),
+                })
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+    }
 }

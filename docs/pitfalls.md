@@ -774,3 +774,22 @@ yours look the same from outside, which is the point.
 collision is refused rather than namespaced. Making it `(tenant, id)` is a store schema change, and it
 only becomes urgent when a caller needs to choose its own ids across tenants.
 
+## 58. A silent tool is not necessarily a hung one, and the kernel can say so
+
+**Decision.** A call that has not reported after `heartbeat` emits `progress { done, total: 0,
+message: "still running" }`, once per interval, until the batch ends or the tool reports.
+
+**Why.** The tool-facing sink made progress possible and not guaranteed: a tool that reports nothing
+produced no record, so the only feedback on a five-minute call was the deadline. A caller cannot tell
+that from a hang, and the operator reading the log cannot either.
+
+**Why it stops once the tool reports.** Two reasons, and the second is why the first is not enough on
+its own. Interleaving "still running" with real percentages makes the stream noisier without adding
+information; and a heartbeat that continues after a tool has spoken would be the kernel guessing that
+the tool has stalled, which it cannot know. The deadline is the bound for a tool that goes quiet
+forever; the heartbeat is for tools that never said anything.
+
+**Why it is configurable rather than a constant.** Fifteen seconds is wrong for a build that takes
+minutes and wrong for a database call that takes milliseconds. A constant would be one deployment's
+guess baked into every other deployment's logs, and a test would either sleep for it or not exist.
+

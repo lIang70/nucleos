@@ -121,6 +121,7 @@ pub struct Kernel {
     store: Arc<dyn Store>,
     policy: Arc<dyn Policy>,
     clock: Arc<dyn Clock>,
+    heartbeat: std::time::Duration,
     retries: u32,
     routing: Routing,
     /// The processes this kernel is supervising.
@@ -201,7 +202,6 @@ impl Kernel {
 }
 
 /// Assembles a [`Kernel`].
-#[derive(Default)]
 pub struct Builder {
     models: ModelRegistry,
     /// The first generation's tools. Publishing more is [`Kernel::publish`], after it is built.
@@ -209,8 +209,26 @@ pub struct Builder {
     store: Option<Arc<dyn Store>>,
     policy: Option<Arc<dyn Policy>>,
     clock: Option<Arc<dyn Clock>>,
+    heartbeat: std::time::Duration,
     retries: u32,
     routing: Routing,
+}
+
+impl Default for Builder {
+    fn default() -> Self {
+        Self {
+            models: ModelRegistry::default(),
+            tools: Vec::new(),
+            store: None,
+            policy: None,
+            clock: None,
+            // Fifteen seconds: long enough that a fast tool is never interrupted by a record about
+            // itself, short enough that a caller waiting on a slow one learns it is alive.
+            heartbeat: std::time::Duration::from_secs(15),
+            retries: 0,
+            routing: Routing::default(),
+        }
+    }
 }
 
 impl Builder {
@@ -249,6 +267,16 @@ impl Builder {
         self
     }
 
+    /// How long a call may be silent before the kernel says it is still running.
+    ///
+    /// A policy rather than a constant: a deployment with fast tools wants a longer window than one
+    /// with slow builds, and a test wants milliseconds. Zero disables the heartbeat.
+    #[must_use]
+    pub fn heartbeat(mut self, every: std::time::Duration) -> Self {
+        self.heartbeat = every;
+        self
+    }
+
     /// Extra attempts per target, on top of whatever a session asks for.
     #[must_use]
     pub fn retries(mut self, retries: u32) -> Self {
@@ -278,6 +306,7 @@ impl Builder {
                 .policy
                 .ok_or_else(|| Error::internal("kernel needs a policy"))?,
             clock: self.clock.unwrap_or_else(|| Arc::new(SystemClock)),
+            heartbeat: self.heartbeat,
             retries: self.retries,
             routing: self.routing,
             supervisor: process::Supervisor::default(),

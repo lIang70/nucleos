@@ -796,8 +796,15 @@ daemon has been counting. Keyed by route _template_: a thousand sessions would o
 thousand keys, and a counter with unbounded cardinality is a memory leak wearing a metric's name.
 
 **Progress, from the kernel's side.** `ToolCtx::progress` is a sink: a tool reports steps while it
-runs, the kernel writes one `progress` event per report with the call id as the token, and a tool that
-says nothing produces no record. The events are written by a task sharing the session's sequence
+runs, the kernel writes one `progress` event per report with the call id as the token.
+
+Nothing reported used to mean nothing recorded, which made a slow silent tool indistinguishable from a
+hang. So the kernel adds the half it knows: a call that has not reported after `heartbeat`
+(default 15s, host-configurable, zero disables) gets `progress { done: elapsed_seconds, total: 0,
+message: "still running" }`. `total: 0` is this ABI's "unknown", which is exactly right — nobody told
+the kernel how much work is left. A tool that reports is never interrupted by one: once a call has
+spoken for itself the kernel stops speaking for it, because interleaving "still running" with real
+numbers is noise, and a tool that reports once and then hangs is a bug the deadline bounds. The events are written by a task sharing the session's sequence
 counter, so a batch of eight concurrent calls still leaves one ordered log.
 
 MCP servers' own `notifications/progress` are **not** forwarded: the client library assigns the

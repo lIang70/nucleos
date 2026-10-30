@@ -24,9 +24,10 @@ fn principal() -> Principal {
     }
 }
 
-/// A tool that reports `steps` times while it runs.
+/// A tool that reports `steps` times while it runs, taking `millis` between steps.
 struct Reporting {
     steps: u64,
+    millis: u64,
 }
 
 #[async_trait]
@@ -41,6 +42,7 @@ impl Tool for Reporting {
 
     async fn invoke(&self, _args: &str, cx: &ToolCtx<'_>) -> ToolOutput {
         for step in 0..self.steps {
+            tokio::time::sleep(std::time::Duration::from_millis(self.millis)).await;
             cx.progress.report(step + 1, self.steps, "working");
         }
         ToolOutput::text("done")
@@ -51,7 +53,7 @@ fn kernel(steps: u64) -> (Kernel, Arc<SqliteStore>) {
     let store = Arc::new(SqliteStore::in_memory().unwrap());
     let kernel = Kernel::builder()
         .model("primary", Arc::new(FakeModel::text(["unused"])))
-        .tool(Arc::new(Reporting { steps }))
+        .tool(Arc::new(Reporting { steps, millis: 0 }))
         .store(Arc::clone(&store) as Arc<dyn Store>)
         .policy(Arc::new(AllowAll))
         .clock(Arc::new(FixedClock::at(0)))
@@ -171,4 +173,171 @@ async fn progress_shares_the_session_sequence_and_survives_a_reload() {
 fn a_sink_can_be_discarded() {
     let sink: &dyn Progress = &nucleos::adapter::NoProgress;
     sink.report(1, 1, "nothing to do");
+}
+
+// ---------------------------------------------------------------------------
+// The heartbeat
+//
+// A tool with nothing to say used to be indistinguishable from a hang. The kernel now says "still
+// running" for it — the half of progress it actually knows.
+// ---------------------------------------------------------------------------
+
+/// A tool that does nothing for a while and reports nothing.
+struct Silent {
+    millis: u64,
+}
+
+#[async_trait]
+impl Tool for Silent {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "slow".to_owned(),
+            description: "Takes a while and says nothing.".to_owned(),
+            input_schema_json: r#"{"type":"object"}"#.to_owned(),
+        }
+    }
+
+    async fn invoke(&self, _args: &str, _cx: &ToolCtx<'_>) -> ToolOutput {
+        tokio::time::sleep(std::time::Duration::from_millis(self.millis)).await;
+        ToolOutput::text("done")
+    }
+}
+
+fn kernel_with(
+    tool: Arc<dyn Tool>,
+    heartbeat: std::time::Duration,
+) -> (Kernel, Arc<SqliteStore>) {
+    let store = Arc::new(SqliteStore::in_memory().unwrap());
+    let kernel = Kernel::builder()
+        .model("primary", Arc::new(FakeModel::text(["unused"])))
+        .tool(tool)
+        .store(Arc::clone(&store) as Arc<dyn Store>)
+        .policy(Arc::new(AllowAll))
+        .clock(Arc::new(FixedClock::at(0)))
+        .heartbeat(heartbeat)
+        .routing(Routing {
+            chain: vec!["primary".to_owned()],
+            retries: 0,
+        })
+        .build()
+        .unwrap();
+    (kernel, store)
+}
+
+async fn progress_events(store: &Arc<SqliteStore>, id: &SessionId) -> Vec<(u64, u64, String)> {
+    store
+        .events_since(id, 0)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter_map(|event| match event.kind {
+            EventKind::Progress {
+                done, total, message, ..
+            } => Some((done, total, message)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_silent_call_is_reported_as_alive() {
+    let (kernel, store) = kernel_with(
+        Arc::new(Silent { millis: 120 }),
+        std::time::Duration::from_millis(20),
+    );
+    let mut session = kernel
+        .open(&principal(), SessionId::new("s1"), spec())
+        .await
+        .unwrap();
+    let id = session.id().clone();
+
+    let output = kernel.invoke_tool(&mut session, &call()).await.unwrap();
+    assert_eq!(output.content.text(), "done");
+
+    let events = progress_events(&store, &id).await;
+    assert!(!events.is_empty(), "a 120ms silent call is not a hang");
+    // `total: 0` is this ABI's "unknown", and it is the truth here: nobody told the kernel how much
+    // work is left.
+    assert!(
+        events.iter().all(|(_, total, message)| *total == 0 && message == "still running"),
+        "{events:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_tool_that_reports_is_not_interrupted_by_the_heartbeat() {
+    let (kernel, store) = kernel_with(
+        // Each step takes longer than the heartbeat interval, so a heartbeat that ignored real
+        // reports would be visible in the stream.
+        Arc::new(Reporting {
+            steps: 3,
+            millis: 12,
+        }),
+        std::time::Duration::from_millis(5),
+    );
+    let mut session = kernel
+        .open(&principal(), SessionId::new("s1"), spec())
+        .await
+        .unwrap();
+    let id = session.id().clone();
+
+    kernel.invoke_tool(&mut session, &call()).await.unwrap();
+
+    // The tool reports its own steps, so the kernel stays quiet: a heartbeat here would interleave
+    // "still running" between real numbers, which says less than the numbers already do.
+    let events = progress_events(&store, &id).await;
+
+    // Heartbeats before the first report are correct — the kernel had heard nothing yet. After it,
+    // the tool speaks for itself, and the kernel stays quiet.
+    let first_report = events
+        .iter()
+        .position(|(_, total, _)| *total > 0)
+        .unwrap_or_else(|| panic!("the tool reported nothing: {events:?}"));
+    assert!(
+        events[first_report..].iter().all(|(_, total, _)| *total == 3),
+        "no heartbeat after the tool started reporting: {events:?}"
+    );
+    assert_eq!(
+        events[first_report..]
+            .iter()
+            .map(|(done, _, _)| *done)
+            .collect::<Vec<_>>(),
+        [1, 2, 3],
+        "and every one of its steps reached the log"
+    );
+}
+
+#[tokio::test]
+async fn a_fast_call_produces_nothing() {
+    let (kernel, store) = kernel_with(
+        Arc::new(Silent { millis: 0 }),
+        std::time::Duration::from_secs(1),
+    );
+    let mut session = kernel
+        .open(&principal(), SessionId::new("s1"), spec())
+        .await
+        .unwrap();
+    let id = session.id().clone();
+
+    kernel.invoke_tool(&mut session, &call()).await.unwrap();
+    assert!(progress_events(&store, &id).await.is_empty());
+}
+
+#[tokio::test]
+async fn the_heartbeat_can_be_turned_off() {
+    let (kernel, store) = kernel_with(
+        Arc::new(Silent { millis: 60 }),
+        std::time::Duration::ZERO,
+    );
+    let mut session = kernel
+        .open(&principal(), SessionId::new("s1"), spec())
+        .await
+        .unwrap();
+    let id = session.id().clone();
+
+    kernel.invoke_tool(&mut session, &call()).await.unwrap();
+    assert!(
+        progress_events(&store, &id).await.is_empty(),
+        "a host that does not want heartbeats gets none"
+    );
 }
