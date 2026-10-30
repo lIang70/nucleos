@@ -230,6 +230,17 @@ name, and execution is gated identically either way. `configure` refuses an `alw
 the ceiling; a tool whose result asks for a name outside it has that name dropped, because the tool
 has no session and the kernel is the only place that decides.
 
+## 4.2 Reload and generations
+
+`POST /v1/tools/reload` reconnects the deployment's tool source and publishes what it advertises now.
+It answers with the new `generation`, the tool names it holds, and `added`/`removed` — which describe
+what changed for sessions that start from now on, not what happened to sessions already running.
+
+A session resolves tools through the generation it was pinned to when it opened, so a reload cannot
+change the meaning of a prompt already sent. A compatible set (same names, nothing newly required) is
+adopted at the next turn boundary and recorded as `generation_migrated`; an incompatible one leaves
+the session pinned until it ends. `GET /v1/describe` reports the generation in force.
+
 ## 5. Credit
 
 `Credit` extends budget; `Run` carries an initial credit grant. Each `usage` event debits

@@ -372,6 +372,13 @@
             "description": "The ABI version it speaks, from the schema's own `$id`.",
             "type": "string"
           },
+          "generation": {
+            "default": 0,
+            "description": "The tool generation new sessions are pinned to.\n\nA reload increments it. Reported because \"which set was the daemon on when this session\nstarted\" is the first question asked when a session and a deployment disagree about what a\ntool accepts.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
           "models": {
             "description": "The models a route may name.",
             "items": {
@@ -2087,6 +2094,45 @@
           "signature",
           "id",
           "source"
+        ],
+        "type": "object"
+      },
+      "ReloadResponse": {
+        "description": "What a tool reload did.",
+        "properties": {
+          "added": {
+            "default": [],
+            "description": "What the reload added, by name.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "generation": {
+            "description": "The generation new sessions are pinned to from now on.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "removed": {
+            "default": [],
+            "description": "What it removed, by name.\n\nA session pinned to the previous generation keeps working: `added` and `removed` describe\nwhat changed for sessions that start from now on, not what happened to sessions already\nrunning.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "tools": {
+            "description": "The tools it holds.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "generation",
+          "tools"
         ],
         "type": "object"
       },
@@ -4237,6 +4283,84 @@
           }
         },
         "summary": "Wait for a process to end, and say how it ended."
+      }
+    },
+    "/v1/tools/reload": {
+      "post": {
+        "operationId": "reloadTools",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReloadResponse"
+                }
+              }
+            },
+            "description": "The result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "Reconnect the tool source and publish a new generation."
       }
     }
   },

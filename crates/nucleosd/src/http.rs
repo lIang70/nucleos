@@ -19,7 +19,7 @@ use nucleos_sqlite::SqliteStore;
 use nucleos::kernel::{HitlVerdict, Kernel, SessionSpec, StateWrite};
 use nucleos::wire::api::{
     DescribeResponse, ErrorBody, InferenceRequest, InferenceResponse, ProcessInfo,
-    ProcessListResponse, ProcessStartRequest, ProcessStartResponse, SessionView, StartRequest,
+    ProcessListResponse, ProcessStartRequest, ProcessStartResponse, ReloadResponse, SessionView, StartRequest,
     StartResponse, StateRequest, StdinRequest, ToolBatchRequest, ToolBatchResponse, VerdictRequest,
 };
 use nucleos::wire::openapi;
@@ -42,7 +42,12 @@ pub struct App {
     principal: Principal,
     models: Vec<String>,
     /// The tools every source advertises, for `Describe`.
-    tools: Vec<String>,
+    ///
+    /// Behind a lock because a reload replaces it: it describes the *current* generation, and a
+    /// snapshot taken at start-up would go on describing a set nobody is pinned to any more.
+    tools: std::sync::RwLock<Vec<String>>,
+    /// The source a reload reconnects, when the deployment configured one.
+    source: Option<nucleos_mcp::McpSource>,
 }
 
 impl App {
@@ -53,15 +58,33 @@ impl App {
             kernel: Some(kernel),
             principal,
             models,
-            tools: Vec::new(),
+            tools: std::sync::RwLock::new(Vec::new()),
+            source: None,
         }
+    }
+
+    /// Remember the tool source, so `POST /v1/tools/reload` has something to reconnect.
+    #[must_use]
+    pub fn with_source(mut self, source: nucleos_mcp::McpSource) -> Self {
+        self.source = Some(source);
+        self
     }
 
     /// Advertise the tools that were discovered, so a caller can see what it may ask for.
     #[must_use]
-    pub fn with_tools(mut self, tools: Vec<String>) -> Self {
-        self.tools = tools;
+    pub fn with_tools(self, tools: Vec<String>) -> Self {
+        if let Ok(mut current) = self.tools.write() {
+            *current = tools;
+        }
         self
+    }
+
+    /// The tools in force.
+    fn tools_now(&self) -> Vec<String> {
+        self.tools
+            .read()
+            .map(|tools| tools.clone())
+            .unwrap_or_default()
     }
 
     /// Serve what the environment describes.
@@ -118,6 +141,7 @@ impl App {
         // cannot run a real tool is a daemon nobody can test against.
         let mut tools: Vec<Arc<dyn nucleos::adapter::Tool>> = Vec::new();
         let mut discovered: Vec<String> = Vec::new();
+        let mut configured_source: Option<nucleos_mcp::McpSource> = None;
         if let Ok(spec) = std::env::var("NUCLEOS_MCP") {
             let (name, command) = spec.split_once('=').ok_or_else(|| {
                 nucleos::Error::invalid("NUCLEOS_MCP must be `name=command args…`")
@@ -132,6 +156,7 @@ impl App {
                 discovered.push(tool.spec().name);
                 tools.push(Arc::new(tool));
             }
+            configured_source = Some(source);
         }
 
         let routing = nucleos::contract::Routing {
@@ -160,12 +185,16 @@ impl App {
         }
         let kernel = builder.build()?;
 
-        Ok(Self::new(
+        let app = Self::new(
             Arc::new(kernel),
             Self::unconfigured().principal,
             vec![model],
         )
-        .with_tools(discovered))
+        .with_tools(discovered);
+        Ok(match configured_source {
+            Some(source) => app.with_source(source),
+            None => app,
+        })
     }
 
     /// Serve nothing but `describe`: the daemon is up, no deployment is configured.
@@ -178,7 +207,8 @@ impl App {
                 subject: "local".to_owned(),
             },
             models: Vec::new(),
-            tools: Vec::new(),
+            tools: std::sync::RwLock::new(Vec::new()),
+            source: None,
         }
     }
 
@@ -341,6 +371,17 @@ pub const ROUTES: &[Route] = &[
     Route {
         meta: openapi::Route {
             method: "post",
+            path: "/v1/tools/reload",
+            operation: "reloadTools",
+            summary: "Reconnect the tool source and publish a new generation.",
+            request: None,
+            reply: openapi::Reply::Json("ReloadResponse"),
+        },
+        build: || post(reload),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "post",
             path: "/v1/sessions/{id}/configure",
             operation: "configureSession",
             summary: "Change what a session is doing, without closing it.",
@@ -405,8 +446,58 @@ async fn describe(State(app): State<Arc<App>>) -> Json<DescribeResponse> {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         abi_version: ABI_VERSION.to_owned(),
         models: app.models.clone(),
-        tools: app.tools.clone(),
+        tools: app.tools_now(),
+        generation: app.kernel.as_ref().map(|kernel| kernel.generation().0).unwrap_or(0),
     })
+}
+
+/// Reconnect the tool source and publish what it advertises now.
+///
+/// This is the whole point of generations from the outside: a source is a process somebody else
+/// deploys, and reconnecting it must not be a restart. Sessions already running keep the set they
+/// are pinned to; sessions that start from now on get this one.
+async fn reload(State(app): State<Arc<App>>) -> Result<Json<ReloadResponse>, ApiError> {
+    let kernel = app.kernel()?.clone();
+    let source = app.source.as_ref().ok_or_else(|| {
+        ApiError::from_error(&nucleos::Error::unavailable(
+            "no tool source is configured: `NUCLEOS_MCP` names one, and a reload reconnects it",
+        ))
+    })?;
+
+    let before = app.tools_now();
+    let tools: Vec<Arc<dyn nucleos::adapter::Tool>> = source
+        .connect()
+        .await
+        .map_err(|error| ApiError::from_error(&error))?
+        .into_iter()
+        .map(|tool| Arc::new(tool) as Arc<dyn nucleos::adapter::Tool>)
+        .collect();
+
+    let names: Vec<String> = tools.iter().map(|tool| tool.spec().name).collect();
+    let generation = kernel
+        .publish(tools)
+        .map_err(|error| ApiError::from_error(&error))?;
+
+    let added: Vec<String> = names
+        .iter()
+        .filter(|name| !before.contains(name))
+        .cloned()
+        .collect();
+    let removed: Vec<String> = before
+        .iter()
+        .filter(|name| !names.contains(name))
+        .cloned()
+        .collect();
+    if let Ok(mut current) = app.tools.write() {
+        *current = names.clone();
+    }
+
+    Ok(Json(ReloadResponse {
+        generation: generation.0,
+        tools: names,
+        added,
+        removed,
+    }))
 }
 
 /// Open a session and run the reference loop to completion.

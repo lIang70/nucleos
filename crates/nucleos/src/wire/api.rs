@@ -195,6 +195,32 @@ pub struct DescribeResponse {
     /// The tools a session may be given.
     #[serde(default)]
     pub tools: Vec<String>,
+    /// The tool generation new sessions are pinned to.
+    ///
+    /// A reload increments it. Reported because "which set was the daemon on when this session
+    /// started" is the first question asked when a session and a deployment disagree about what a
+    /// tool accepts.
+    #[serde(default)]
+    pub generation: u64,
+}
+
+/// What a tool reload did.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ReloadResponse {
+    /// The generation new sessions are pinned to from now on.
+    pub generation: u64,
+    /// The tools it holds.
+    pub tools: Vec<String>,
+    /// What the reload added, by name.
+    #[serde(default)]
+    pub added: Vec<String>,
+    /// What it removed, by name.
+    ///
+    /// A session pinned to the previous generation keeps working: `added` and `removed` describe
+    /// what changed for sessions that start from now on, not what happened to sessions already
+    /// running.
+    #[serde(default)]
+    pub removed: Vec<String>,
 }
 
 /// One inference: the messages to send.

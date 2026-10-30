@@ -407,8 +407,11 @@ freeing one requires a durable answer to "which sessions still reference it", an
 give that by reading every snapshot. It is a small leak on purpose, and the alternative — freeing a
 set a pinned session might reach for — is a correctness bug.
 
-Reloading a source still creates a new session unless the caller publishes a new generation by hand;
-the daemon does not yet expose `publish` over the ABI. That is the next slice, not this one.
+**Reload is over the ABI.** `POST /v1/tools/reload` reconnects the configured source, publishes what
+it advertises now, and answers with the new generation plus what was added and removed. `GET
+/v1/describe` reports the generation, so a caller can tell which set it is talking to. A reload is not
+a restart: sessions already running keep the set they are pinned to, and the `added`/`removed` lists
+describe what changed for sessions that start afterwards.
 
 #### A source dies, and a tool outlives it
 

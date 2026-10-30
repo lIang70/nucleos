@@ -420,3 +420,104 @@ async fn the_listing_filters_and_pages_over_the_abi() {
             .contains("pending, running")
     );
 }
+
+#[tokio::test]
+async fn a_reload_publishes_a_new_generation_and_names_what_changed() {
+    use nucleos_mcp::McpSource;
+
+    // One fixture, shared with the MCP crate's own tests rather than copied: two copies of a fake
+    // server is two things that drift.
+    let script = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../nucleos-mcp/tests/fixtures/echo_server.py"
+    );
+    let source = McpSource::new("echo", "python3").with_args(["-u", script]);
+    let tools: Vec<Arc<dyn nucleos::adapter::Tool>> = source
+        .connect()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|tool| Arc::new(tool) as Arc<dyn nucleos::adapter::Tool>)
+        .collect();
+    let names: Vec<String> = tools.iter().map(|tool| tool.spec().name).collect();
+
+    let mut builder = nucleos::Kernel::builder()
+        .model("primary", Arc::new(nucleos_testkit::FakeModel::text(["unused"])))
+        .store(Arc::new(nucleos_sqlite::SqliteStore::in_memory().unwrap()))
+        .policy(Arc::new(nucleos::adapter::AllowAll))
+        .clock(Arc::new(nucleos_testkit::FixedClock::at(0)))
+        .routing(nucleos::contract::Routing {
+            chain: vec!["primary".to_owned()],
+            retries: 0,
+        });
+    for tool in tools {
+        builder = builder.tool(tool);
+    }
+    let kernel = Arc::new(builder.build().unwrap());
+    let before = kernel.generation();
+
+    let app = Arc::new(
+        App::new(
+            Arc::clone(&kernel),
+            nucleos::contract::Principal {
+                tenant: "acme".to_owned(),
+                subject: "alice".to_owned(),
+            },
+            vec!["primary".to_owned()],
+        )
+        .with_tools(names.clone())
+        .with_source(source),
+    );
+
+    let response = router(Arc::clone(&app))
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/tools/reload")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["tools"], serde_json::json!(["echo"]));
+    assert_eq!(body["added"], serde_json::json!([]), "the same server");
+    assert!(body["generation"].as_u64().unwrap() > before.0);
+
+    // `Describe` reports the generation new sessions are pinned to, so a caller can tell which set
+    // it is talking to.
+    let described = body_json(
+        router(Arc::clone(&app))
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/describe")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(described["generation"], body["generation"]);
+}
+
+#[tokio::test]
+async fn a_reload_without_a_source_says_so() {
+    let response = router(running())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/tools/reload")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Not a silent no-op: a reload that did nothing is a caller believing it deployed something.
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let error = body_json(response).await;
+    assert!(error["reason"].as_str().unwrap().contains("NUCLEOS_MCP"));
+}
