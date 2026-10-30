@@ -102,6 +102,35 @@ lying:
 an escalation means; the gate is then the only protection, which is why the contract says the gate
 turns it into a question rather than a formality.
 
+**How it is configured.** Two places, and neither is a request field that a command can rewrite:
+
+```jsonc
+POST /v1/processes
+{
+  "argv": ["sh", "-c", "make test"],
+  "sandbox": {                            // session-scoped, decided here, carried in the checkpoint
+    "workspace": "/srv/ws",
+    "policy": { "kind": "workspace_write", "network_access": false }
+  },
+  "permissions": {                        // this command only, additive
+    "kind": "with_additional_permissions",
+    "additional": { "writable_roots": ["/srv/cache"], "network_access": true }
+  }
+}
+```
+
+`config.tools`-style narrowing does not apply here, because there is nothing to narrow: the policy is
+fixed when the process session opens and `configure` cannot touch it. A caller who wants different
+sandboxing opens a different session, which is what "the wiring is startup-only" means everywhere
+else in this ABI.
+
+**What the log records.** `exec_started` carries `mechanism` and, when the mechanism takes one,
+`profile` — the text handed to `sandbox-exec`. A sandboxed refusal is "Operation not permitted" and
+nothing else, so without the profile the log cannot say which rule was missing, and answering means
+rebuilding a profile from a policy that may since have changed. `mechanism: null` is a decision too:
+it says nothing confined this command, which is the difference between `danger_full_access` and a
+sandbox that failed to start.
+
 Linux is not done: bubblewrap plus landlock is a separate mechanism with a separate file, and until
 it exists a Linux deployment gets `Unavailable` for every confining policy rather than a promise it
 cannot keep. The refusal is the same shape as before; what changed is that on macOS it is no longer

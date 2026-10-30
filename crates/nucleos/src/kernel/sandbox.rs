@@ -39,6 +39,11 @@ pub(crate) struct Confinement {
     pub prefix: Vec<String>,
     /// What a human should read: which mechanism, and for which policy.
     pub mechanism: &'static str,
+    /// The profile the mechanism was given, when it takes one.
+    ///
+    /// Kept so the log can answer "why was this refused" without reconstructing the policy — which
+    /// may have changed, and would be a second implementation to disagree with this one.
+    pub profile: Option<String>,
 }
 
 /// Wrap a command, or refuse because this platform has no mechanism for the policy asked for.
@@ -76,8 +81,9 @@ fn seatbelt(
     let profile = profile(policy, permissions, workspace);
     Ok(Some(Confinement {
         program: "/usr/bin/sandbox-exec".to_owned(),
-        prefix: vec!["-p".to_owned(), profile],
+        prefix: vec!["-p".to_owned(), profile.clone()],
         mechanism: "seatbelt",
+        profile: Some(profile),
     }))
 }
 

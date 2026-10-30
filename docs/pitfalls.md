@@ -574,3 +574,28 @@ and the command that most needs confining runs unconfined because a platform is 
 tests assert the disjunction rather than one branch, so "enforced" and "refused" both count and
 "ignored" does not.
 
+## 45. A sandbox that cannot say what it did is a sandbox nobody can debug
+
+**Decision.** `exec_started` carries the mechanism and the profile text. `mechanism: null` means the
+kernel applied nothing.
+
+**Why.** A refusal from seatbelt is `Operation not permitted` and no explanation: the profile is the
+only document that knows which rule was missing. Recording the policy instead is not enough — the
+policy is an input, the profile is the decision, and rebuilding it from a policy that may have
+changed is a second implementation that can disagree with the one that ran.
+
+**Why the null matters.** "No mechanism" has three causes — `danger_full_access`, an external
+sandbox, and an escalation the gate approved — and all three mean nobody confined the command. A log
+that omitted the field for all of them would read the same as one where a confining policy was
+quietly applied to nothing.
+
+## 46. The network is tested against a port, not against the internet
+
+**Decision.** The network tests bind a listener on `127.0.0.1:0` and run `exec 3<>/dev/tcp/…` under
+both settings.
+
+**Why.** A test that reaches out to a real host is a test that fails in CI, in an air-gapped build,
+and on the day the host changes its certificate. A loopback port exercises the same rule — the
+sandbox either permits the `network*` operation or it does not — and it asserts the positive case
+too, so a refusal cannot be mistaken for a broken fixture.
+

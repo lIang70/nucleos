@@ -623,6 +623,20 @@ pub enum EventKind {
         argv: Vec<String>,
         /// The policy it ran under, after any granted widening.
         policy: SandboxPolicy,
+        /// The mechanism that carried the policy out, when one did.
+        ///
+        /// Absent means the kernel applied nothing: `danger_full_access`, an external sandbox, or an
+        /// approved escalation. Recorded because "was it confined" is the first question asked after
+        /// a command does something surprising, and the policy alone does not answer it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mechanism: Option<String>,
+        /// The profile the mechanism was given, verbatim.
+        ///
+        /// A refusal from a sandbox is "Operation not permitted" and nothing else. Without this the
+        /// log cannot say which rule was missing, and the only way to answer is to rebuild the
+        /// profile from a policy that may since have changed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        profile: Option<String>,
     },
     /// A chunk of a command's output.
     ExecOutput {

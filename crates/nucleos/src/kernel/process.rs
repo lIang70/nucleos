@@ -209,6 +209,14 @@ impl Supervisor {
             pid: pid.unwrap_or(0),
             argv: spec.argv.clone(),
             policy: sandbox.clone(),
+            // What actually happened, next to what was asked for. A policy in the checkpoint plus a
+            // refusal in the output is an unexplainable pair without this.
+            mechanism: confinement
+                .as_ref()
+                .map(|confinement| confinement.mechanism.to_owned()),
+            profile: confinement
+                .as_ref()
+                .and_then(|confinement| confinement.profile.clone()),
         })
         .await?;
 

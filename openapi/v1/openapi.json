@@ -977,6 +977,13 @@
                 "const": "exec_started",
                 "type": "string"
               },
+              "mechanism": {
+                "description": "The mechanism that carried the policy out, when one did.\n\nAbsent means the kernel applied nothing: `danger_full_access`, an external sandbox, or an\napproved escalation. Recorded because \"was it confined\" is the first question asked after\na command does something surprising, and the policy alone does not answer it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "pid": {
                 "description": "The process id, when the platform gave one.",
                 "format": "uint32",
@@ -986,6 +993,13 @@
               "policy": {
                 "$ref": "#/components/schemas/SandboxPolicy",
                 "description": "The policy it ran under, after any granted widening."
+              },
+              "profile": {
+                "description": "The profile the mechanism was given, verbatim.\n\nA refusal from a sandbox is \"Operation not permitted\" and nothing else. Without this the\nlog cannot say which rule was missing, and the only way to answer is to rebuild the\nprofile from a policy that may since have changed.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [

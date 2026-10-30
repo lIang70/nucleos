@@ -138,6 +138,17 @@ async fn run(
     permissions: SandboxPermissions,
     argv: &[&str],
 ) -> nucleos::Result<bool> {
+    Ok(run_with(workspace, policy, permissions, argv).await?.0)
+}
+
+/// The same, with the event log: a sandbox that cannot say what it did is a sandbox nobody can
+/// debug.
+async fn run_with(
+    workspace: Option<&str>,
+    policy: SandboxPolicy,
+    permissions: SandboxPermissions,
+    argv: &[&str],
+) -> nucleos::Result<(bool, Vec<nucleos::contract::Event>)> {
     let store = Arc::new(SqliteStore::in_memory().expect("an in-memory database"));
     let kernel = Kernel::builder()
         .model("primary", Arc::new(FakeModel::text(["unused"])))
@@ -169,7 +180,8 @@ async fn run(
         )
         .await?;
     let output = kernel.wait(&session).await?;
-    Ok(output.exit_code == 0)
+    let events = store.events_since(session.id(), 0).await?;
+    Ok((output.exit_code == 0, events))
 }
 
 #[cfg(target_os = "macos")]
@@ -327,4 +339,176 @@ async fn a_confining_policy_is_refused_on_a_platform_without_a_mechanism() {
     .await
     .expect_err("no mechanism, no promise");
     assert_eq!(error.code(), nucleos::contract::ErrorCode::Unavailable);
+}
+
+
+// ---------------------------------------------------------------------------
+// Network
+//
+// A port on the loopback interface is the one thing a test can assert without the internet: the
+// connection either happens or the sandbox refuses it before it reaches the kernel.
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "macos")]
+fn connect_argv(port: u16) -> Vec<String> {
+    vec![
+        "/bin/sh".to_owned(),
+        "-c".to_owned(),
+        format!("exec 3<>/dev/tcp/127.0.0.1/{port}"),
+    ]
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_policy_without_network_cannot_reach_a_local_port() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let argv = connect_argv(port);
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let directory = workspace("net-deny");
+
+    let denied = run(
+        Some(directory.to_str().unwrap()),
+        SandboxPolicy::WorkspaceWrite {
+            extra_writable_roots: Vec::new(),
+            network_access: false,
+        },
+        SandboxPermissions::UseDefault,
+        &argv,
+    )
+    .await
+    .unwrap();
+    assert!(!denied, "no rule allows the connection, so it must not happen");
+
+    // The same command with the network allowed, so the refusal above is the sandbox and not a
+    // broken listener.
+    let allowed = run(
+        Some(directory.to_str().unwrap()),
+        SandboxPolicy::WorkspaceWrite {
+            extra_writable_roots: Vec::new(),
+            network_access: true,
+        },
+        SandboxPermissions::UseDefault,
+        &argv,
+    )
+    .await
+    .unwrap();
+    assert!(allowed, "with network_access the connection is made");
+
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn one_command_may_ask_for_the_network_and_the_session_is_unchanged() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let argv = connect_argv(port);
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let directory = workspace("net-widen");
+    let policy = SandboxPolicy::WorkspaceWrite {
+        extra_writable_roots: Vec::new(),
+        network_access: false,
+    };
+
+    // Widening is for this command only, and it is asked for rather than assumed.
+    let allowed = run(
+        Some(directory.to_str().unwrap()),
+        policy.clone(),
+        SandboxPermissions::WithAdditionalPermissions {
+            additional: AdditionalPermissions {
+                writable_roots: Vec::new(),
+                network_access: true,
+            },
+        },
+        &argv,
+    )
+    .await
+    .unwrap();
+    assert!(allowed, "the command asked, and the request was additive");
+
+    // And a second command under the same policy is back to no network.
+    let refused = run(
+        Some(directory.to_str().unwrap()),
+        policy,
+        SandboxPermissions::UseDefault,
+        &argv,
+    )
+    .await
+    .unwrap();
+    assert!(!refused, "a widening must not outlive the command that asked");
+
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+// ---------------------------------------------------------------------------
+// The record
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn the_log_says_which_mechanism_ran_the_command_and_with_what_profile() {
+    let directory = workspace("record");
+    let root = directory.to_str().unwrap().to_owned();
+    let (ok, events) = run_with(
+        Some(&root),
+        SandboxPolicy::WorkspaceWrite {
+            extra_writable_roots: Vec::new(),
+            network_access: false,
+        },
+        SandboxPermissions::UseDefault,
+        &["/bin/echo", "hi"],
+    )
+    .await
+    .unwrap();
+    assert!(ok);
+
+    let started = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            nucleos::contract::EventKind::ExecStarted {
+                mechanism, profile, ..
+            } => Some((mechanism.clone(), profile.clone())),
+            _ => None,
+        })
+        .expect("the start is recorded");
+
+    assert_eq!(started.0.as_deref(), Some("seatbelt"));
+    let profile = started.1.expect("seatbelt records the profile it was given");
+    // What a reader needs: that it was deny-by-default, and which root it was allowed to write.
+    assert!(profile.contains("(deny default)"), "{profile}");
+    assert!(profile.contains(&root), "{profile}");
+    assert!(!profile.contains("(allow network*)"), "{profile}");
+
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[tokio::test]
+async fn an_unconfined_command_says_so_rather_than_leaving_it_to_inference() {
+    // `danger_full_access` is a decision, and the log records it as one: no mechanism, no profile.
+    let directory = workspace("record-open");
+    let root = directory.to_str().unwrap().to_owned();
+    let (ok, events) = run_with(
+        Some(&root),
+        SandboxPolicy::DangerFullAccess,
+        SandboxPermissions::UseDefault,
+        &["/bin/echo", "hi"],
+    )
+    .await
+    .unwrap();
+    assert!(ok);
+
+    let started = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            nucleos::contract::EventKind::ExecStarted {
+                mechanism, profile, ..
+            } => Some((mechanism.clone(), profile.clone())),
+            _ => None,
+        })
+        .expect("the start is recorded");
+    assert_eq!(started.0, None, "nothing confined it");
+    assert_eq!(started.1, None);
+
+    let _ = std::fs::remove_dir_all(&directory);
 }
