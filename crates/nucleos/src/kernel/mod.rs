@@ -158,8 +158,17 @@ impl Kernel {
     }
 
     /// The events a session has recorded, from `from_seq` onward.
-    pub async fn events(&self, id: &SessionId, from_seq: u64) -> Result<Vec<Event>> {
-        self.store.events_since(id, from_seq).await
+    pub async fn events(
+        &self,
+        principal: &crate::contract::Principal,
+        id: &SessionId,
+        from_seq: u64,
+    ) -> Result<Vec<Event>> {
+        let key = crate::adapter::SessionKey {
+            tenant: principal.tenant.clone(),
+            id: id.clone(),
+        };
+        self.store.events_since(&key, from_seq).await
     }
 
     /// The registered model names, sorted.

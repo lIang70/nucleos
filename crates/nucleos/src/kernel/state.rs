@@ -49,7 +49,7 @@ impl Kernel {
         session
             .seq
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.store.append(&session.id, &[event]).await
+        self.store.append(&session.key(), &[event]).await
     }
     /// `record` the session's current state.
     pub async fn record_state(&self, session: &mut session::Session) -> Result<()> {

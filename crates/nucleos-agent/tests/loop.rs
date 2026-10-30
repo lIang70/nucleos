@@ -21,6 +21,13 @@ use nucleos::{Error, Result};
 use nucleos_agent as agent;
 use std::sync::Arc;
 
+/// The store's key for a test tenant. The tests all use one tenant, so the helper keeps them about
+/// what they are testing rather than about spelling out a key at every call.
+fn key(id: &SessionId) -> nucleos::adapter::SessionKey {
+    nucleos::adapter::SessionKey::new("acme", id.clone())
+}
+
+
 fn principal() -> Principal {
     Principal {
         tenant: "acme".to_owned(),
@@ -61,7 +68,7 @@ fn kernel(model: FakeModel) -> (Kernel, Arc<SqliteStore>) {
 
 async fn kinds(store: &SqliteStore, session: &SessionId) -> Vec<&'static str> {
     store
-        .events_since(session, 0)
+        .events_since(&key(session), 0)
         .await
         .unwrap()
         .iter()
@@ -95,7 +102,7 @@ async fn a_single_turn_session_answers_and_checkpoints() -> Result<()> {
         ]
     );
 
-    let snapshot = store.snapshot(&id).await?.unwrap();
+    let snapshot = store.snapshot(&key(&id)).await?.unwrap();
     assert_eq!(snapshot.state, SessionState::Closed);
     assert_eq!(snapshot.inference_calls, 1);
     assert_eq!(
@@ -138,7 +145,7 @@ async fn a_tool_call_runs_and_the_model_answers_afterwards() -> Result<()> {
         "one message for the tool call, one for the answer"
     );
 
-    let snapshot = store.snapshot(&id).await?.unwrap();
+    let snapshot = store.snapshot(&key(&id)).await?.unwrap();
     assert_eq!(snapshot.inference_calls, 2);
     assert!(
         snapshot
@@ -164,7 +171,7 @@ async fn malformed_arguments_never_reach_the_tool() -> Result<()> {
     agent::start(&kernel, &principal(), id.clone(), spec()).await?;
 
     let result = store
-        .events_since(&id, 0).await.unwrap()
+        .events_since(&key(&id), 0).await.unwrap()
         .into_iter()
         .find_map(|event| match event.kind {
             EventKind::ToolFinished { result, .. } => Some(result),
@@ -209,7 +216,7 @@ async fn a_tool_that_reports_a_cost_is_charged_for_it() -> Result<()> {
     // alternative — a gateway endpoint so the kernel could make the call itself — was a second
     // product, not a fix.
     let charged = store
-        .events_since(&id, 0).await.unwrap()
+        .events_since(&key(&id), 0).await.unwrap()
         .into_iter()
         .find_map(|event| match event.kind {
             EventKind::ToolFinished { usage, .. } => usage,
@@ -232,7 +239,7 @@ async fn a_tool_that_reports_nothing_is_not_assumed_free() -> Result<()> {
     agent::start(&kernel, &principal(), id.clone(), spec()).await?;
 
     let usage = store
-        .events_since(&id, 0).await.unwrap()
+        .events_since(&key(&id), 0).await.unwrap()
         .into_iter()
         .find_map(|event| match event.kind {
             EventKind::ToolFinished { usage, .. } => Some(usage),
@@ -459,7 +466,7 @@ async fn a_denied_tool_answers_with_content_and_the_turn_continues() -> Result<(
     // A refusal is content the model reads, not a failed turn: the session keeps going.
     assert_eq!(outcome.state, SessionState::Closed);
     let refusal = store
-        .events_since(&SessionId::new("s1"), 0).await.unwrap()
+        .events_since(&key(&SessionId::new("s1")), 0).await.unwrap()
         .into_iter()
         .find_map(|event| match event.kind {
             EventKind::ToolFinished { result, .. } => Some(result),
@@ -494,7 +501,7 @@ async fn a_gated_call_parks_the_session_and_a_verdict_resumes_it() -> Result<()>
     assert_eq!(parked.state, SessionState::Open);
     assert_eq!(parked.stop, None, "parked is not stopped");
 
-    let snapshot = store.snapshot(&id).await?.unwrap();
+    let snapshot = store.snapshot(&key(&id)).await?.unwrap();
     assert!(
         !snapshot.pending.is_empty(),
         "the call survives the process"

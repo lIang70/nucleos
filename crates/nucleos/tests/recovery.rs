@@ -17,6 +17,13 @@ use nucleos_sqlite::SqliteStore;
 use nucleos_testkit::{FakeModel, FixedClock};
 use std::sync::Arc;
 
+/// The store's key for a test tenant. The tests all use one tenant, so the helper keeps them about
+/// what they are testing rather than about spelling out a key at every call.
+fn key(id: &SessionId) -> nucleos::adapter::SessionKey {
+    nucleos::adapter::SessionKey::new("acme", id.clone())
+}
+
+
 fn principal() -> Principal {
     Principal {
         tenant: "acme".to_owned(),
@@ -53,7 +60,7 @@ fn spec() -> SessionSpec {
 /// checkpoint.
 async fn append_tail(store: &Arc<SqliteStore>, id: &SessionId, kinds: Vec<EventKind>) {
     let head = store
-        .events_since(id, 0)
+        .events_since(&key(id), 0)
         .await
         .unwrap()
         .last()
@@ -71,7 +78,7 @@ async fn append_tail(store: &Arc<SqliteStore>, id: &SessionId, kinds: Vec<EventK
             meta: Default::default(),
         })
         .collect();
-    store.append(id, &events).await.unwrap();
+    store.append(&key(id), &events).await.unwrap();
 }
 
 #[tokio::test]
@@ -228,7 +235,7 @@ async fn a_turn_the_runtime_did_not_survive_is_recorded_rather_than_inferred() {
 
     // And the log now says what happened, in the same words the ledger uses for a failed attempt.
     let failed = store
-        .events_since(&id, 0)
+        .events_since(&key(&id), 0)
         .await
         .unwrap()
         .into_iter()
@@ -254,7 +261,7 @@ async fn a_turn_the_runtime_did_not_survive_is_recorded_rather_than_inferred() {
     let again = kernel.load(&principal(), &id).await.unwrap();
     assert_eq!(again.messages(), loaded.messages());
     let records = store
-        .events_since(&id, 0)
+        .events_since(&key(&id), 0)
         .await
         .unwrap()
         .into_iter()
@@ -296,7 +303,7 @@ async fn a_tail_of_narrative_events_is_not_a_crash() {
     kernel.load(&principal(), &id).await.unwrap();
     assert!(
         !store
-            .events_since(&id, 0)
+            .events_since(&key(&id), 0)
             .await
             .unwrap()
             .iter()

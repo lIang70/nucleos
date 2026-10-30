@@ -762,22 +762,32 @@ async fn a_session_belongs_to_the_tenant_that_created_it() {
 }
 
 #[tokio::test]
-async fn an_identifier_cannot_be_taken_over_by_another_tenant() {
+async fn the_same_identifier_in_two_tenants_is_two_sessions() {
     let app = multi_tenant();
-    request(&app, "POST", "/v1/sessions", "acme-token", r#"{"session":"s1"}"#).await;
 
-    // Same id, different tenant: refused rather than silently reusing the checkpoint, which would
-    // hand one tenant's history to another.
-    let (status, error) = request(
-        &app,
-        "POST",
-        "/v1/sessions",
-        "other-token",
-        r#"{"session":"s1"}"#,
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{error}");
-    assert!(error["reason"].as_str().unwrap().contains("another tenant"));
+    // Callers choose their ids, so "s1" from two tenants is ordinary. The store's key is
+    // (tenant, id), so both succeed and neither sees the other's history.
+    let (first, _) = request(&app, "POST", "/v1/sessions", "acme-token", r#"{"session":"s1"}"#).await;
+    let (second, _) = request(&app, "POST", "/v1/sessions", "other-token", r#"{"session":"s1"}"#).await;
+    assert_eq!(first, StatusCode::OK);
+    assert_eq!(second, StatusCode::OK, "distinct keys, not a collision");
+
+    // Each tenant reads its own stream. The events route answers SSE, so this asks for the status
+    // rather than trying to parse a body.
+    for token in ["acme-token", "other-token"] {
+        let response = router(Arc::clone(&app))
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/sessions/s1/events")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{token}");
+    }
 }
 
 #[tokio::test]

@@ -12,6 +12,13 @@ use nucleos_sqlite::SqliteStore;
 use nucleos_testkit::{FakeModel, FakeTool, FixedClock};
 use std::sync::Arc;
 
+/// The store's key for a test tenant. The tests all use one tenant, so the helper keeps them about
+/// what they are testing rather than about spelling out a key at every call.
+fn key(id: &SessionId) -> nucleos::adapter::SessionKey {
+    nucleos::adapter::SessionKey::new("acme", id.clone())
+}
+
+
 fn event(session: &SessionId, seq: u64) -> Event {
     Event {
         seq,
@@ -37,14 +44,14 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 async fn append_refuses_a_gap_rather_than_renumbering() {
     let store = SqliteStore::in_memory().unwrap();
     let session = SessionId::new("s1");
-    store.append(&session, &[event(&session, 0)]).await.unwrap();
+    store.append(&key(&session), &[event(&session, 0)]).await.unwrap();
 
     // A silently renumbered event makes every later resume cursor wrong, so this is refused.
-    let gap = store.append(&session, &[event(&session, 5)]).await;
+    let gap = store.append(&key(&session), &[event(&session, 5)]).await;
     assert!(gap.is_err(), "{gap:?}");
 
     // And the log is unchanged: a refused batch appends nothing at all.
-    assert_eq!(store.events_since(&session, 0).await.unwrap().len(), 1);
+    assert_eq!(store.events_since(&key(&session), 0).await.unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -53,7 +60,7 @@ async fn append_refuses_an_event_for_another_session() {
     let session = SessionId::new("s1");
     let other = SessionId::new("s2");
     // Events from one session written into another's log is a corruption no later read can undo.
-    assert!(store.append(&session, &[event(&other, 0)]).await.is_err());
+    assert!(store.append(&key(&session), &[event(&other, 0)]).await.is_err());
 }
 
 #[tokio::test]
@@ -61,11 +68,11 @@ async fn events_since_is_inclusive() {
     let store = SqliteStore::in_memory().unwrap();
     let session = SessionId::new("s1");
     let events: Vec<Event> = (0..5).map(|seq| event(&session, seq)).collect();
-    store.append(&session, &events).await.unwrap();
+    store.append(&key(&session), &events).await.unwrap();
 
     // A client asking from `seq` wants that event, not the one after it.
     let from_two: Vec<u64> = store
-        .events_since(&session, 2)
+        .events_since(&key(&session), 2)
         .await
         .unwrap()
         .iter()
@@ -78,7 +85,7 @@ async fn events_since_is_inclusive() {
 async fn a_snapshot_may_not_claim_events_the_log_does_not_hold() {
     let store = SqliteStore::in_memory().unwrap();
     let session = SessionId::new("s1");
-    store.append(&session, &[event(&session, 0)]).await.unwrap();
+    store.append(&key(&session), &[event(&session, 0)]).await.unwrap();
 
     let mut snapshot = snapshot_for(&session);
     snapshot.seq = 7;
@@ -91,7 +98,7 @@ async fn a_listing_pages_by_cursor_and_filters_by_kind() {
     let store = SqliteStore::in_memory().unwrap();
     for name in ["s1", "s2", "s3"] {
         let session = SessionId::new(name);
-        store.append(&session, &[event(&session, 0)]).await.unwrap();
+        store.append(&key(&session), &[event(&session, 0)]).await.unwrap();
     }
     store
         .write_snapshot({
@@ -104,6 +111,7 @@ async fn a_listing_pages_by_cursor_and_filters_by_kind() {
 
     let first = store
         .sessions(&SessionQuery {
+            tenant: "acme".to_owned(),
             kind: None,
             limit: 2,
             after: None,
@@ -115,6 +123,7 @@ async fn a_listing_pages_by_cursor_and_filters_by_kind() {
 
     let second = store
         .sessions(&SessionQuery {
+            tenant: "acme".to_owned(),
             kind: None,
             limit: 2,
             after: Some(next),
@@ -126,6 +135,7 @@ async fn a_listing_pages_by_cursor_and_filters_by_kind() {
     // Only the checkpointed session has a kind yet, which is what the column is for.
     let processes = store
         .sessions(&SessionQuery {
+            tenant: "acme".to_owned(),
             kind: Some(SessionKind::Process),
             limit: 10,
             after: None,
@@ -178,13 +188,13 @@ async fn a_session_survives_the_process_that_wrote_it() {
     // Nothing of the first process is left: a new store on the same file, a new kernel.
     let reopened = SqliteStore::open(&path).unwrap();
     let snapshot = reopened
-        .snapshot(session.id())
+        .snapshot(&key(session.id()))
         .await
         .unwrap()
         .expect("the checkpoint was written");
     assert!(snapshot.seq > 0);
     let events = reopened
-        .events_since(session.id(), snapshot.seq + 1)
+        .events_since(&key(session.id()), snapshot.seq + 1)
         .await
         .unwrap();
     assert!(events.is_empty(), "the snapshot is the end of the log so far");
@@ -218,7 +228,10 @@ async fn a_session_survives_the_process_that_wrote_it() {
 /// A checkpoint with no content, for the tests that are about the log rather than about a turn.
 fn snapshot_for(session: &SessionId) -> nucleos::contract::Snapshot {
     nucleos::contract::Snapshot {
-        principal: Default::default(),
+        principal: nucleos::contract::Principal {
+            tenant: "acme".to_owned(),
+            subject: "alice".to_owned(),
+        },
         session: session.clone(),
         seq: 0,
         generation: nucleos::contract::Generation(0),
@@ -243,4 +256,49 @@ fn snapshot_for(session: &SessionId) -> nucleos::contract::Snapshot {
         kind: SessionKind::Agent,
         process: None,
     }
+}
+
+#[tokio::test]
+async fn two_tenants_can_share_a_session_id() {
+    let store = SqliteStore::in_memory().unwrap();
+    let session = SessionId::new("s1");
+
+    // The same identifier in two tenants: ordinary, not adversarial. Callers choose their ids.
+    for tenant in ["acme", "other"] {
+        let key = nucleos::adapter::SessionKey::new(tenant, session.clone());
+        store.append(&key, &[event(&session, 0)]).await.unwrap();
+    }
+
+    // Each key sees exactly its own log, and the entries did not collide: both writes succeeded,
+    // so both rows exist under different keys.
+    for tenant in ["acme", "other"] {
+        let key = nucleos::adapter::SessionKey::new(tenant, session.clone());
+        assert_eq!(store.events_since(&key, 0).await.unwrap().len(), 1);
+    }
+
+    // And a listing is scoped the same way: two rows, one per tenant.
+    for tenant in ["acme", "other"] {
+        let page = store
+            .sessions(&SessionQuery {
+                tenant: tenant.to_owned(),
+                kind: None,
+                limit: 10,
+                after: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.sessions.as_slice(), std::slice::from_ref(&session), "{tenant}");
+    }
+
+    // A tenant that never wrote anything sees nothing, rather than everybody else's rows.
+    let stranger = store
+        .sessions(&SessionQuery {
+            tenant: "stranger".to_owned(),
+            kind: None,
+            limit: 10,
+            after: None,
+        })
+        .await
+        .unwrap();
+    assert!(stranger.sessions.is_empty());
 }

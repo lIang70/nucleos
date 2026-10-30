@@ -125,7 +125,7 @@ impl Kernel {
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel::<Reported>(64);
         let writer = super::writer::EventWriter::new(
             Arc::clone(&self.store),
-            session.id.clone(),
+            session.key(),
             Arc::clone(&session.seq),
             Arc::clone(&self.clock),
         );

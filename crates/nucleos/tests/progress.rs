@@ -17,6 +17,13 @@ use nucleos_sqlite::SqliteStore;
 use nucleos_testkit::{FakeModel, FixedClock};
 use std::sync::Arc;
 
+/// The store's key for a test tenant. The tests all use one tenant, so the helper keeps them about
+/// what they are testing rather than about spelling out a key at every call.
+fn key(id: &SessionId) -> nucleos::adapter::SessionKey {
+    nucleos::adapter::SessionKey::new("acme", id.clone())
+}
+
+
 fn principal() -> Principal {
     Principal {
         tenant: "acme".to_owned(),
@@ -93,7 +100,7 @@ async fn a_tool_that_reports_produces_one_event_per_step() {
     let output = kernel.invoke_tool(&mut session, &call()).await.unwrap();
     assert_eq!(output.content.text(), "done");
 
-    let events = store.events_since(session.id(), 0).await.unwrap();
+    let events = store.events_since(&key(session.id()), 0).await.unwrap();
     let progress: Vec<(String, u64, u64, String)> = events
         .iter()
         .filter_map(|event| match &event.kind {
@@ -133,7 +140,7 @@ async fn a_tool_that_says_nothing_produces_no_record() {
     // would be noise pretending to be telemetry.
     assert!(
         !store
-            .events_since(session.id(), 0)
+            .events_since(&key(session.id()), 0)
             .await
             .unwrap()
             .iter()
@@ -155,7 +162,7 @@ async fn progress_shares_the_session_sequence_and_survives_a_reload() {
     // One writer, one counter: the events written beside the session must not leave a gap, or the
     // store refuses the next write and the session cannot continue.
     let seqs: Vec<u64> = store
-        .events_since(&id, 0)
+        .events_since(&key(&id), 0)
         .await
         .unwrap()
         .iter()
@@ -226,7 +233,7 @@ fn kernel_with(
 
 async fn progress_events(store: &Arc<SqliteStore>, id: &SessionId) -> Vec<(u64, u64, String)> {
     store
-        .events_since(id, 0)
+        .events_since(&key(id), 0)
         .await
         .unwrap()
         .into_iter()

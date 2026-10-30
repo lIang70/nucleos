@@ -9,7 +9,8 @@
 //! the second one as a sequence gap.
 
 use crate::adapter::Clock;
-use crate::contract::{Event, EventKind, SessionId};
+use crate::adapter::SessionKey;
+use crate::contract::{Event, EventKind};
 use crate::error::Result;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -19,7 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[derive(Clone)]
 pub(crate) struct EventWriter {
     pub(crate) store: Arc<dyn crate::adapter::Store>,
-    pub(crate) session: SessionId,
+    pub(crate) session: SessionKey,
     pub(crate) seq: Arc<AtomicU64>,
     clock: Arc<dyn Clock>,
 }
@@ -27,7 +28,7 @@ pub(crate) struct EventWriter {
 impl EventWriter {
     pub(crate) fn new(
         store: Arc<dyn crate::adapter::Store>,
-        session: SessionId,
+        session: SessionKey,
         seq: Arc<AtomicU64>,
         clock: Arc<dyn Clock>,
     ) -> Self {
@@ -43,7 +44,7 @@ impl EventWriter {
         let seq = self.seq.fetch_add(1, Ordering::SeqCst);
         let event = Event {
             seq,
-            session: self.session.clone(),
+            session: self.session.id.clone(),
             at_unix_millis: self.clock.now_unix_millis(),
             schema_version: Event::SCHEMA_VERSION,
             kind,

@@ -746,12 +746,14 @@ behind the same check as everything else.
 the middleware resolves the caller and puts the principal on the request, so a handler reads *its*
 caller and not the daemon's. With one token, `NUCLEOS_TOKEN` and `NUCLEOS_PRINCIPAL` still work.
 
-**Tenant isolation is the kernel's job, and it was missing.** The store keys sessions by id alone, and
-`load` used to take the caller's principal as the session's — so the first tenant to guess an id could
-read another's history. The snapshot now records its owner, `load` refuses a mismatch with `NotFound`
-(not `Denied`: a refusal that says "this exists but is not yours" is a directory of other tenants'
-names), and `open` refuses an id that already belongs to somebody else. Two tenants can therefore
-share a daemon, and cannot share an identifier.
+**Tenant isolation is in the schema.** The store's key is `(tenant, session)`, not the id alone:
+session identifiers are chosen by callers, and two tenants each choosing `s1` is ordinary rather than
+adversarial. So the tables are keyed by the pair, `Store`'s methods take a `SessionKey`, and a lookup
+*cannot* reach another tenant's rows — there is no query to forget to scope.
+
+The snapshot records its owner as well (`Principal`), and within one tenant an id still belongs to the
+subject that created it: `load` refuses a mismatch with `NotFound`, because a refusal that says "this
+exists but is not yours" is a directory of the identifiers other people use.
 
 ## 12. Telemetry
 

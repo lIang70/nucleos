@@ -890,6 +890,7 @@ struct ProcessesQuery {
 
 async fn list_processes(
     State(app): State<Arc<App>>,
+    caller: Caller,
     Query(query): Query<ProcessesQuery>,
 ) -> Result<Json<ProcessListResponse>, ApiError> {
     let kernel = app.kernel()?.clone();
@@ -910,7 +911,7 @@ async fn list_processes(
     };
 
     let page = kernel
-        .processes(&nucleos::contract::ProcessQuery {
+        .processes(&caller.0.tenant, &nucleos::contract::ProcessQuery {
             phase,
             limit: query.limit,
             after: query.page_token.map(nucleos::contract::SessionId::new),
@@ -1046,6 +1047,7 @@ struct EventsQuery {
 
 async fn events(
     State(app): State<Arc<App>>,
+    caller: Caller,
     Path(id): Path<String>,
     Query(query): Query<EventsQuery>,
     headers: axum::http::HeaderMap,
@@ -1061,7 +1063,7 @@ async fn events(
         .map_or(query.from_seq, |last| last.saturating_add(1));
 
     let events = kernel
-        .events(&SessionId::new(id), from_seq)
+        .events(&caller.0, &SessionId::new(id), from_seq)
         .await
         .map_err(|error| ApiError::from_error(&error))?;
 

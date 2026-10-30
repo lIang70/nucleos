@@ -20,6 +20,13 @@ use nucleos::contract::{
 use std::sync::Arc;
 use tokio_stream::StreamExt;
 
+/// The store's key for a test tenant. The tests all use one tenant, so the helper keeps them about
+/// what they are testing rather than about spelling out a key at every call.
+fn key(id: &SessionId) -> nucleos::adapter::SessionKey {
+    nucleos::adapter::SessionKey::new("acme", id.clone())
+}
+
+
 fn event(session: &SessionId, seq: u64) -> Event {
     Event {
         seq,
@@ -293,12 +300,12 @@ async fn a_store_rejects_a_gap_rather_than_renumbering() -> Result<()> {
     let store = SqliteStore::in_memory().expect("an in-memory database");
     let session = SessionId::new("s1");
 
-    store.append(&session, &[event(&session, 0)]).await?;
+    store.append(&key(&session), &[event(&session, 0)]).await?;
 
     // 1 is missing. A store that silently renumbered would make every later resume cursor
     // point at the wrong event.
     let error = store
-        .append(&session, &[event(&session, 2)])
+        .append(&key(&session), &[event(&session, 2)])
         .await
         .unwrap_err();
     assert_eq!(error.code(), ErrorCode::Invalid);
@@ -312,14 +319,14 @@ async fn events_since_is_inclusive() -> Result<()> {
     let session = SessionId::new("s1");
     store
         .append(
-            &session,
+            &key(&session),
             &[event(&session, 0), event(&session, 1), event(&session, 2)],
         )
         .await?;
 
     // Inclusive, because a client asking `from_seq = 1` wants event 1: anything else makes the
     // ABI's resume cursor mean "after" while it says "from".
-    let tail = store.events_since(&session, 1).await?;
+    let tail = store.events_since(&key(&session), 1).await?;
     let seqs: Vec<u64> = tail.iter().map(|event| event.seq).collect();
     assert_eq!(seqs, vec![1, 2]);
     Ok(())
@@ -331,7 +338,7 @@ async fn a_store_refuses_an_event_belonging_to_another_session() -> Result<()> {
     let mine = SessionId::new("s1");
     let theirs = SessionId::new("s2");
 
-    let error = store.append(&mine, &[event(&theirs, 0)]).await.unwrap_err();
+    let error = store.append(&key(&mine), &[event(&theirs, 0)]).await.unwrap_err();
     assert_eq!(error.code(), ErrorCode::Invalid);
     Ok(())
 }
@@ -340,10 +347,13 @@ async fn a_store_refuses_an_event_belonging_to_another_session() -> Result<()> {
 async fn a_snapshot_cannot_claim_more_than_the_log_holds() -> Result<()> {
     let store = SqliteStore::in_memory().expect("an in-memory database");
     let session = SessionId::new("s1");
-    store.append(&session, &[event(&session, 0)]).await?;
+    store.append(&key(&session), &[event(&session, 0)]).await?;
 
     let snapshot = Snapshot {
-        principal: Default::default(),
+        principal: Principal {
+            tenant: "acme".to_owned(),
+            subject: "alice".to_owned(),
+        },
         session: session.clone(),
         seq: 3,
         generation: nucleos::Generation(1),
@@ -378,7 +388,7 @@ async fn a_snapshot_cannot_claim_more_than_the_log_holds() -> Result<()> {
 async fn a_valid_snapshot_round_trips() -> Result<()> {
     let store = SqliteStore::in_memory().expect("an in-memory database");
     let session = SessionId::new("s1");
-    store.append(&session, &[event(&session, 0)]).await?;
+    store.append(&key(&session), &[event(&session, 0)]).await?;
 
     let message = Message {
         role: Role::Assistant,
@@ -388,7 +398,10 @@ async fn a_valid_snapshot_round_trips() -> Result<()> {
     };
     store
         .write_snapshot(Snapshot {
-            principal: Default::default(),
+            principal: Principal {
+            tenant: "acme".to_owned(),
+            subject: "alice".to_owned(),
+        },
             session: session.clone(),
             seq: 0,
             generation: nucleos::Generation(7),
@@ -419,7 +432,7 @@ async fn a_valid_snapshot_round_trips() -> Result<()> {
         })
         .await?;
 
-    let Some(loaded) = store.snapshot(&session).await? else {
+    let Some(loaded) = store.snapshot(&key(&session)).await? else {
         return Err(nucleos::Error::internal("the snapshot just written is missing"));
     };
     assert_eq!(loaded.seq, 0, "seq is the last event included");

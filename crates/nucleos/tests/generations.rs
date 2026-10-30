@@ -17,6 +17,13 @@ use nucleos_sqlite::SqliteStore;
 use nucleos_testkit::{FakeModel, FixedClock};
 use std::sync::Arc;
 
+/// The store's key for a test tenant. The tests all use one tenant, so the helper keeps them about
+/// what they are testing rather than about spelling out a key at every call.
+fn key(id: &SessionId) -> nucleos::adapter::SessionKey {
+    nucleos::adapter::SessionKey::new("acme", id.clone())
+}
+
+
 fn principal() -> Principal {
     Principal {
         tenant: "acme".to_owned(),
@@ -160,7 +167,7 @@ async fn a_compatible_change_migrates_at_the_next_turn_and_is_recorded() {
     assert_eq!(session.generation(), second);
 
     let migrated = store
-        .events_since(session.id(), 0)
+        .events_since(&key(session.id()), 0)
         .await
         .unwrap()
         .iter()
@@ -200,7 +207,7 @@ async fn an_incompatible_change_leaves_the_session_where_it_is() {
     );
     assert!(
         !store
-            .events_since(session.id(), 0)
+            .events_since(&key(session.id()), 0)
             .await
             .unwrap()
             .iter()

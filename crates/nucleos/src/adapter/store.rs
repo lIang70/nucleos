@@ -6,9 +6,42 @@
 
 use crate::contract::{Event, SessionId, SessionKind, Snapshot};
 
+/// Which session, in whose tenant.
+///
+/// The store's key is the pair, not the id: session identifiers are chosen by callers, and two
+/// tenants each choosing "s1" is ordinary rather than adversarial. Making the tenant part of the key
+/// means a lookup cannot accidentally span tenants — the isolation is the schema's, not a check
+/// somebody has to remember to write.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SessionKey {
+    /// The tenant that owns it.
+    pub tenant: String,
+    /// The caller-chosen identifier, unique within the tenant.
+    pub id: SessionId,
+}
+
+impl SessionKey {
+    /// The key for one tenant's session.
+    #[must_use]
+    pub fn new(tenant: impl Into<String>, id: impl Into<SessionId>) -> Self {
+        Self {
+            tenant: tenant.into(),
+            id: id.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for SessionKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.tenant, self.id)
+    }
+}
+
 /// The half of a listing a store can answer.
 #[derive(Debug, Clone, Default)]
 pub struct SessionQuery {
+    /// Only this tenant's sessions. The listing is scoped for the same reason the lookups are.
+    pub tenant: String,
     /// Only sessions of this kind.
     pub kind: Option<SessionKind>,
     /// How many to return.
@@ -36,7 +69,7 @@ pub trait Store: Send + Sync {
     /// The caller owns the sequence: it passes events whose `seq` values continue exactly
     /// from the current end. A store rejects a gap rather than filling it, because a
     /// silently renumbered event makes every later resume cursor wrong.
-    async fn append(&self, session: &SessionId, events: &[Event]) -> Result<()>;
+    async fn append(&self, session: &SessionKey, events: &[Event]) -> Result<()>;
 
     /// A page of session ids, oldest-first by id.
     ///
@@ -46,7 +79,7 @@ pub trait Store: Send + Sync {
     async fn sessions(&self, query: &SessionQuery) -> Result<SessionPage>;
 
     /// The most recent snapshot, if one was ever written.
-    async fn snapshot(&self, session: &SessionId) -> Result<Option<Snapshot>>;
+    async fn snapshot(&self, session: &SessionKey) -> Result<Option<Snapshot>>;
 
     /// Record a checkpoint.
     ///
@@ -59,5 +92,5 @@ pub trait Store: Send + Sync {
     ///
     /// Inclusive is the only choice that makes `from_seq` in the ABI mean what it says: a
     /// client asking from `seq` wants that event, not the one after it.
-    async fn events_since(&self, session: &SessionId, seq: u64) -> Result<Vec<Event>>;
+    async fn events_since(&self, session: &SessionKey, seq: u64) -> Result<Vec<Event>>;
 }

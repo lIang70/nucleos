@@ -16,6 +16,13 @@ use nucleos::contract::{
 use nucleos::kernel::{Kernel, SessionSpec};
 use std::sync::Arc;
 
+/// The store's key for a test tenant. The tests all use one tenant, so the helper keeps them about
+/// what they are testing rather than about spelling out a key at every call.
+fn key(id: &SessionId) -> nucleos::adapter::SessionKey {
+    nucleos::adapter::SessionKey::new("acme", id.clone())
+}
+
+
 fn principal() -> Principal {
     Principal {
         tenant: "acme".to_owned(),
@@ -103,7 +110,7 @@ async fn the_policy_is_session_state_and_survives_a_checkpoint() -> nucleos::Res
 
     // A command's policy cannot be a request field, so it has to be here — and it has to come
     // back with the session, or a reload quietly loosens it to the default.
-    let snapshot = store.snapshot(&id).await?.unwrap();
+    let snapshot = store.snapshot(&key(&id)).await?.unwrap();
     assert_eq!(snapshot.state, SessionState::Open);
     assert_eq!(snapshot.workspace.as_deref(), Some("/work"));
     assert_eq!(snapshot.sandbox, SandboxPolicy::read_only());
@@ -180,7 +187,7 @@ async fn run_with(
         )
         .await?;
     let output = kernel.wait(&session).await?;
-    let events = store.events_since(session.id(), 0).await?;
+    let events = store.events_since(&key(session.id()), 0).await?;
     Ok((output.exit_code == 0, events))
 }
 

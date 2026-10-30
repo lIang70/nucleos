@@ -80,6 +80,7 @@ pub(crate) struct Spawned {
 pub(crate) struct Launch<'a> {
     pub store: Arc<dyn crate::adapter::Store>,
     pub session: &'a SessionId,
+    pub tenant: &'a str,
     pub spec: &'a ProcessSpec,
     pub workspace: Option<&'a String>,
     pub sandbox: &'a SandboxPolicy,
@@ -93,6 +94,7 @@ impl Supervisor {
         let Launch {
             store,
             session,
+            tenant,
             spec,
             workspace,
             sandbox,
@@ -143,7 +145,10 @@ impl Supervisor {
         // The counter starts where the session's log ends: this task is the only writer from here.
         let log = super::writer::EventWriter::new(
             Arc::clone(&store),
-            session.clone(),
+            crate::adapter::SessionKey {
+                tenant: tenant.to_owned(),
+                id: session.clone(),
+            },
             // The same counter the kernel's handle uses, not a copy of its value: this task and the
             // caller both append to one log, and a copy is a second truth about where the log ends.
             Arc::clone(seq),
@@ -431,6 +436,7 @@ impl Kernel {
     /// could pay by indexing.
     pub async fn processes(
         &self,
+        tenant: &str,
         query: &crate::contract::ProcessQuery,
     ) -> Result<crate::contract::ProcessPage> {
         let page_size = query.page_size();
@@ -442,6 +448,7 @@ impl Kernel {
             let store_page = self
                 .store
                 .sessions(&crate::adapter::SessionQuery {
+                    tenant: tenant.to_owned(),
                     kind: Some(crate::contract::SessionKind::Process),
                     limit: page_size,
                     after: after.clone(),
@@ -450,7 +457,11 @@ impl Kernel {
 
             let total = store_page.sessions.len();
             for (position, session) in store_page.sessions.into_iter().enumerate() {
-                let Some(snapshot) = self.store.snapshot(&session).await? else {
+                let key = crate::adapter::SessionKey {
+                    tenant: tenant.to_owned(),
+                    id: session.clone(),
+                };
+                let Some(snapshot) = self.store.snapshot(&key).await? else {
                     continue;
                 };
                 let Some(process) = snapshot.process.clone() else {
@@ -544,6 +555,7 @@ impl Kernel {
                 workspace: session.workspace.as_ref(),
                 sandbox: &session.sandbox,
                 seq: &session.seq,
+                tenant: &session.principal.tenant,
                 clock: Arc::clone(&self.clock),
             })
             .await?;
@@ -583,7 +595,7 @@ impl Kernel {
 
     /// The output of a process that ended before this runtime started.
     async fn wait_from_log(&self, session: &Session) -> Result<crate::contract::ExecOutput> {
-        let events = self.store.events_since(&session.id, 0).await?;
+        let events = self.store.events_since(&session.key(), 0).await?;
 
         // The summary is the exit event's, because that is the only place the exit status, the
         // duration and the truncation count are written down.

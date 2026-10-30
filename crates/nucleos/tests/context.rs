@@ -18,6 +18,13 @@ use nucleos_sqlite::SqliteStore;
 use nucleos_testkit::{FakeModel, FixedClock};
 use std::sync::Arc;
 
+/// The store's key for a test tenant. The tests all use one tenant, so the helper keeps them about
+/// what they are testing rather than about spelling out a key at every call.
+fn key(id: &SessionId) -> nucleos::adapter::SessionKey {
+    nucleos::adapter::SessionKey::new("acme", id.clone())
+}
+
+
 fn principal() -> Principal {
     Principal {
         tenant: "acme".to_owned(),
@@ -183,7 +190,7 @@ async fn a_session_with_no_credit_never_reaches_the_model() {
     // Closed, with the reason on the session, and the stop recorded once.
     assert!(session.is_closed());
     assert_eq!(session.stop_reason(), Some(nucleos::contract::StopReason::Tokens));
-    let events = store.events_since(session.id(), 0).await.unwrap();
+    let events = store.events_since(&key(session.id()), 0).await.unwrap();
     let budgets = events
         .iter()
         .filter(|event| matches!(event.kind, EventKind::BudgetExhausted { .. }))
@@ -205,7 +212,7 @@ async fn a_second_call_after_exhaustion_does_not_write_a_second_stop() {
     assert!(kernel.inference(&mut session, &[]).await.is_err());
     assert!(kernel.invoke_tools(&mut session, &[]).await.is_ok(), "an empty batch spends nothing");
 
-    let events = store.events_since(session.id(), 0).await.unwrap();
+    let events = store.events_since(&key(session.id()), 0).await.unwrap();
     let budgets = events
         .iter()
         .filter(|event| matches!(event.kind, EventKind::BudgetExhausted { .. }))
@@ -262,7 +269,7 @@ async fn a_tool_batch_is_gated_too() {
     assert_eq!(error.code(), ErrorCode::Budget);
 
     // And nothing ran: a gate that reports after the call is a bill, not a gate.
-    let events = store.events_since(session.id(), 0).await.unwrap();
+    let events = store.events_since(&key(session.id()), 0).await.unwrap();
     assert!(
         !events
             .iter()

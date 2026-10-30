@@ -18,6 +18,13 @@ use nucleos::kernel::{Kernel, SessionSpec};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// The store's key for a test tenant. The tests all use one tenant, so the helper keeps them about
+/// what they are testing rather than about spelling out a key at every call.
+fn key(id: &SessionId) -> nucleos::adapter::SessionKey {
+    nucleos::adapter::SessionKey::new("acme", id.clone())
+}
+
+
 fn principal() -> Principal {
     Principal {
         tenant: "acme".to_owned(),
@@ -55,7 +62,7 @@ fn spec(argv: &[&str], sandbox: SandboxPolicy) -> SessionSpec {
 
 async fn kinds(store: &SqliteStore, id: &SessionId) -> Vec<&'static str> {
     store
-        .events_since(id, 0)
+        .events_since(&key(id), 0)
         .await
         .unwrap()
         .iter()
@@ -68,7 +75,7 @@ async fn output_text(store: &SqliteStore, id: &SessionId) -> String {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let text: String = store
-            .events_since(id, 0)
+            .events_since(&key(id), 0)
         .await
         .unwrap()
             .iter()
@@ -124,7 +131,7 @@ async fn the_exit_event_carries_the_summary_and_leaves_the_text_in_the_stream()
     kernel.wait(&session).await?;
 
     let exit = store
-        .events_since(&id, 0)
+        .events_since(&key(&id), 0)
         .await
         .unwrap()
         .into_iter()
@@ -264,7 +271,7 @@ async fn stderr_is_a_separate_stream() -> nucleos::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let streams: Vec<ExecStream> = store
-            .events_since(&id, 0)
+            .events_since(&key(&id), 0)
         .await
         .unwrap()
             .iter()
@@ -305,7 +312,7 @@ async fn the_listing_is_durable_and_only_counts_process_sessions() -> nucleos::R
         .await?;
 
     let listed = kernel
-        .processes(&nucleos::contract::ProcessQuery::default())
+        .processes("acme", &nucleos::contract::ProcessQuery::default())
         .await?;
     assert_eq!(listed.processes.len(), 1);
     assert_eq!(listed.processes[0].0, id);
@@ -326,7 +333,7 @@ async fn the_listing_is_durable_and_only_counts_process_sessions() -> nucleos::R
         })
         .build()?;
     let listed = fresh
-        .processes(&nucleos::contract::ProcessQuery::default())
+        .processes("acme", &nucleos::contract::ProcessQuery::default())
         .await?;
     assert_eq!(listed.processes.len(), 1);
     assert!(matches!(
@@ -336,12 +343,12 @@ async fn the_listing_is_durable_and_only_counts_process_sessions() -> nucleos::R
 
     // And a checkpoint that says "running" with no supervisor entry is a session that outlived the
     // runtime: the honest answer is `Lost`, not "running".
-    let mut snapshot = store.snapshot(&id).await?.unwrap();
+    let mut snapshot = store.snapshot(&key(&id)).await?.unwrap();
     snapshot.process.as_mut().unwrap().status =
         nucleos::contract::ProcessStatus::Running { pid: 1 };
     store.write_snapshot(snapshot).await?;
     let listed = fresh
-        .processes(&nucleos::contract::ProcessQuery::default())
+        .processes("acme", &nucleos::contract::ProcessQuery::default())
         .await?;
     assert_eq!(
         listed.processes[0].1.status,
@@ -380,7 +387,7 @@ async fn a_page_fills_through_a_phase_filter_and_says_where_to_continue() -> nuc
     // One page of two, filtered to the ones that ended: the page has to be *filled*, not just
     // truncated, so the kernel walks the store until it has two rows or runs out.
     let page = kernel
-        .processes(&nucleos::contract::ProcessQuery {
+        .processes("acme", &nucleos::contract::ProcessQuery {
             phase: Some(nucleos::contract::ProcessPhase::Exited),
             limit: 2,
             after: None,
@@ -392,7 +399,7 @@ async fn a_page_fills_through_a_phase_filter_and_says_where_to_continue() -> nuc
     // The cursor resumes after the last row examined, so nothing is visited twice and nothing is
     // skipped.
     let next = kernel
-        .processes(&nucleos::contract::ProcessQuery {
+        .processes("acme", &nucleos::contract::ProcessQuery {
             phase: Some(nucleos::contract::ProcessPhase::Exited),
             limit: 2,
             after: page.next.clone(),
@@ -412,7 +419,7 @@ async fn a_page_fills_through_a_phase_filter_and_says_where_to_continue() -> nuc
         .await?;
     kernel.wait(&tail).await?;
     let after_running = kernel
-        .processes(&nucleos::contract::ProcessQuery {
+        .processes("acme", &nucleos::contract::ProcessQuery {
             phase: Some(nucleos::contract::ProcessPhase::Exited),
             limit: 2,
             after: Some(nucleos::contract::SessionId::new("live-0")),
@@ -431,7 +438,7 @@ async fn a_page_fills_through_a_phase_filter_and_says_where_to_continue() -> nuc
 
     // A filter that matches nothing is an empty page, not an error.
     let none = kernel
-        .processes(&nucleos::contract::ProcessQuery {
+        .processes("acme", &nucleos::contract::ProcessQuery {
             phase: Some(nucleos::contract::ProcessPhase::Pending),
             limit: 10,
             after: None,

@@ -16,6 +16,13 @@ use nucleos::contract::{
 use nucleos::kernel::{Kernel, SessionSpec};
 use std::sync::Arc;
 
+/// The store's key for a test tenant. The tests all use one tenant, so the helper keeps them about
+/// what they are testing rather than about spelling out a key at every call.
+fn key(id: &SessionId) -> nucleos::adapter::SessionKey {
+    nucleos::adapter::SessionKey::new("acme", id.clone())
+}
+
+
 fn principal() -> Principal {
     Principal {
         tenant: "acme".to_owned(),
@@ -42,7 +49,7 @@ fn kernel() -> (Kernel, Arc<SqliteStore>) {
 
 async fn kinds(store: &SqliteStore, id: &SessionId) -> Vec<&'static str> {
     store
-        .events_since(id, 0)
+        .events_since(&key(id), 0)
         .await
         .unwrap()
         .iter()
@@ -312,7 +319,7 @@ async fn an_empty_patch_changes_nothing_and_records_nothing() -> nucleos::Result
     let mut session = kernel
         .open(&principal(), id.clone(), SessionSpec::default())
         .await?;
-    let before = store.events_since(&id, 0).await.unwrap().len();
+    let before = store.events_since(&key(&id), 0).await.unwrap().len();
 
     let changed = kernel
         .configure(&mut session, ConfigPatch::default())
@@ -320,7 +327,7 @@ async fn an_empty_patch_changes_nothing_and_records_nothing() -> nucleos::Result
 
     assert!(changed.is_empty());
     assert_eq!(
-        store.events_since(&id, 0).await.unwrap().len(),
+        store.events_since(&key(&id), 0).await.unwrap().len(),
         before,
         "an empty patch is not an event"
     );

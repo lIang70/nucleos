@@ -16,6 +16,13 @@ use nucleos::contract::{
 use nucleos::kernel::{Kernel, SessionSpec};
 use std::sync::Arc;
 
+/// The store's key for a test tenant. The tests all use one tenant, so the helper keeps them about
+/// what they are testing rather than about spelling out a key at every call.
+fn key(id: &SessionId) -> nucleos::adapter::SessionKey {
+    nucleos::adapter::SessionKey::new("acme", id.clone())
+}
+
+
 fn principal() -> Principal {
     Principal {
         tenant: "acme".to_owned(),
@@ -303,7 +310,7 @@ async fn a_search_widens_exposure_and_records_it() {
 
     // And the pool is in the record, because a replay has to know what turn 42 could see.
     let kinds: Vec<&str> = store
-        .events_since(&session.id().clone(), 0)
+        .events_since(&key(&session.id().clone()), 0)
         .await
         .unwrap()
         .iter()
@@ -610,7 +617,7 @@ async fn the_event_names_what_reached_the_prompt_not_what_entered_the_pool() {
     // it did.
     assert!(session.discovered().contains_key("read_file"));
     let exposed: Vec<&str> = store
-        .events_since(&session.id().clone(), 0)
+        .events_since(&key(&session.id().clone()), 0)
         .await
         .unwrap()
         .iter()

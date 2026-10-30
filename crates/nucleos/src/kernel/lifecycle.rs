@@ -14,13 +14,17 @@ impl Kernel {
         id: SessionId,
         spec: SessionSpec,
     ) -> Result<session::Session> {
-        // An identifier belongs to whoever created it. Without this, a second tenant opening "s1"
-        // would take over the first tenant's history rather than starting its own.
-        if let Some(existing) = self.store.snapshot(&id).await?
-            && existing.principal != *principal
+        // Scoped to the tenant, so a second tenant opening "s1" gets its own row rather than the
+        // first tenant's history. Within one tenant an id still belongs to whoever created it.
+        let key = crate::adapter::SessionKey {
+            tenant: principal.tenant.clone(),
+            id: id.clone(),
+        };
+        if let Some(existing) = self.store.snapshot(&key).await?
+            && existing.principal.subject != principal.subject
         {
             return Err(Error::denied(format!(
-                "session {id} belongs to another tenant"
+                "session {id} belongs to another subject"
             )));
         }
 
@@ -73,16 +77,21 @@ impl Kernel {
     /// because a resume that had to be told its own configuration again is a resume that can
     /// silently behave differently.
     pub async fn load(&self, principal: &Principal, id: &SessionId) -> Result<session::Session> {
+        // The lookup itself is scoped to the tenant, so another tenant's session is not "forbidden",
+        // it does not exist: the query cannot reach it.
+        let key = crate::adapter::SessionKey {
+            tenant: principal.tenant.clone(),
+            id: id.clone(),
+        };
         let snapshot = self
             .store
-            .snapshot(id)
+            .snapshot(&key)
             .await?
             .ok_or_else(|| Error::not_found(format!("no checkpoint for session {id}")))?;
 
-        // The store keys sessions by id alone, so this is the check that makes an id private to its
-        // tenant. `NotFound` rather than `Denied`: a refusal that says "this exists but is not yours"
-        // tells a caller which identifiers other tenants are using.
-        if snapshot.principal != *principal {
+        // Within a tenant, an id is still its creator's. `NotFound` rather than `Denied`: a refusal
+        // that says "this exists but is not yours" enumerates the identifiers other subjects use.
+        if snapshot.principal.subject != principal.subject {
             return Err(Error::not_found(format!("no session {id}")));
         }
         let mut session = session::Session::from_snapshot(
@@ -95,7 +104,7 @@ impl Kernel {
         // The checkpoint is a cache; the log is the truth. Everything written after it — the tokens
         // a turn spent, the messages it completed, a configuration change — is folded in here, or a
         // reload hands back a session that owes money it forgets and forgets work it was told.
-        let tail = self.store.events_since(id, snapshot.seq + 1).await?;
+        let tail = self.store.events_since(&key, snapshot.seq + 1).await?;
         let mut unfinished = false;
         for event in &tail {
             if super::replay::fold(&mut session, event) == super::replay::Applied::AbandonedTurn {

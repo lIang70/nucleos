@@ -16,6 +16,13 @@ use nucleos::contract::{
 use nucleos::kernel::{Kernel, SessionSpec};
 use std::sync::Arc;
 
+/// The store's key for a test tenant. The tests all use one tenant, so the helper keeps them about
+/// what they are testing rather than about spelling out a key at every call.
+fn key(id: &SessionId) -> nucleos::adapter::SessionKey {
+    nucleos::adapter::SessionKey::new("acme", id.clone())
+}
+
+
 fn principal() -> Principal {
     Principal {
         tenant: "acme".to_owned(),
@@ -88,7 +95,7 @@ async fn a_process_session_records_how_it_was_started() -> nucleos::Result<()> {
         )
         .await?;
 
-    let snapshot = store.snapshot(&id).await?.unwrap();
+    let snapshot = store.snapshot(&key(&id)).await?.unwrap();
     assert_eq!(snapshot.kind, SessionKind::Process);
     let process = snapshot.process.unwrap();
     assert_eq!(process.spec.argv[0], "python3");
@@ -122,7 +129,7 @@ async fn an_agent_session_has_no_process() -> nucleos::Result<()> {
         )
         .await?;
 
-    let snapshot = store.snapshot(&id).await?.unwrap();
+    let snapshot = store.snapshot(&key(&id)).await?.unwrap();
     assert_eq!(snapshot.kind, SessionKind::Agent);
     assert!(snapshot.process.is_none());
     Ok(())

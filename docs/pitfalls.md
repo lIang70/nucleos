@@ -770,9 +770,12 @@ hole reachable, so it was fixed in the same change rather than after it.
 no right to ask: it enumerates the identifiers other tenants use. A missing row and a row that is not
 yours look the same from outside, which is the point.
 
-**What is still absent.** Two tenants cannot use the same session id: the store has one id space, so a
-collision is refused rather than namespaced. Making it `(tenant, id)` is a store schema change, and it
-only becomes urgent when a caller needs to choose its own ids across tenants.
+**Update: it is now structured, not checked.** The first version kept the store keyed by id alone and
+refused a cross-tenant collision at `open`. That turned one tenant's ordinary choice of `s1` into
+another tenant's error, and left the isolation depending on a check somebody had to remember. The key
+is `(tenant, session)` now — in the tables, in the `Store` trait, in the listing query — so a lookup
+that spans tenants does not exist to be written. The runtime check that remains is about *subjects*
+inside one tenant, where it is a policy rather than a boundary.
 
 ## 58. A silent tool is not necessarily a hung one, and the kernel can say so
 
@@ -792,4 +795,5 @@ forever; the heartbeat is for tools that never said anything.
 **Why it is configurable rather than a constant.** Fifteen seconds is wrong for a build that takes
 minutes and wrong for a database call that takes milliseconds. A constant would be one deployment's
 guess baked into every other deployment's logs, and a test would either sleep for it or not exist.
+
 

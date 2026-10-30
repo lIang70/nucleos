@@ -135,6 +135,21 @@ impl Session {
         &self.tools
     }
 
+    /// Who owns it. The tenant scopes the store key; the subject is the attribution.
+    #[must_use]
+    pub fn principal(&self) -> &crate::contract::Principal {
+        &self.principal
+    }
+
+    /// Which tenant's session this is, for the store.
+    #[must_use]
+    pub fn key(&self) -> crate::adapter::SessionKey {
+        crate::adapter::SessionKey {
+            tenant: self.principal.tenant.clone(),
+            id: self.id.clone(),
+        }
+    }
+
     /// The tool generation this session is pinned to.
     #[must_use]
     pub fn generation(&self) -> crate::contract::Generation {

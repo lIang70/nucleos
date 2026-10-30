@@ -85,7 +85,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut event = small.clone();
             event.seq = u64::from(i);
             event.session = session.clone();
-            store.append(&session, &[event]).await?;
+            store
+                .append(
+                    &nucleos::adapter::SessionKey::new("bench", session.clone()),
+                    &[event],
+                )
+                .await?;
         }
         let elapsed = start.elapsed();
         println!(

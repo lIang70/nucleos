@@ -1,7 +1,7 @@
 //! The SQLite store.
 
 use async_trait::async_trait;
-use nucleos::adapter::{SessionPage, SessionQuery, Store};
+use nucleos::adapter::{SessionKey, SessionPage, SessionQuery, Store};
 use nucleos::contract::{Event, SessionId, SessionKind, Snapshot};
 use nucleos::error::{Error, Result};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -42,27 +42,35 @@ impl SqliteStore {
             .map_err(failed)?;
         connection
             .execute_batch(
+                // Every key is (tenant, session), not the session alone. Session identifiers are
+                // chosen by callers, and two tenants each choosing "s1" is ordinary rather than
+                // adversarial — so isolation lives in the schema, where a lookup cannot forget it.
                 "create table if not exists events (
+                     tenant  text    not null,
                      session text    not null,
                      seq     integer not null,
                      body    text    not null,
-                     primary key (session, seq)
+                     primary key (tenant, session, seq)
                  ) without rowid;
 
                  create table if not exists snapshots (
-                     session text    primary key,
+                     tenant  text    not null,
+                     session text    not null,
                      seq     integer not null,
-                     body    text    not null
+                     body    text    not null,
+                     primary key (tenant, session)
                  ) without rowid;
 
                  -- The listing's own table: a session exists once it has an event, and its kind is
                  -- only known once a checkpoint says so. Keeping it separate from the log means a
                  -- page of ids does not read a single event body.
                  create table if not exists sessions (
-                     session text    primary key,
-                     kind    text
+                     tenant  text    not null,
+                     session text    not null,
+                     kind    text,
+                     primary key (tenant, session)
                  ) without rowid;
-                 create index if not exists sessions_by_kind on sessions (kind, session);",
+                 create index if not exists sessions_by_kind on sessions (tenant, kind, session);",
             )
             .map_err(failed)?;
         Ok(Self {
@@ -92,15 +100,15 @@ impl SqliteStore {
 
 #[async_trait]
 impl Store for SqliteStore {
-    async fn append(&self, session: &SessionId, events: &[Event]) -> Result<()> {
-        let session = session.clone();
+    async fn append(&self, session: &SessionKey, events: &[Event]) -> Result<()> {
+        let (tenant, session) = (session.tenant.clone(), session.id.clone());
         let events = events.to_vec();
         self.run(move |connection| {
             let transaction = connection.transaction().map_err(failed)?;
             let next: Option<i64> = transaction
                 .query_row(
-                    "select max(seq) + 1 from events where session = ?1",
-                    params![session.as_str()],
+                    "select max(seq) + 1 from events where tenant = ?1 and session = ?2",
+                    params![tenant, session.as_str()],
                     |row| row.get(0),
                 )
                 .map_err(failed)?;
@@ -123,8 +131,9 @@ impl Store for SqliteStore {
                     .map_err(|error| Error::internal(format!("event is not storable: {error}")))?;
                 transaction
                     .execute(
-                        "insert into events (session, seq, body) values (?1, ?2, ?3)",
+                        "insert into events (tenant, session, seq, body) values (?1, ?2, ?3, ?4)",
                         params![
+                            tenant,
                             session.as_str(),
                             i64::try_from(event.seq).unwrap_or(i64::MAX),
                             body
@@ -137,9 +146,9 @@ impl Store for SqliteStore {
             // The session exists from its first event; its kind waits for a checkpoint.
             transaction
                 .execute(
-                    "insert into sessions (session, kind) values (?1, null)
-                     on conflict (session) do nothing",
-                    params![session.as_str()],
+                    "insert into sessions (tenant, session, kind) values (?1, ?2, null)
+                     on conflict (tenant, session) do nothing",
+                    params![tenant, session.as_str()],
                 )
                 .map_err(failed)?;
             transaction.commit().map_err(failed)
@@ -158,12 +167,14 @@ impl Store for SqliteStore {
             let mut statement = connection
                 .prepare(
                     "select session from sessions
-                     where session > ?1 and (?2 is null or kind = ?2)
-                     order by session limit ?3",
+                     where tenant = ?1 and session > ?2 and (?3 is null or kind = ?3)
+                     order by session limit ?4",
                 )
                 .map_err(failed)?;
             let rows = statement
-                .query_map(params![after, kind, limit], |row| row.get::<_, String>(0))
+                .query_map(params![query.tenant, after, kind, limit], |row| {
+                    row.get::<_, String>(0)
+                })
                 .map_err(failed)?;
             let mut ids: Vec<String> = rows
                 .collect::<std::result::Result<_, _>>()
@@ -180,13 +191,13 @@ impl Store for SqliteStore {
         .await
     }
 
-    async fn snapshot(&self, session: &SessionId) -> Result<Option<Snapshot>> {
-        let session = session.clone();
+    async fn snapshot(&self, session: &SessionKey) -> Result<Option<Snapshot>> {
+        let (tenant, session) = (session.tenant.clone(), session.id.clone());
         self.run(move |connection| {
             let body: Option<String> = connection
                 .query_row(
-                    "select body from snapshots where session = ?1",
-                    params![session.as_str()],
+                    "select body from snapshots where tenant = ?1 and session = ?2",
+                    params![tenant, session.as_str()],
                     |row| row.get(0),
                 )
                 .optional()
@@ -205,8 +216,8 @@ impl Store for SqliteStore {
         self.run(move |connection| {
             let held: i64 = connection
                 .query_row(
-                    "select count(*) from events where session = ?1",
-                    params![snapshot.session.as_str()],
+                    "select count(*) from events where tenant = ?1 and session = ?2",
+                    params![snapshot.principal.tenant, snapshot.session.as_str()],
                     |row| row.get(0),
                 )
                 .map_err(failed)?;
@@ -224,9 +235,10 @@ impl Store for SqliteStore {
             let transaction = connection.transaction().map_err(failed)?;
             transaction
                 .execute(
-                    "insert into snapshots (session, seq, body) values (?1, ?2, ?3)
-                     on conflict (session) do update set seq = excluded.seq, body = excluded.body",
+                    "insert into snapshots (tenant, session, seq, body) values (?1, ?2, ?3, ?4)
+                     on conflict (tenant, session) do update set seq = excluded.seq, body = excluded.body",
                     params![
+                        snapshot.principal.tenant,
                         snapshot.session.as_str(),
                         i64::try_from(snapshot.seq).unwrap_or(i64::MAX),
                         body
@@ -235,9 +247,13 @@ impl Store for SqliteStore {
                 .map_err(failed)?;
             transaction
                 .execute(
-                    "insert into sessions (session, kind) values (?1, ?2)
-                     on conflict (session) do update set kind = excluded.kind",
-                    params![snapshot.session.as_str(), kind_name(snapshot.kind)],
+                    "insert into sessions (tenant, session, kind) values (?1, ?2, ?3)
+                     on conflict (tenant, session) do update set kind = excluded.kind",
+                    params![
+                        snapshot.principal.tenant,
+                        snapshot.session.as_str(),
+                        kind_name(snapshot.kind)
+                    ],
                 )
                 .map_err(failed)?;
             transaction.commit().map_err(failed)
@@ -245,15 +261,18 @@ impl Store for SqliteStore {
         .await
     }
 
-    async fn events_since(&self, session: &SessionId, seq: u64) -> Result<Vec<Event>> {
-        let session = session.clone();
+    async fn events_since(&self, session: &SessionKey, seq: u64) -> Result<Vec<Event>> {
+        let (tenant, session) = (session.tenant.clone(), session.id.clone());
         self.run(move |connection| {
             let mut statement = connection
-                .prepare("select body from events where session = ?1 and seq >= ?2 order by seq")
+                .prepare(
+                    "select body from events where tenant = ?1 and session = ?2 and seq >= ?3 \
+                     order by seq",
+                )
                 .map_err(failed)?;
             let rows = statement
                 .query_map(
-                    params![session.as_str(), i64::try_from(seq).unwrap_or(i64::MAX)],
+                    params![tenant, session.as_str(), i64::try_from(seq).unwrap_or(i64::MAX)],
                     |row| row.get::<_, String>(0),
                 )
                 .map_err(failed)?;

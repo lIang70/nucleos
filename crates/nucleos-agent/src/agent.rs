@@ -232,7 +232,7 @@ pub fn outstanding_calls(session: &Session) -> Vec<ToolCall> {
 }
 
 async fn outcome(kernel: &Kernel, session: &Session) -> Result<Outcome> {
-    let events = kernel.events(session.id(), 0).await?;
+    let events = kernel.events(session.principal(), session.id(), 0).await?;
     let stop = events.iter().rev().find_map(|event| match &event.kind {
         EventKind::StateChanged { stop, .. } => stop.to_owned(),
         _ => None,
