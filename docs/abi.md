@@ -10,18 +10,18 @@ JSON over HTTP, with server-sent events for the two streams. The contract is
 `schema/v1/schema.json`, generated from the kernel's own types — see [`wire.md`](wire.md) for the
 encoding rules and why the schema is not a separate type tree.
 
-| Route | Body | Returns |
-| --- | --- | --- |
-| `GET /v1/describe` | — | `DescribeResponse` — version, models, ABI version |
-| `POST /v1/agents` | `StartRequest` | `StartResponse` — runs the reference loop to completion |
-| `POST /v1/sessions` | `StartRequest` | `StartResponse` — opens a session, drives nothing |
-| `GET /v1/sessions/{id}` | — | `SessionView` |
-| `POST /v1/sessions/{id}/inference` | `InferenceRequest` | `InferenceResponse` |
-| `POST /v1/sessions/{id}/tools` | `ToolBatchRequest` | `ToolBatchResponse` |
-| `POST /v1/sessions/{id}/state` | `StateRequest` | `204` |
-| `POST /v1/sessions/{id}/close` | — | `StartResponse` |
-| `POST /v1/sessions/{id}/verdict` | `VerdictRequest` | `StartResponse` — runs the loop on |
-| `GET /v1/sessions/{id}/events?from_seq=` | — | `text/event-stream` of `Event` |
+| Route                                    | Body               | Returns                                                 |
+| ---------------------------------------- | ------------------ | ------------------------------------------------------- |
+| `GET /v1/describe`                       | —                  | `DescribeResponse` — version, models, ABI version       |
+| `POST /v1/agents`                        | `StartRequest`     | `StartResponse` — runs the reference loop to completion |
+| `POST /v1/sessions`                      | `StartRequest`     | `StartResponse` — opens a session, drives nothing       |
+| `GET /v1/sessions/{id}`                  | —                  | `SessionView`                                           |
+| `POST /v1/sessions/{id}/inference`       | `InferenceRequest` | `InferenceResponse`                                     |
+| `POST /v1/sessions/{id}/tools`           | `ToolBatchRequest` | `ToolBatchResponse`                                     |
+| `POST /v1/sessions/{id}/state`           | `StateRequest`     | `204`                                                   |
+| `POST /v1/sessions/{id}/close`           | —                  | `StartResponse`                                         |
+| `POST /v1/sessions/{id}/verdict`         | `VerdictRequest`   | `StartResponse` — runs the loop on                      |
+| `GET /v1/sessions/{id}/events?from_seq=` | —                  | `text/event-stream` of `Event`                          |
 
 The machine-readable form of this table is [`openapi/v1/openapi.json`](../openapi/v1/openapi.json):
 `components.schemas` is the JSON Schema this repository already generates, and `paths` is the same
@@ -182,7 +182,7 @@ Rules:
   arguments become a tool result with `is_error`, which the model can read and repair — not a
   failed turn.
 - `degraded` is emitted when a provider cannot honour a request field. A `tool_choice =
-  REQUIRED` that quietly became `AUTO` is a session behaving differently than it was
+REQUIRED` that quietly became `AUTO` is a session behaving differently than it was
   configured to, and the difference is undiscoverable afterwards unless it is recorded.
 - `attempt_failed` appears inside the stream for the same reason: a retry does not erase the
   attempt that failed, or the money it spent.
@@ -205,12 +205,12 @@ always within the ceiling.
 
 `Exposure` has four levels, and all tools are `deferred` unless the policy says otherwise:
 
-| level | in the prompt |
-| --- | --- |
-| `always` | every turn — the configured baseline |
-| `direct` | once found or used, while it stays in the pool |
-| `deferred` | only after a search surfaces it; the default |
-| `hidden` | never, not even via search — still callable by name |
+| level      | in the prompt                                       |
+| ---------- | --------------------------------------------------- |
+| `always`   | every turn — the configured baseline                |
+| `direct`   | once found or used, while it stays in the pool      |
+| `deferred` | only after a search surfaces it; the default        |
+| `hidden`   | never, not even via search — still callable by name |
 
 Two budgets, and they are deliberately different: `policy.budget` (default 32 definitions or
 16 KiB) caps what one prompt carries; `policy.discovery` (default 32 tools, 16 KiB, 10 idle turns)
@@ -220,7 +220,7 @@ prevents.
 
 `tool_search` is registered by the kernel itself whenever there is a catalog, and seeded to
 `always`: a catalog whose only door is hidden is a catalog the model can never enter, so configuring
-it away is refused rather than silently obeyed. It is *shown* only when the policy leaves something
+it away is refused rather than silently obeyed. It is _shown_ only when the policy leaves something
 reachable by no other route — a policy of `always` everywhere hides it, because there is then
 nothing to find. It ranks the catalog and returns names and one-line summaries — never full
 schemas, which would spend the tokens the search exists to save.
@@ -309,7 +309,7 @@ retryable; `BUDGET` is retryable only after `Credit`.
 
 Two details make an error actionable rather than merely typed:
 
-- `retry_after_millis`, because "retryable" does not say *when*. Zero means no hint, not
+- `retry_after_millis`, because "retryable" does not say _when_. Zero means no hint, not
   "immediately".
 - `details`, a machine-readable map — `{"needed_tokens": "40000"}` on `BUDGET` is the
   difference between a caller that can fix it and one that can only report it.
@@ -331,14 +331,14 @@ stops on empty, never on a short page.
 
 ## 9. Mapping to MCP
 
-| nucleos | MCP |
-| --- | --- |
-| tool source | server (stdio or streamable HTTP) |
-| `Tools` (allow-list) | `tools/list` snapshot |
-| `ToolCallStarted` | `tools/call` |
-| `ToolFinished` | `tools/call` result: `content` blocks → `Content.parts`, `isError` → `is_error` |
-| cancel a tool call | `notifications/cancelled` |
-| isolation `process` | the server runs as a child process, so the daemon derives `process` |
+| nucleos              | MCP                                                                             |
+| -------------------- | ------------------------------------------------------------------------------- |
+| tool source          | server (stdio or streamable HTTP)                                               |
+| `Tools` (allow-list) | `tools/list` snapshot                                                           |
+| `ToolCallStarted`    | `tools/call`                                                                    |
+| `ToolFinished`       | `tools/call` result: `content` blocks → `Content.parts`, `isError` → `is_error` |
+| cancel a tool call   | `notifications/cancelled`                                                       |
+| isolation `process`  | the server runs as a child process, so the daemon derives `process`             |
 
 Deliberately unsupported in v1: MCP **sampling** and **elicitation**. The daemon does not
 advertise those client capabilities, so a server that needs them must fall back. Adding
@@ -350,27 +350,27 @@ methods.
 Every one of these has a defensible alternative. The point is to pick one now, because the
 alternative gets chosen accidentally by the first implementation.
 
-| Case | Behaviour |
-| --- | --- |
-| `Run` on a terminal session | Replays from `from_seq` to the last event, then ends the stream. A client never has to know the session already finished. |
-| Two concurrent `Run` streams on one session | Allowed. Each cursor is independent; a stream is a *view*, and no stream can advance or alter state. |
-| `Run` with `from_seq` beyond the last event | `INVALID`, not clamped. Silently skipping events hides a client bug until it costs somebody an incident. |
-| `Start` with `resume` on an unknown id | `NOT_FOUND`. It does not create a session with that id — otherwise a typo becomes a new session and the real one is orphaned. |
-| `Register` with a name that already exists | Replaces it in the pending generation. Idempotent by name, so a retried `Register` cannot create a duplicate source. |
-| `Reload` with no pending changes | No-op. Returns the current generation with no failure and no new generation number. |
-| `Send` while `AWAITING_TOOL` | Accepted and ordered; applied at the next turn boundary. Rejecting it makes callers retry into a race. |
-| `Close` on a running session | Cancels, waits for the turn to resolve, checkpoints, then closes. A `Close` never discards a turn in flight. |
-| `Credit` on a terminal session | `INVALID`. A finished session cannot be revived by paying more. |
-| `Cancel` twice | Idempotent; the second call reports the state the first one produced. |
-| An event kind the client does not know | Ignore it and keep the cursor. `type` is additive; a client that fails on an unknown kind breaks on every future feature. |
-| A `PermissionOption` id the kernel did not offer | `INVALID`. The verdict names an option that was presented, or it is a client bug. |
-| Nobody answers an `AwaitingHuman` | Apply `default_if_unanswered`, which is a refusal. Silence is never approval. |
-| `List` with a `page_token` from an older page set | The token stays valid; it is a key, not an index. `INVALID` only if it cannot be decoded at all. |
-| `Run` before `Start` | `NOT_FOUND`. A stream is a view of a session, and there is nothing to view yet. |
-| `Describe` on an empty daemon | Succeeds with `generation = 0` and no models. A health check must not need a session. |
-| `Deregister` a source a pinned session still uses | Allowed. The source stays alive until the last session on its generation ends; new sessions simply never see it. |
-| `Register` while a `Reload` is in flight | Serialized. Reloads run one at a time and a registration lands in the pending set, so a caller never has to guess which generation it joined. |
-| `Run` open across a `Reload` | Allowed. The migration happens at the next turn boundary and is announced as `generation_migrated` in the same stream. |
+| Case                                              | Behaviour                                                                                                                                     |
+| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Run` on a terminal session                       | Replays from `from_seq` to the last event, then ends the stream. A client never has to know the session already finished.                     |
+| Two concurrent `Run` streams on one session       | Allowed. Each cursor is independent; a stream is a _view_, and no stream can advance or alter state.                                          |
+| `Run` with `from_seq` beyond the last event       | `INVALID`, not clamped. Silently skipping events hides a client bug until it costs somebody an incident.                                      |
+| `Start` with `resume` on an unknown id            | `NOT_FOUND`. It does not create a session with that id — otherwise a typo becomes a new session and the real one is orphaned.                 |
+| `Register` with a name that already exists        | Replaces it in the pending generation. Idempotent by name, so a retried `Register` cannot create a duplicate source.                          |
+| `Reload` with no pending changes                  | No-op. Returns the current generation with no failure and no new generation number.                                                           |
+| `Send` while `AWAITING_TOOL`                      | Accepted and ordered; applied at the next turn boundary. Rejecting it makes callers retry into a race.                                        |
+| `Close` on a running session                      | Cancels, waits for the turn to resolve, checkpoints, then closes. A `Close` never discards a turn in flight.                                  |
+| `Credit` on a terminal session                    | `INVALID`. A finished session cannot be revived by paying more.                                                                               |
+| `Cancel` twice                                    | Idempotent; the second call reports the state the first one produced.                                                                         |
+| An event kind the client does not know            | Ignore it and keep the cursor. `type` is additive; a client that fails on an unknown kind breaks on every future feature.                     |
+| A `PermissionOption` id the kernel did not offer  | `INVALID`. The verdict names an option that was presented, or it is a client bug.                                                             |
+| Nobody answers an `AwaitingHuman`                 | Apply `default_if_unanswered`, which is a refusal. Silence is never approval.                                                                 |
+| `List` with a `page_token` from an older page set | The token stays valid; it is a key, not an index. `INVALID` only if it cannot be decoded at all.                                              |
+| `Run` before `Start`                              | `NOT_FOUND`. A stream is a view of a session, and there is nothing to view yet.                                                               |
+| `Describe` on an empty daemon                     | Succeeds with `generation = 0` and no models. A health check must not need a session.                                                         |
+| `Deregister` a source a pinned session still uses | Allowed. The source stays alive until the last session on its generation ends; new sessions simply never see it.                              |
+| `Register` while a `Reload` is in flight          | Serialized. Reloads run one at a time and a registration lands in the pending set, so a caller never has to guess which generation it joined. |
+| `Run` open across a `Reload`                      | Allowed. The migration happens at the next turn boundary and is announced as `generation_migrated` in the same stream.                        |
 
 One case is deliberately left undefined: a `Send` that arrives after `Cancelling` began.
 The session drains to the boundary and ends; whether the input was consumed is observable
@@ -392,22 +392,22 @@ A stream that can be wrong about order is a stream nobody can build a UI on, so:
 
 ## 11. Not served, and why
 
-| Not an endpoint | Why |
-| --- | --- |
-| Stateless model invocation | This is an agent OS, not a gateway. A host that wants a raw model call links the library; see [`architecture.md`](architecture.md) §7. |
-| Embeddings | A tool: an embedding model belongs with the index and the ranking that use it. |
-| Speech to text, text to speech | A tool. Voice output also needs an artifact store the kernel does not have. |
-| Tool-source registration, reload | Tool sources are declared in the daemon's configuration; discovery lands with the MCP client. |
-| Credit, cancel, list | They need an operator surface; `close` exists because a syscall can do it statelessly. |
+| Not an endpoint                  | Why                                                                                                                                    |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Stateless model invocation       | This is an agent OS, not a gateway. A host that wants a raw model call links the library; see [`architecture.md`](architecture.md) §7. |
+| Embeddings                       | A tool: an embedding model belongs with the index and the ranking that use it.                                                         |
+| Speech to text, text to speech   | A tool. Voice output also needs an artifact store the kernel does not have.                                                            |
+| Tool-source registration, reload | Tool sources are declared in the daemon's configuration; discovery lands with the MCP client.                                          |
+| Credit, cancel, list             | They need an operator surface; `close` exists because a syscall can do it statelessly.                                                 |
 
 An endpoint that exists and returns 501 is a contract nobody can rely on, so these are absent
 rather than declared.
 
 ## 12. Deferred
 
-| Deferred | Why it is safe to defer |
-| --- | --- |
-| Auto-triggered reload (file watch, SIGHUP) | It is a trigger, not a mechanism: it will call `Reload` |
-| Multi-node placement | Sessions are recoverable from the store, so placement is a routing decision above the ABI |
-| Streaming tool arguments | `tools/call` is request/response; partial arguments are a model concern, not a wire concern |
-| Per-session auth scopes | `Principal` is passed through already; scoping it is policy |
+| Deferred                                   | Why it is safe to defer                                                                     |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| Auto-triggered reload (file watch, SIGHUP) | It is a trigger, not a mechanism: it will call `Reload`                                     |
+| Multi-node placement                       | Sessions are recoverable from the store, so placement is a routing decision above the ABI   |
+| Streaming tool arguments                   | `tools/call` is request/response; partial arguments are a model concern, not a wire concern |
+| Per-session auth scopes                    | `Principal` is passed through already; scoping it is policy                                 |

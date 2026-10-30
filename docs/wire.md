@@ -1,7 +1,7 @@
 # The wire
 
 The ABI is JSON over HTTP, with server-sent events for streams. The schema is
-`schema/v1/schema.json`, generated from the kernel's own types — the kernel's shape *is* the
+`schema/v1/schema.json`, generated from the kernel's own types — the kernel's shape _is_ the
 wire shape, which is the trade this design makes in exchange for not maintaining a second type
 tree.
 
@@ -10,10 +10,10 @@ tree.
 
 ## 1. One wire, two bindings
 
-| Deployment | Listener | Authentication |
-| --- | --- | --- |
+| Deployment      | Listener    | Authentication                                 |
+| --------------- | ----------- | ---------------------------------------------- |
 | Local (default) | unix socket | peer credentials — uid and pid from the kernel |
-| Remote (opt-in) | TCP + TLS | token or mTLS |
+| Remote (opt-in) | TCP + TLS   | token or mTLS                                  |
 
 The difference is the listener and the authentication, never the protocol. A local caller is not
 speaking a different dialect: `curl --unix-socket /tmp/nucleosd.sock` is a complete client.
@@ -26,15 +26,15 @@ magnitude larger — and would cost a second implementation in every SDK.
 
 JSON per RFC 8259, UTF-8, `content-type: application/json`.
 
-| Decision | Rule | Why |
-| --- | --- | --- |
-| 64-bit integers | JSON **numbers**, not strings | protobuf's canonical JSON mapping turns `uint64` into a string, so `event.seq + 1` silently becomes `"1231"`. Every value here is far below 2^53. |
-| Enums | `snake_case` strings | `"tool_finished"`, not `20`. A reader without the schema can still tell what it is. |
-| Discriminated unions | `{"kind": "…", …fields}` | Tag inline, fields beside it. One level of nesting, not two. |
-| Unknown union member | **carry it, do not fail** | The union is additive. A client that errors on an unknown `kind` breaks on every future feature. |
-| Absent vs null | absent means "use the default" | `Option` fields are omitted when `None`. `null` is not used and is not equivalent. |
-| Empty vs missing | a missing list is an empty list | A caller should be able to send `{}`. |
-| Unknown fields | ignored | A newer client talking to an older daemon is normal. |
+| Decision             | Rule                            | Why                                                                                                                                               |
+| -------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 64-bit integers      | JSON **numbers**, not strings   | protobuf's canonical JSON mapping turns `uint64` into a string, so `event.seq + 1` silently becomes `"1231"`. Every value here is far below 2^53. |
+| Enums                | `snake_case` strings            | `"tool_finished"`, not `20`. A reader without the schema can still tell what it is.                                                               |
+| Discriminated unions | `{"kind": "…", …fields}`        | Tag inline, fields beside it. One level of nesting, not two.                                                                                      |
+| Unknown union member | **carry it, do not fail**       | The union is additive. A client that errors on an unknown `kind` breaks on every future feature.                                                  |
+| Absent vs null       | absent means "use the default"  | `Option` fields are omitted when `None`. `null` is not used and is not equivalent.                                                                |
+| Empty vs missing     | a missing list is an empty list | A caller should be able to send `{}`.                                                                                                             |
+| Unknown fields       | ignored                         | A newer client talking to an older daemon is normal.                                                                                              |
 
 `meta` — a `map<string,string>` on `Part`, `ToolCall` and `Event` — is the only extension hatch.
 The kernel never reads it, never interprets it, and never rejects an unknown key.
@@ -64,18 +64,18 @@ reconnected did not mean to re-read what it already saw.
 Every failure is the same body, whatever the endpoint:
 
 ```json
-{"code": "denied", "reason": "read_file is not available", "retryable": false}
+{ "code": "denied", "reason": "read_file is not available", "retryable": false }
 ```
 
-| Code | HTTP | Meaning |
-| --- | --- | --- |
-| `invalid` | 400 | The request was malformed |
-| `not_found` | 404 | The thing named does not exist |
-| `denied` | 403 | Policy refused |
-| `budget` | 429 | A budget was exhausted |
-| `timeout` | 504 | A deadline passed |
-| `unavailable` | 503 | A dependency was not reachable |
-| `internal` | 500 | A bug |
+| Code          | HTTP | Meaning                        |
+| ------------- | ---- | ------------------------------ |
+| `invalid`     | 400  | The request was malformed      |
+| `not_found`   | 404  | The thing named does not exist |
+| `denied`      | 403  | Policy refused                 |
+| `budget`      | 429  | A budget was exhausted         |
+| `timeout`     | 504  | A deadline passed              |
+| `unavailable` | 503  | A dependency was not reachable |
+| `internal`    | 500  | A bug                          |
 
 `retryable` is a statement about this request, not about the world. `retry_after_millis` is
 absent when there is no hint — absent, not zero.
@@ -95,10 +95,10 @@ has — protobuf's compiler and `buf breaking` are both gone.
 
 ## 6. What this gives up
 
-| Protobuf had | Now |
-| --- | --- |
-| A neutral source of truth, no language privileged | The Rust types are the source; other SDKs generate from the JSON Schema |
-| `protoc` rejecting a circular import | A `$ref`-resolves test (the graph is genuinely recursive — `Content → Part → ToolResult → Content` — so acyclicity was never the real property) |
-| Binary encoding | JSON: ~2× the bytes and ~90 ns more per event. Measured, and irrelevant against a model call |
-| Generated client stubs | Generated types only; the HTTP client is thin enough to write |
-| Compile-time field presence | `Option` plus a schema; a client still has to read the schema |
+| Protobuf had                                      | Now                                                                                                                                             |
+| ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| A neutral source of truth, no language privileged | The Rust types are the source; other SDKs generate from the JSON Schema                                                                         |
+| `protoc` rejecting a circular import              | A `$ref`-resolves test (the graph is genuinely recursive — `Content → Part → ToolResult → Content` — so acyclicity was never the real property) |
+| Binary encoding                                   | JSON: ~2× the bytes and ~90 ns more per event. Measured, and irrelevant against a model call                                                    |
+| Generated client stubs                            | Generated types only; the HTTP client is thin enough to write                                                                                   |
+| Compile-time field presence                       | `Option` plus a schema; a client still has to read the schema                                                                                   |

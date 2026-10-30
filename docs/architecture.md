@@ -1,16 +1,16 @@
 # Architecture
 
 The kernel's job is to be **correct**: a session's state never goes backwards, a budget
-is never exceeded, an event is never lost. Everything about *policy* — which model,
+is never exceeded, an event is never lost. Everything about _policy_ — which model,
 which tools, who may call what, how much anything costs — is injected.
 
 ## 1. Three principles
 
-| Principle | Means | Consequence |
-| --- | --- | --- |
-| **Mechanism in the kernel, policy outside it** | The kernel guarantees invariants; it never decides what is allowed | The same kernel serves products with different rules without a fork |
-| **The session is the process** | The unit of scheduling, quota, isolation and snapshot is the session — not the agent, not the conversation | Resource boundaries are explicit, and crash recovery has an obvious landing spot |
-| **Every state change is an event** | No "mutate memory, persist occasionally". Append-only | Recovery, replay, audit and resume are one mechanism instead of four |
+| Principle                                      | Means                                                                                                      | Consequence                                                                      |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| **Mechanism in the kernel, policy outside it** | The kernel guarantees invariants; it never decides what is allowed                                         | The same kernel serves products with different rules without a fork              |
+| **The session is the process**                 | The unit of scheduling, quota, isolation and snapshot is the session — not the agent, not the conversation | Resource boundaries are explicit, and crash recovery has an obvious landing spot |
+| **Every state change is an event**             | No "mutate memory, persist occasionally". Append-only                                                      | Recovery, replay, audit and resume are one mechanism instead of four             |
 
 An agent is stateless decision logic. A session is the thing that owns resources. Drawing
 that line in the wrong place makes everything downstream ambiguous.
@@ -46,25 +46,25 @@ A tenant is a **label**, not a partition. The kernel carries `tenant` on every s
 passes it to policy; it does not shard storage, does not isolate event logs, and does not
 decide that two tenants may not see each other.
 
-That is deliberate. Isolation between tenants is a property of the *deployment* — separate
+That is deliberate. Isolation between tenants is a property of the _deployment_ — separate
 databases, separate accounts, separate processes — and a kernel that pretended to provide
 it through a field would be offering a guarantee it cannot keep.
 
 Two consequences worth stating because they are easy to get wrong:
 
 - `List(tenant)` filters for convenience. **It is not an authorization boundary.** The
-daemon decides what a caller may see; the kernel just answers the query it was given.
+  daemon decides what a caller may see; the kernel just answers the query it was given.
 - A shared store with a `tenant` column is a deployment choice, and the operator must know
-it is one.
+  it is one.
 
 ### 2.2 Isolation
 
 Two layers, and the split is the whole design:
 
-| Layer | Who sets it | Where it lives |
-| --- | --- | --- |
-| **Policy** — what a session's commands may touch | the operator | `SessionSpec.sandbox`, carried in the checkpoint |
-| **Permissions** — what one command asks for on top | the caller | a field of that one `exec` |
+| Layer                                              | Who sets it  | Where it lives                                   |
+| -------------------------------------------------- | ------------ | ------------------------------------------------ |
+| **Policy** — what a session's commands may touch   | the operator | `SessionSpec.sandbox`, carried in the checkpoint |
+| **Permissions** — what one command asks for on top | the caller   | a field of that one `exec`                       |
 
 `SandboxPolicy` is `danger_full_access`, `read_only`, `workspace_write` or `external_sandbox`,
 each with a network flag. `SandboxPermissions` is `use_default`, `require_escalated`, or
@@ -126,7 +126,7 @@ one operation an operator actually wants mid-incident.
 So `ConfigPatch.sandbox` exists and `narrows_to` decides. Narrowing is a configuration change:
 `workspace_write` → `read_only`, dropping an extra root, turning the network off. Widening is
 refused — `read_only` → `workspace_write`, adding a root, `danger_full_access` — because more room
-for a whole session is an escalation, and an escalation is decided about *one command* by the gate,
+for a whole session is an escalation, and an escalation is decided about _one command_ by the gate,
 with a human in the loop. The two are different acts and they keep different doors.
 
 The order is by what a process may touch, not by name: `read_only` is narrower than
@@ -147,9 +147,9 @@ means a killed kernel leaves no unreapable process, and `--new-session` keeps a 
 terminal. `--share-net` appears only when the policy allows the network — the one place the blanket
 `--unshare-all` is bent, said in the same breath as the rule it bends.
 
-Landlock is not wired up. It would add path rules *inside* those mounts, and the bind mounts already
+Landlock is not wired up. It would add path rules _inside_ those mounts, and the bind mounts already
 answer "may this command write here"; a second mechanism that can disagree with the first is a second
-thing to get wrong. It becomes interesting the day a policy needs to restrict *reading*, which none
+thing to get wrong. It becomes interesting the day a policy needs to restrict _reading_, which none
 in this ABI do.
 
 What is verified where is stated rather than implied: the command line is built by a pure function
@@ -239,7 +239,7 @@ Three shapes are deliberate and easy to get wrong:
   the error text is what the model must read in order to recover. `Err` would leave the model
   with a failure it cannot see.
 - **`Model::invoke` does return `Result`.** An error there means the call never started; an
-  error *inside* the stream means it started and then failed — which still costs money and
+  error _inside_ the stream means it started and then failed — which still costs money and
   still has to be recorded.
 - **`count_tokens` is required, with no default.** A context budget the kernel cannot compute
   is a budget it cannot enforce, and a built-in "characters divided by four" would be the
@@ -252,7 +252,7 @@ Three shapes are deliberate and easy to get wrong:
 separate so the kernel can be tested with a two-line double.
 
 That double lives in `nucleos-testkit`, which no binary depends on. It used to live in
-`nucleos::adapter::fake`, in the production crate, and the daemon ended up *running* it: an
+`nucleos::adapter::fake`, in the production crate, and the daemon ended up _running_ it: an
 in-memory store and an allow-everything policy shipped as the deployment. A fake in the crate
 everything links is a fake one `use` away from being the product, and nothing in a build says which.
 
@@ -275,7 +275,7 @@ Created → Running ─┬→ AwaitingTool ──→ AwaitingHuman   (a batch th
                    └→ (turn boundary) Checkpoint
 ```
 
-A tool turn asks policy about the whole batch *before* running any of it, so a batch that needs
+A tool turn asks policy about the whole batch _before_ running any of it, so a batch that needs
 a human parks with nothing executed — which is why the edge from `AwaitingTool` to
 `AwaitingHuman` exists.
 
@@ -304,7 +304,7 @@ different axes and must not be collapsed.
 
 A tool's answer is a **`Content` plus an `is_error` flag**, not a string and not a
 success/failure branch. Content folds into history without an adapter, so a tool that
-returns text and an image uses one code path; and a *failed* call still carries content,
+returns text and an image uses one code path; and a _failed_ call still carries content,
 because the error text is what the model must read to recover. The only restriction is that
 a tool result's content may not contain another tool call — `Content` and `Part` are
 mutually recursive, so that rule is what keeps the nesting one level deep.
@@ -344,7 +344,7 @@ adding one was a mistake that this section exists to prevent from coming back.
 
 The argument for it was that normalization, routing, retries and cost accounting are one package,
 so a caller who wants one wants all of them. That argument is real — and it is an argument about
-*inside a session*, which is where all four already live. A host that wants a raw model call does
+_inside a session_, which is where all four already live. A host that wants a raw model call does
 not need an ABI for it: it links the library.
 
 What a gateway endpoint would cost is not code, it is coherence. Once `/generate` exists, the
@@ -373,11 +373,11 @@ says so when it is told nothing.
 Tools are declared as **sources**, not as definitions pushed through the ABI. A source is
 an MCP endpoint:
 
-| Field | Meaning |
-| --- | --- |
-| `name` | source identity |
-| transport | `stdio` (command) or `http` (URL + auth) |
-| `allow` | which advertised tools are exposed to sessions |
+| Field     | Meaning                                        |
+| --------- | ---------------------------------------------- |
+| `name`    | source identity                                |
+| transport | `stdio` (command) or `http` (URL + auth)       |
+| `allow`   | which advertised tools are exposed to sessions |
 
 Isolation is not a field a source declares. It is **derived** by the daemon from how it reached
 the source — a spawned child, an HTTP endpoint, an in-process closure — because that is a fact the
@@ -397,7 +397,7 @@ G.refcount == 0      → retire, close connections
 
 Because the set is immutable, compatibility is a pure function of two generations:
 
-- **Compatible** — same tool names, structurally equal input schemas (new *optional*
+- **Compatible** — same tool names, structurally equal input schemas (new _optional_
   properties allowed), and the same derived isolation descriptor. The session migrates to the
   latest generation **at its next turn boundary**, recorded as a `generation_migrated` event.
   The isolation term is the one that cannot be dropped: a tool whose name and schema are unchanged
@@ -437,7 +437,7 @@ Three rules make the rebuild safe:
 
 - **The failed call is not retried.** A tool call is not assumed idempotent, and the server may have
   run it before the pipe broke. The failure is reported as content with the reason, the connection
-  is restored, and the *next* call is the retry — a deliberate one, by whoever can read what
+  is restored, and the _next_ call is the retry — a deliberate one, by whoever can read what
   happened.
 - **A reconnect may not change the answer.** The tools are pinned at connect time. A server that
   comes back advertising a different set is refused, because adopting it would leave a generation
@@ -448,7 +448,7 @@ Three rules make the rebuild safe:
   concurrent calls never produce two children. Callers inside the window are told when the next
   attempt is, rather than being handed a spawn failure they can do nothing with.
 
-The cell also decides what a *failure* is: only a transport-level error means the child is gone. A
+The cell also decides what a _failure_ is: only a transport-level error means the child is gone. A
 tool that answered with `isError` answered — the model has to read that, and reconnecting over it
 would turn a refusal into a crash report.
 
@@ -464,10 +464,10 @@ slower and duller.
 
 So a session has **two** tool sets, and they mean different things:
 
-| | Who sets it | Rule |
-| --- | --- | --- |
-| **ceiling** (`config.tools`) | the application, at `open` or `configure` | may only narrow |
-| **exposure** (`config.tool_policy`) | the application, or a search tool asking | always within the ceiling |
+|                                     | Who sets it                               | Rule                      |
+| ----------------------------------- | ----------------------------------------- | ------------------------- |
+| **ceiling** (`config.tools`)        | the application, at `open` or `configure` | may only narrow           |
+| **exposure** (`config.tool_policy`) | the application, or a search tool asking  | always within the ceiling |
 
 Everything is `deferred` by default. A session that has configured nothing sees exactly one tool —
 `tool_search` — and reaches the rest through it. The alternative, showing everything unless told
@@ -490,7 +490,7 @@ because a baseline that can be evicted by its own discoveries is not a baseline.
 #### What a search changes
 
 A search changes exactly one thing: names enter the pool. The search result is content — a line per
-hit, name and summary — and the *display* consequence arrives in the next prompt, because the turn
+hit, name and summary — and the _display_ consequence arrives in the next prompt, because the turn
 being answered was built before the result existed. There is no way around that ordering, and
 pretending otherwise would mean mutating a prompt mid-flight.
 
@@ -503,7 +503,7 @@ The next prompt is then built in four steps, in this order:
    same history build the same prompt;
 4. **budget** — by count, then by bytes.
 
-Two details in step 4 are load-bearing. The baseline is admitted *whatever the budget says*: an
+Two details in step 4 are load-bearing. The baseline is admitted _whatever the budget says_: an
 application's own `always` set vanishing because discovery filled the room would be the
 configuration overridden by the thing meant to enforce it, and a prompt that loses its door cannot
 ask for it back. And a schema that does not fit the byte budget is **skipped, not treated as the
@@ -518,7 +518,7 @@ second, wrong truth.
 `hidden` exists so that "do not advertise this" and "do not allow this" stay separable. A hidden
 tool is still callable by name and still gated; only the prompt forgets it.
 
-Exposure is a *display* concern. A tool that is not exposed can still be called by name, and
+Exposure is a _display_ concern. A tool that is not exposed can still be called by name, and
 execution goes through the same gate either way — narrowing exposure therefore cannot grant a
 permission, and widening it cannot bypass one. Conflating the two would make "hide the tool" and
 "forbid the tool" the same act, and then the only way to forbid would be to hide, which the model
@@ -571,19 +571,17 @@ re-deriving it.
 
 There is no generic "record an event" syscall either. It existed, and it was how the loop outsourced
 this enforcement; with the enforcement moved, its only remaining use was forging events the kernel
-would have to accept as fact. A caller writes *state*; the kernel writes the record.
-
-
+would have to accept as fact. A caller writes _state_; the kernel writes the record.
 
 Budget is enforced as flow control, not as a post-hoc check: the caller grants credit,
 each `usage` event spends it, exhaustion drains the session and writes a checkpoint.
 
-| Layer | Enforced by |
-| --- | --- |
+| Layer         | Enforced by                                    |
+| ------------- | ---------------------------------------------- |
 | tokens / cost | credit from the caller, debited per model call |
-| steps | the driver, per turn |
-| wall clock | the kernel, via `Clock` |
-| policy | `Verdict::Deny` before the tool runs |
+| steps         | the driver, per turn                           |
+| wall clock    | the kernel, via `Clock`                        |
+| policy        | `Verdict::Deny` before the tool runs           |
 
 The ledger records every attempt — including attempts that failed after streaming a
 partial answer. Under-reporting cost is the one direction nobody forgives.
@@ -603,20 +601,51 @@ is evidence), and **resumption** (`Run(from_seq)` needs no extra machinery).
 The cost is event-schema evolution, paid up front: every event carries `schema_version`
 and there is an upcaster table from day one.
 
+## 10.1 Reloading a session that died mid-turn
+
+A checkpoint is a cache of the log, not a replacement for it. `load` used to read only the snapshot,
+so every event written after the last checkpoint was invisible: the tokens a half-finished turn had
+already been billed for, the message it completed just before the crash, a configuration change made
+after the last boundary. Reloading therefore **lost paid work**, silently.
+
+`load` now folds the tail — `events_since(snapshot.seq + 1)` — and every event kind is classified
+explicitly:
+
+| Class | Meaning | Examples |
+| --- | --- | --- |
+| **State** | it changed something the session carries | `usage`, `message_completed`, `tool_finished`, `state_changed`, `session_configured`, `generation_migrated`, `tools_exposed`, `budget_exhausted` |
+| **Narrative** | it describes what a consumer saw | deltas, `capability_degraded`, `progress`, `exec_*` |
+| **Abandoned** | evidence of a turn that never finished | `tool_call_started`, `tool_call_args` |
+
+The catch-all is **absent on purpose**: a new event kind that nothing classified is a compile error,
+not a silent no-op.
+
+Three details carry the design:
+
+- **The ledger is keyed by attempt.** A stream reports usage several times for one attempt; folding
+  each report into its own entry would turn one bill into eight.
+- **An abandoned turn is recorded, not resumed.** No provider can resume a stream, so the session does
+  not pretend the message completed — the model does not get a fragment it never finished writing —
+  and the log gains one `attempt_failed` naming the reason. The spend is kept, and the partial text
+  stays in the stream, where a caller can read it.
+- **Recovery is idempotent.** A completed unit of work — a message, a tool result, a failed attempt, a
+  state change — clears any evidence before it. That makes a second `load` a no-op, and makes a real
+  crash *after* a successful turn still visible.
+
 ## 11. Context management
 
 A session outlives its model's context window. Three mechanisms, and the split between them is the
 design:
 
-| Mechanism | Owner | Why there |
-| --- | --- | --- |
-| **measure and refuse** | kernel | it is the only place holding the window, the reserve and the prompt at once, and a silent truncation is banned |
-| **compaction** | the caller | it is editing the caller's message list, and there are many strategies |
-| **page-in** | a tool | an index, an embedding model and a ranking function belong in a tool |
+| Mechanism              | Owner      | Why there                                                                                                      |
+| ---------------------- | ---------- | -------------------------------------------------------------------------------------------------------------- |
+| **measure and refuse** | kernel     | it is the only place holding the window, the reserve and the prompt at once, and a silent truncation is banned |
+| **compaction**         | the caller | it is editing the caller's message list, and there are many strategies                                         |
+| **page-in**            | a tool     | an index, an embedding model and a ranking function belong in a tool                                           |
 
 The reasoning behind the middle row is worth stating, because the obvious design is wrong. The
 kernel does not assemble prompts: `inference(session, messages)` takes the conversation from the
-caller. Compaction *is* editing that list, so a kernel that compacted would be rewriting data it does
+caller. Compaction _is_ editing that list, so a kernel that compacted would be rewriting data it does
 not own — and it would have to pick one strategy, in a place where summarising, sliding windows,
 tool-result eviction, importance marking and retrieval all exist and fail differently.
 
@@ -642,7 +671,7 @@ Three refusals, each for a failure that is otherwise silent:
   enforce, and `count_tokens` is required by the contract for exactly this.
 
 The check runs inside the route, so a fallback model with a larger window still gets its chance —
-the prompt did not fit *that* model, which is a fact about one target, not about the call.
+the prompt did not fit _that_ model, which is a fact about one target, not about the call.
 
 ### 11.2 Compaction is the caller's, record included
 
@@ -700,11 +729,11 @@ caller's compaction changes the view without touching the log.
 
 Three claims, and the daemon only makes the ones it can keep:
 
-| Claim | How |
-| --- | --- |
-| only the local user can connect | the socket lives in a `0700` directory and is `0600` |
-| a request carries a credential | `NUCLEOS_TOKEN`, checked on **every** route including `describe` |
-| every session belongs to somebody | one principal from `NUCLEOS_PRINCIPAL`, for now |
+| Claim                             | How                                                              |
+| --------------------------------- | ---------------------------------------------------------------- |
+| only the local user can connect   | the socket lives in a `0700` directory and is `0600`             |
+| a request carries a credential    | `NUCLEOS_TOKEN`, checked on **every** route including `describe` |
+| every session belongs to somebody | one principal from `NUCLEOS_PRINCIPAL`, for now                  |
 
 Peer credentials (`LOCAL_PEERCRED`) would be the better first row, and they need `unsafe`, which this
 workspace forbids. So the check is pushed to the one place that can enforce it without it — the
@@ -724,10 +753,10 @@ Two things, and the absence of the rest is deliberate.
 Libraries emit through **`tracing`**; only the binary installs a subscriber. That split is the whole
 decision:
 
-| | Decides |
-| --- | --- |
-| a library (kernel, adapters, store, policy) | *what* happened, as structured fields |
-| `nucleosd` | format, sink, level (`NUCLEOS_LOG`, JSON, stdout) |
+|                                             | Decides                                           |
+| ------------------------------------------- | ------------------------------------------------- |
+| a library (kernel, adapters, store, policy) | _what_ happened, as structured fields             |
+| `nucleosd`                                  | format, sink, level (`NUCLEOS_LOG`, JSON, stdout) |
 
 A library that picked its own output is a library a host cannot embed, and a kernel that wrote files
 is a kernel with an opinion about deployments. `tracing` over `log` for one reason that matters here:
@@ -754,7 +783,7 @@ not poll a graceful-shutdown future, which was a broken test harness killing the
 
 **Counters, at `GET /v1/metrics`.** Which route was called how many times, how many requests were
 refused, how many sessions opened, how many stopped on budget, how many reloads, and how long the
-daemon has been counting. Keyed by route *template*: a thousand sessions would otherwise be a
+daemon has been counting. Keyed by route _template_: a thousand sessions would otherwise be a
 thousand keys, and a counter with unbounded cardinality is a memory leak wearing a metric's name.
 
 **One record per request.** Method, route, status, duration, through the same subscriber as
@@ -777,21 +806,21 @@ log, which is the record rather than a statistic.
 
 ## 13. Non-goals
 
-| Not building | Why |
-| --- | --- |
-| A scheduler or memory allocator | `tokio` and the OS already provide them; we schedule turns |
-| A wire protocol to our own tools | MCP exists; we are a client |
-| Identity, signing, certificates | The daemon's job; the kernel takes `Principal` as data |
-| Cluster placement, supervision, self-healing | A platform concern; the kernel does not know how many nodes exist |
-| A provider-specific parameter bag | One extension hatch is enough; the five parameters every provider has are carried explicitly |
-| Multiple ABI bearers (in-process / child / remote as one abstraction) | The most expensive kind of debt: every interface is forced to the most conservative shape |
-| Live tool swapping inside a turn | Replaced only at turn boundaries |
-| Auto-triggered reload (file watch) | Deferred; reload is explicitly requested |
+| Not building                                                          | Why                                                                                          |
+| --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| A scheduler or memory allocator                                       | `tokio` and the OS already provide them; we schedule turns                                   |
+| A wire protocol to our own tools                                      | MCP exists; we are a client                                                                  |
+| Identity, signing, certificates                                       | The daemon's job; the kernel takes `Principal` as data                                       |
+| Cluster placement, supervision, self-healing                          | A platform concern; the kernel does not know how many nodes exist                            |
+| A provider-specific parameter bag                                     | One extension hatch is enough; the five parameters every provider has are carried explicitly |
+| Multiple ABI bearers (in-process / child / remote as one abstraction) | The most expensive kind of debt: every interface is forced to the most conservative shape    |
+| Live tool swapping inside a turn                                      | Replaced only at turn boundaries                                                             |
+| Auto-triggered reload (file watch)                                    | Deferred; reload is explicitly requested                                                     |
 
 ## 14. Stages
 
-| Stage | Content | Passes when |
-| --- | --- | --- |
-| P1 | contract + kernel + in-memory store + one model adapter + one MCP source | a multi-turn session with a tool call runs end to end |
-| P2 | SQLite store, checkpoint/restore, credit enforcement | `kill -9` then resume continues the session |
-| P3 | context management: budget, compaction, retrieval references | a session stays coherent past the model's context window |
+| Stage | Content                                                                  | Passes when                                              |
+| ----- | ------------------------------------------------------------------------ | -------------------------------------------------------- |
+| P1    | contract + kernel + in-memory store + one model adapter + one MCP source | a multi-turn session with a tool call runs end to end    |
+| P2    | SQLite store, checkpoint/restore, credit enforcement                     | `kill -9` then resume continues the session              |
+| P3    | context management: budget, compaction, retrieval references             | a session stays coherent past the model's context window |

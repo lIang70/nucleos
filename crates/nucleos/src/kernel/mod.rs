@@ -15,6 +15,7 @@ pub(crate) mod config;
 pub(crate) mod inference;
 pub(crate) mod lifecycle;
 pub(crate) mod process;
+pub(crate) mod replay;
 pub(crate) mod route;
 pub(crate) mod sandbox;
 pub(crate) mod session;

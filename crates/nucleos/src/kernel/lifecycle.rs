@@ -68,12 +68,57 @@ impl Kernel {
             .snapshot(id)
             .await?
             .ok_or_else(|| Error::not_found(format!("no checkpoint for session {id}")))?;
-        Ok(session::Session::from_snapshot(
-            snapshot,
+        let mut session = session::Session::from_snapshot(
+            snapshot.clone(),
             principal.clone(),
             Default::default(),
             self.now(),
-        ))
+        );
+
+        // The checkpoint is a cache; the log is the truth. Everything written after it — the tokens
+        // a turn spent, the messages it completed, a configuration change — is folded in here, or a
+        // reload hands back a session that owes money it forgets and forgets work it was told.
+        let tail = self.store.events_since(id, snapshot.seq + 1).await?;
+        let mut unfinished = false;
+        for event in &tail {
+            if super::replay::fold(&mut session, event) == super::replay::Applied::AbandonedTurn {
+                unfinished = true;
+            }
+            // A completed unit ends any evidence before it: a turn that finished is not abandoned,
+            // whatever deltas preceded it. This is also what makes a second recovery a no-op — the
+            // record written the first time is itself such an event.
+            if super::replay::completes_a_unit(&event.kind) {
+                unfinished = false;
+            }
+            session
+                .seq
+                .store(event.seq + 1, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        // A turn the runtime did not survive is recorded rather than inferred. Nothing else in the
+        // log says it happened: the deltas are there, but they look the same as a turn that is still
+        // streaming.
+        if unfinished && session.state == crate::contract::SessionState::Open {
+            let attempt = crate::contract::Attempt {
+                index: u32::try_from(session.ledger.len()).unwrap_or(u32::MAX),
+                model: session.routing.chain.first().cloned().unwrap_or_default(),
+                phase: crate::contract::AttemptPhase::Execute,
+                trigger: crate::contract::AttemptTrigger::Selection,
+                outcome: crate::contract::AttemptOutcome::Failed {
+                    code: crate::contract::ErrorCode::Unavailable,
+                    reason: super::replay::ABANDONED.to_owned(),
+                },
+                usage: crate::contract::Usage::default(),
+                duration_millis: 0,
+                degraded: Vec::new(),
+            };
+            self.emit(
+                &mut session,
+                crate::contract::EventKind::AttemptFailed { attempt },
+            )
+            .await?;
+        }
+        Ok(session)
     }
     /// Close a session. Further calls are refused.
     pub async fn close(&self, session: &mut session::Session, reason: StopReason) -> Result<()> {

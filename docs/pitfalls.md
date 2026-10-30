@@ -10,7 +10,7 @@ Conversation is a stream inside it.
 
 **Why.** Pausing a conversation for thirty minutes and resuming it raises questions that
 must be answered explicitly — is the context retained, the temp directory, the token
-quota? If the session *is* the conversation, the answer is implicit and usually wrong. If
+quota? If the session _is_ the conversation, the answer is implicit and usually wrong. If
 the session owns resources, every one of those questions has a home.
 
 **Failure it prevents.** "User reconnected and the quota was already spent", "resume
@@ -32,8 +32,8 @@ results for one call, or a ledger that disagrees with the message history.
 **Decision.** Credit is granted by the caller and debited by `usage` events. Exhaustion
 drains the session.
 
-**Why.** A budget checked *before* a call cannot stop a call that overshoots. A budget
-checked *after* only reports the damage. Credit makes the two the same operation.
+**Why.** A budget checked _before_ a call cannot stop a call that overshoots. A budget
+checked _after_ only reports the damage. Credit makes the two the same operation.
 
 **Failure it prevents.** A runaway loop that discovers it exceeded budget after the
 invoice.
@@ -58,7 +58,7 @@ arrives.
 
 **Decision.** `Register` takes a transport descriptor. Tool specs are discovered over MCP.
 
-**Why.** The moment a tool *definition* travels over the ABI, the ABI becomes a plugin
+**Why.** The moment a tool _definition_ travels over the ABI, the ABI becomes a plugin
 protocol — and then it needs code carrying, sandbox descriptors, version negotiation, hot
 loading and crash isolation. That is a different product.
 
@@ -86,14 +86,14 @@ machine-checkable and cannot lie about itself.
 
 ## 9. The kernel does not know the transport
 
-**Decision.** The kernel's types *are* the wire format: `contract.rs` derives `JsonSchema` beside
+**Decision.** The kernel's types _are_ the wire format: `contract.rs` derives `JsonSchema` beside
 `Serialize`. What stays out of the kernel is the **transport** — `axum`, `hyper`, `tower`, sockets,
 authentication — and a structural test fails if any of them appears in its manifest.
 
 **Why the line moved.** It used to run between the kernel and the wire, and the price was a
 623-line translation layer plus a second type tree. JSON has none of protobuf's odd corners
 (`uint64` as a string, `oneof` as `Option`) that made the separation pay for itself, so the
-cheaper line is the one between *what a message is* and *how it travels*.
+cheaper line is the one between _what a message is_ and _how it travels_.
 
 **What it still buys.** A host that embeds the kernel inherits no web framework, and the
 transport can be replaced without touching a single domain type.
@@ -160,7 +160,7 @@ SDK generated from a schema nobody regenerated.
 **Decision.** A tool returns `Content` plus `is_error` — not a JSON string, and not a
 success/failure branch.
 
-**Why content.** A tool returns *content*: text, an image, a reference. A string forces
+**Why content.** A tool returns _content_: text, an image, a reference. A string forces
 every SDK to write a second renderer for text and makes an image-returning tool impossible
 without a side channel. Reusing the content model means the result folds into history with
 no adapter at all.
@@ -206,15 +206,15 @@ accumulate is now missing.
 **Decision.** Each of these was considered and turned down. They are written here so the
 next person does not have to consider them again.
 
-| Refused | Why |
-| --- | --- |
-| Splitting a conversation id from a task id | Two ids means two lifecycles. The split exists to serve cross-organisation multi-agent orchestration, which is out of scope; one session is both. |
-| A UI-shaped event vocabulary (state snapshots, JSON-Patch deltas) | Most of it is a client state machine. The kernel emits facts; deriving state from them is the client's job. |
-| JSON-RPC over stdio as the transport | Copy semantics, not transports. stdio is optimised for being embedded in an editor; we serve long-lived sessions. |
-| Versioning by header | The version lives in the path. A header version is the field every SDK eventually forgets to set. |
-| A polling handle for long operations | The event stream already answers "is it done". A second mechanism is a second truth. |
-| Offset/limit pagination | Offsets break when rows are created and retired, which is exactly what sessions do. |
-| A second extension point | Two hatches means everyone uses the other one. `meta` is the only one. |
+| Refused                                                           | Why                                                                                                                                               |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Splitting a conversation id from a task id                        | Two ids means two lifecycles. The split exists to serve cross-organisation multi-agent orchestration, which is out of scope; one session is both. |
+| A UI-shaped event vocabulary (state snapshots, JSON-Patch deltas) | Most of it is a client state machine. The kernel emits facts; deriving state from them is the client's job.                                       |
+| JSON-RPC over stdio as the transport                              | Copy semantics, not transports. stdio is optimised for being embedded in an editor; we serve long-lived sessions.                                 |
+| Versioning by header                                              | The version lives in the path. A header version is the field every SDK eventually forgets to set.                                                 |
+| A polling handle for long operations                              | The event stream already answers "is it done". A second mechanism is a second truth.                                                              |
+| Offset/limit pagination                                           | Offsets break when rows are created and retired, which is exactly what sessions do.                                                               |
+| A second extension point                                          | Two hatches means everyone uses the other one. `meta` is the only one.                                                                            |
 
 **Why this is written down.** Each is a plausible proposal that will be made again, usually
 by somebody reasonable. A refusal without a reason is indistinguishable from an oversight,
@@ -230,7 +230,7 @@ document, and not in a list of precedents.
 removed.
 
 **Why.** The argument for it — normalization, routing, retries and cost accounting come as one
-package — is an argument about *inside a session*, which is where all four already are. Outside a
+package — is an argument about _inside a session_, which is where all four already are. Outside a
 session the same argument becomes a second product with its own scope: once `/generate` exists,
 "why can't it embed?" has no answer except "yet".
 
@@ -296,7 +296,7 @@ construction, and neither problem exists.
 ## 25. An `always` outside the ceiling is refused at the door
 
 **Decision.** `configure` rejects an `always` entry naming a tool that `tools` does not allow; a
-*tool's* request for such a name is silently dropped instead.
+_tool's_ request for such a name is silently dropped instead.
 
 **Why.** The two are different acts. An application asking for a contradictory configuration has
 made a mistake, and the error is the useful answer. A search tool asking is just a ranker doing its
@@ -316,7 +316,7 @@ this tool exists.
 and the ceiling becomes decoration. Keeping the widening at the kernel means there is exactly one
 place that decides, and that place already knows the ceiling and writes the event.
 
-**What it also buys.** The request is *data*, so it survives a batch: eight calls run, eight
+**What it also buys.** The request is _data_, so it survives a batch: eight calls run, eight
 requests come back, the kernel applies them once and records one event.
 
 ## 27. A single-character ASCII term is not a search term
@@ -342,7 +342,7 @@ the misfire is visible instead of looking like a bad index.
 twenty-ninth tool is as visible as the first, and the prompt pays for all of them on every call.
 Deferring by default makes the catalog's size stop mattering.
 
-**The trap in the other direction.** With everything deferred, the *only* way in is `tool_search`,
+**The trap in the other direction.** With everything deferred, the _only_ way in is `tool_search`,
 so hiding it silently turns the session into one that can see nothing and has no way to ask. A
 policy that names it as anything but `always` is refused rather than obeyed.
 
@@ -361,7 +361,7 @@ absent: it reads as a checked invariant.
 
 **Where the concept went.** Generation compatibility still has to compare it — same name, same
 schema, weaker isolation is a silent permission downgrade that every other check passes. It returns
-then, *derived* by the daemon from how it reached the source, and it is not a tool's to declare: a
+then, _derived_ by the daemon from how it reached the source, and it is not a tool's to declare: a
 tool describing its own isolation is the claim the check was supposed to be verifying.
 
 ## 30. No size threshold decides behaviour
@@ -374,7 +374,7 @@ not consulted at all. That quietly reversed the application's explicit configura
 app declared `hidden` was shown, because the catalog happened to be small — and it made the same
 configuration behave differently in development and in production, where more sources connect.
 
-**The rule underneath.** A kernel may choose a *default*; it may not ignore a value the caller set.
+**The rule underneath.** A kernel may choose a _default_; it may not ignore a value the caller set.
 If a small catalog should not pay for search, the application says so with `default: always`, and
 the search tool disappears for a reason that is written down in the session's own state.
 
@@ -713,5 +713,25 @@ said so. The message names the test and the reason, so a green suite does not im
 mechanism.
 
 **Why `bwrap` is looked up first.** A missing binary otherwise surfaces as "No such file or directory"
-from a spawn that reports the *inner* command, which sends the reader to the wrong program entirely.
+from a spawn that reports the _inner_ command, which sends the reader to the wrong program entirely.
+
+## 55. A checkpoint is a cache; the log is the truth
+
+**Decision.** `load` folds every event after the snapshot's sequence number.
+
+**Why.** The kernel checkpoints at turn boundaries, so a process that dies mid-turn leaves events
+after the last checkpoint — and the old `load` ignored all of them. The session came back owing money
+it had forgotten and missing a message it had completed. Nothing failed loudly: the numbers were
+simply smaller than reality, which is the worst kind of wrong for a system whose whole claim is "the
+log is the record".
+
+**Why the classification is exhaustive.** With a catch-all arm, a new event kind silently becomes
+"describes nothing, changes nothing". Without one, adding a kind forces the author to decide whether a
+reloaded session is affected — a question with an answer, asked once, at compile time.
+
+**Why an abandoned turn is recorded and not resumed.** Providers cannot resume a stream, and a
+truncated assistant message is a fragment the model would reason from as if it had finished. So the
+partial stays in the event stream (a caller can read it), the session does not adopt it, and one
+`attempt_failed` says what happened. The next `load` appends nothing more: the record itself counts as
+a completed unit, which is what makes recovery idempotent instead of cumulative.
 

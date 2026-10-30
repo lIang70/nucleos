@@ -1,0 +1,187 @@
+//! Bringing a session up to the log's head after it was reloaded.
+//!
+//! A checkpoint is a cache of the log, not a replacement for it. The kernel writes one at turn
+//! boundaries, so a process that dies mid-turn leaves events *after* the last checkpoint: the tokens
+//! it paid for, the text it had already streamed, the tool call it had started. Loading only the
+//! snapshot threw all of that away — which is why a crash used to lose paid work.
+//!
+//! So `load` folds the tail. Every event kind is classified explicitly, and the classification is
+//! the design:
+//!
+//! - **State** — the event changed something the session carries, so it is applied.
+//! - **Narrative** — the event describes what a consumer saw, not what the session is. Deltas are
+//!   the stream a client renders; replaying them into state would rebuild a message the model never
+//!   finished. They stay in the log, where a caller can read them.
+//!
+//! The catch-all is absent on purpose: a new event kind that nothing classified is a compile error,
+//! not a silent no-op. That is the failure this module exists to avoid, one layer down.
+//!
+//! ## What a half-finished turn becomes
+//!
+//! It is not resumed (no provider can resume a stream) and it is not silently dropped. The session
+//! records an `attempt_failed` naming the reason, keeps the spend, and does not pretend the message
+//! completed — the model's next turn does not see a fragment it never finished writing.
+
+use super::session::Session;
+use crate::contract::{Attempt, AttemptOutcome, AttemptPhase, AttemptTrigger, Event, EventKind, Role};
+use crate::contract::Message;
+
+/// What folding one event did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Applied {
+    /// It changed session state.
+    State,
+    /// It describes what happened, not what the session is.
+    Narrative,
+    /// It arrived mid-turn and the turn never finished.
+    AbandonedTurn,
+}
+
+/// Fold one event into a loaded session.
+pub(crate) fn fold(session: &mut Session, event: &Event) -> Applied {
+    match &event.kind {
+        EventKind::StateChanged { state, stop } => {
+            session.state = *state;
+            session.stop = *stop;
+            Applied::State
+        }
+        EventKind::SessionConfigured { patch } => {
+            // The patch was validated when it was applied, and re-validating would re-run
+            // `configure` for a change that already happened. The fields it sets are restored
+            // directly; anything a patch could not have changed is in the snapshot already.
+            if let Some(system) = &patch.system {
+                session.system = system.clone();
+            }
+            if let Some(params) = &patch.params {
+                session.params = params.clone();
+            }
+            if let Some(hints) = &patch.hints {
+                session.hints = session.hints.merged(hints);
+            }
+            if let Some(tools) = &patch.tools {
+                session.tools = tools.clone();
+            }
+            if let Some(policy) = &patch.tool_policy {
+                session.tool_policy = policy.clone();
+            }
+            if let Some(sandbox) = &patch.sandbox {
+                session.sandbox = sandbox.clone();
+            }
+            if let Some(routing) = &patch.routing {
+                session.routing = routing.clone();
+                session.retries = routing.retries;
+            }
+            Applied::State
+        }
+        EventKind::Usage {
+            usage,
+            model,
+            attempt_index,
+            ..
+        } => {
+            // The money was spent whether or not the turn finished. Rebuilding the session without
+            // it would hand back credit that is already gone.
+            session.usage.add(usage);
+            session.credit_tokens = session.credit_tokens.saturating_sub(usage.total_tokens());
+            session.ledger.total.add(usage);
+
+            // A stream reports usage more than once for one attempt, so the ledger is keyed by the
+            // attempt: folding each report into its own entry would turn one bill into eight.
+            match session
+                .ledger
+                .attempts
+                .iter_mut()
+                .find(|attempt| attempt.index == *attempt_index)
+            {
+                Some(attempt) => attempt.usage.add(usage),
+                None => session.ledger.attempts.push(Attempt {
+                    index: *attempt_index,
+                    model: model.clone(),
+                    phase: AttemptPhase::Execute,
+                    trigger: AttemptTrigger::Selection,
+                    outcome: AttemptOutcome::Ok,
+                    usage: usage.clone(),
+                    duration_millis: 0,
+                    degraded: Vec::new(),
+                }),
+            }
+            Applied::State
+        }
+        EventKind::AttemptFailed { attempt } => {
+            session.ledger.record(attempt.clone());
+            Applied::State
+        }
+        EventKind::MessageCompleted { message, .. } => {
+            session.messages.push(message.clone());
+            Applied::State
+        }
+        EventKind::ToolFinished { result, usage, .. } => {
+            if let Some(usage) = usage {
+                session.usage.add(usage);
+                session.credit_tokens = session.credit_tokens.saturating_sub(usage.total_tokens());
+            }
+            session.messages.push(Message {
+                role: Role::Tool,
+                content: crate::contract::Content::new([crate::contract::Part::new(
+                    crate::contract::PartKind::ToolResult(crate::contract::ToolResultPart {
+                        result: result.clone(),
+                    }),
+                )]),
+            });
+            Applied::State
+        }
+        EventKind::GenerationMigrated { to, .. } => {
+            session.generation = *to;
+            Applied::State
+        }
+        EventKind::ToolsExposed { names } => {
+            for name in names {
+                session.discovered.insert(name.clone(), session.round);
+            }
+            Applied::State
+        }
+        EventKind::BudgetExhausted { reason } => {
+            session.stop = Some(*reason);
+            Applied::State
+        }
+        EventKind::Failed { .. } => {
+            session.stop = Some(crate::contract::StopReason::Failed);
+            Applied::State
+        }
+        // The parked call is in the snapshot, and a park writes its own checkpoint, so a parked
+        // session cannot be one whose tail needs the pending call rebuilt.
+        EventKind::AwaitingHuman { .. } => Applied::Narrative,
+        EventKind::ToolCallStarted { .. } | EventKind::ToolCallArgs { .. } => {
+            // A call that started and never finished: the turn it belonged to is the one that was
+            // abandoned, so this is evidence of that and not state of its own.
+            Applied::AbandonedTurn
+        }
+        EventKind::TextDelta { .. }
+        | EventKind::ReasoningDelta { .. }
+        | EventKind::CapabilityDegraded(_)
+        | EventKind::Progress { .. }
+        | EventKind::ExecStarted { .. }
+        | EventKind::ExecOutput { .. }
+        | EventKind::ExecStdin { .. }
+        | EventKind::ExecExited { .. } => Applied::Narrative,
+    }
+}
+
+/// Whether an event completes a unit of work, and therefore ends any earlier evidence of a turn that
+/// did not.
+///
+/// This is what makes recovery idempotent: once `load` has recorded the abandoned turn, the record
+/// itself is such an event, so a second load finds no evidence left to infer and appends nothing.
+pub(crate) fn completes_a_unit(kind: &EventKind) -> bool {
+    matches!(
+        kind,
+        EventKind::MessageCompleted { .. }
+            | EventKind::ToolFinished { .. }
+            | EventKind::AttemptFailed { .. }
+            | EventKind::StateChanged { .. }
+    )
+}
+
+/// The reason recorded for a turn the runtime did not survive.
+pub(crate) const ABANDONED: &str = "the runtime stopped mid-turn; the spend is kept, the partial \
+                                     output stays in the stream, and the message is not completed";
