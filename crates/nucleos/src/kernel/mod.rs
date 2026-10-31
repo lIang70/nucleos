@@ -120,6 +120,14 @@ pub struct Kernel {
     models: Arc<RwLock<ModelRegistry>>,
     /// Every tool set a live session may be pinned to, plus the current one.
     generations: std::sync::RwLock<generation::Generations>,
+    /// Per-tenant ceilings: what a tenant may use, whatever its sessions ask for.
+    ///
+    /// A second filter beside the session's own, not instead of it — the session's ceiling is the
+    /// application's decision about one session, this is the deployment's about a tenant. Present with
+    /// an empty list means "nothing", absent means "no tenant limit".
+    tenant_tools: std::sync::RwLock<std::collections::BTreeMap<String, std::collections::BTreeSet<String>>>,
+    /// Per-tenant model allow-lists. A route is filtered against these, so a fallback chain survives.
+    tenant_models: std::sync::RwLock<std::collections::BTreeMap<String, std::collections::BTreeSet<String>>>,
     store: Arc<dyn Store>,
     /// Swappable: a deployment that can only tighten its policy by restarting will not tighten it.
     policy: Arc<RwLock<Arc<dyn Policy>>>,
@@ -332,6 +340,8 @@ impl Builder {
         Ok(Kernel {
             models: Arc::new(RwLock::new(self.models)),
             generations: std::sync::RwLock::new(generation::Generations::first(self.tools)?),
+            tenant_tools: std::sync::RwLock::new(std::collections::BTreeMap::new()),
+            tenant_models: std::sync::RwLock::new(std::collections::BTreeMap::new()),
             store: self
                 .store
                 .ok_or_else(|| Error::internal("kernel needs a store"))?,
@@ -370,6 +380,62 @@ impl Kernel {
         Ok(())
     }
 
+    /// Restrict what one tenant may use. `None` clears the limit; `Some(vec![])` allows nothing.
+    ///
+    /// Enforced where the session's own ceiling is enforced, so a tightening reaches sessions that are
+    /// already running — which is the point of a limit an operator can set during an incident.
+    pub fn set_tenant_tools(&self, tenant: &str, tools: Option<Vec<String>>) -> Result<()> {
+        set_limit(&self.tenant_tools, tenant, tools)
+    }
+
+    /// Restrict which models one tenant may route to.
+    pub fn set_tenant_models(&self, tenant: &str, models: Option<Vec<String>>) -> Result<()> {
+        set_limit(&self.tenant_models, tenant, models)
+    }
+
+    /// Whether a tenant may use a tool. Absent limit means yes.
+    pub(crate) fn tenant_allows_tool(&self, tenant: &str, name: &str) -> bool {
+        match self
+            .tenant_tools
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(tenant)
+        {
+            Some(allowed) => allowed.contains(name),
+            None => true,
+        }
+    }
+
+    /// Filter a resolved route against the tenant's allow-list.
+    ///
+    /// Filtered rather than refused: a chain that names a forbidden model and an allowed fallback keeps
+    /// working, which is what a deployment with per-tenant access expects. Only when nothing survives is
+    /// the call refused, and then it says which tenant and why.
+    pub(crate) fn permit_route(
+        &self,
+        principal: &crate::contract::Principal,
+        targets: ResolvedRoute,
+    ) -> Result<ResolvedRoute> {
+        let limits = self
+            .tenant_models
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(allowed) = limits.get(&principal.tenant) else {
+            return Ok(targets);
+        };
+        let kept: ResolvedRoute = targets
+            .into_iter()
+            .filter(|(name, _)| allowed.contains(name))
+            .collect();
+        if kept.is_empty() {
+            return Err(Error::denied(format!(
+                "no model in this route is available to tenant {:?}",
+                principal.tenant
+            )));
+        }
+        Ok(kept)
+    }
+
     /// Register a model for routes to name.
     ///
     /// Replacing an existing name is allowed and takes effect on the next route resolution; sessions
@@ -406,4 +472,24 @@ impl Kernel {
             None => u64::MAX,
         }
     }
+}
+
+/// Store or clear one tenant limit.
+fn set_limit(
+    limits: &std::sync::RwLock<std::collections::BTreeMap<String, std::collections::BTreeSet<String>>>,
+    tenant: &str,
+    names: Option<Vec<String>>,
+) -> Result<()> {
+    let mut limits = limits
+        .write()
+        .map_err(|_| Error::internal("the tenant limit lock is poisoned"))?;
+    match names {
+        Some(names) => {
+            limits.insert(tenant.to_owned(), names.into_iter().collect());
+        }
+        None => {
+            limits.remove(tenant);
+        }
+    }
+    Ok(())
 }

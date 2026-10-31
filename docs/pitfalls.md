@@ -1019,3 +1019,21 @@ policy document stays the only place authority is described.
 alternative is worse: cached per-tenant answers would have to be invalidated on every policy write, in a
 daemon whose whole point is that changes take effect on the next call.
 
+## 72. A ceiling that is only in the prompt is not a ceiling
+
+**Decision.** A tool outside the session's ceiling or the tenant's is refused at execution, with content
+saying so — not merely hidden from the prompt.
+
+**Why.** The design already distinguishes exposure from permission, and hiding a tool is exposure. But
+the *ceiling* is the permission: the application's allow-list, and now the deployment's per tenant. A
+model that guessed a name would otherwise reach a tool it was never meant to use, and the refusal would
+not exist to be logged.
+
+**Why both halves need it.** The prompt is where a model learns a tool exists, so a hidden tool stays
+hidden in practice — but "in practice" is not a permission model. The test asserts both: the tool is gone
+from `tool_specs`, and calling it by name fails.
+
+**Why the model list filters instead of refusing.** A chain is a list of fallbacks by design. Refusing the
+call because one entry is forbidden would make per-tenant access incompatible with the routing that
+exists for every other reason.
+

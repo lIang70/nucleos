@@ -297,6 +297,9 @@ impl App {
             builder = builder.tool(tool);
         }
         let kernel = builder.build()?;
+        // Limits a previous run stored are applied before the first request: a ceiling an operator set
+        // during an incident has to survive the restart that incident caused.
+        crate::configure::apply_tenant_limits(&kernel, &system)?;
 
         let models: Vec<String> = stored.into_iter().map(|model| model.name).collect();
 
@@ -534,6 +537,17 @@ pub const ROUTES: &[Route] = &[
             reply: openapi::Reply::Json("PutResponse"),
         },
         build: || put(crate::configure::put_policy),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "put",
+            path: "/v1/tenants/{tenant}/limits",
+            operation: "putTenantLimits",
+            summary: "Set what one tenant may use: a tool ceiling and a model allow-list.",
+            request: Some("TenantLimitsRequest"),
+            reply: openapi::Reply::Json("TenantLimitsView"),
+        },
+        build: || put(crate::configure::put_tenant_limits),
     },
     Route {
         meta: openapi::Route {

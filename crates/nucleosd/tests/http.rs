@@ -1414,3 +1414,65 @@ async fn a_tenant_policy_that_allows_everything_cannot_widen_the_deployment() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{error}");
 }
+
+#[tokio::test]
+async fn tenant_limits_are_set_for_ones_own_tenant_only() {
+    let (app, key, key_id) = governable().await;
+
+    let (status, view) = signed(
+        &app,
+        &key,
+        &key_id,
+        "PUT",
+        "/v1/tenants/acme/limits",
+        r#"{"tools":["read_file"],"models":["cheap"]}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{view}");
+    assert_eq!(view["tools"], serde_json::json!(["read_file"]));
+    assert_eq!(view["models"], serde_json::json!(["cheap"]));
+
+    // `scope: "own"` again: the same administrator, a different tenant's limits — refused.
+    let (refused, error) = signed(
+        &app,
+        &key,
+        &key_id,
+        "PUT",
+        "/v1/tenants/other/limits",
+        r#"{"tools":[]}"#,
+    )
+    .await;
+    assert_eq!(refused, StatusCode::FORBIDDEN, "{error}");
+}
+
+#[tokio::test]
+async fn an_empty_limit_is_not_the_same_as_no_limit() {
+    let (app, key, key_id) = governable().await;
+
+    // `[]` means "nothing permitted"; `null` means "no limit". Encoding one as the other would make a
+    // deployment unable to express either.
+    let (_, empty) = signed(
+        &app,
+        &key,
+        &key_id,
+        "PUT",
+        "/v1/tenants/acme/limits",
+        r#"{"tools":[]}"#,
+    )
+    .await;
+    assert_eq!(empty["tools"], serde_json::json!([]));
+
+    let (_, cleared) = signed(
+        &app,
+        &key,
+        &key_id,
+        "PUT",
+        "/v1/tenants/acme/limits",
+        r#"{"tools":null}"#,
+    )
+    .await;
+    assert!(
+        cleared.get("tools").is_none() || cleared["tools"].is_null(),
+        "{cleared}"
+    );
+}

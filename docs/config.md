@@ -266,8 +266,17 @@ reverse.
 scope matches when the scope's tenant equals the caller's, so a deployment can say "an administrator of
 a tenant may configure that tenant, and nobody else's" in one line.
 
-Still not built: the same composition for the **tool ceiling** and the **model allow-list**. Both are
-intersections of the same shape, and both are waiting for per-tenant rows in the store.
+The same rule now covers the **tool ceiling** and the **model allow-list**:
+`PUT /v1/tenants/{tenant}/limits` with `{"tools": […], "models": […]}`.
+
+- The tool ceiling is a second filter beside the session's own, enforced when the prompt is built *and*
+  when a call is executed. Both halves matter: a tool hidden from the prompt but callable by name is a
+  permission the model can stumble into.
+- The model allow-list **filters** a resolved route rather than refusing it, so a chain naming a
+  forbidden primary and an allowed fallback still runs. Only when nothing survives is the call refused.
+- `null` clears a limit; `[]` means nothing is permitted. The two are different states, and the wire
+  distinguishes them with a deserialiser — `Option<Option<T>>` alone maps `null` to "absent", which would
+  turn "clear this" into "leave it alone".
 
 ## 6. Secrets: who holds what
 

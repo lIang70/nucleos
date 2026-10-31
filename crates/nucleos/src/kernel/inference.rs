@@ -33,7 +33,7 @@ impl Kernel {
         // prompt is built: what a session shows this turn is decided with this turn's clock.
         self.begin_round(session);
         let routing = session.routing.clone();
-        let targets = self.resolve_route(&routing)?;
+        let targets = self.permit_route(&session.principal, self.resolve_route(&routing)?)?;
         let call = self.call_model(session, messages, &targets).await?;
         session.steps = session.steps.saturating_add(1);
         let step_index = u32::try_from(session.steps).unwrap_or(u32::MAX);

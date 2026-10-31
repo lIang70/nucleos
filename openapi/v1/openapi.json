@@ -386,6 +386,14 @@
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
+          },
+          "tenant_policies": {
+            "default": [],
+            "description": "The tenants that wrote a policy of their own, composed with the deployment's.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -3066,6 +3074,65 @@
             "type": "string"
           }
         ]
+      },
+      "TenantLimitsRequest": {
+        "description": "What one tenant may use.\n\n`null` clears a limit; an empty array allows nothing. The two are different states and mean\ndifferent things — \"no limit\" and \"nothing permitted\" — so neither is encoded as the other.",
+        "properties": {
+          "models": {
+            "description": "The models it may route to. Same rules.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "tools": {
+            "description": "The tools this tenant may use. Absent leaves it unchanged, `null` clears it.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "TenantLimitsView": {
+        "description": "What one tenant may use, as the daemon reports it.",
+        "properties": {
+          "models": {
+            "description": "Its model allow-list. Absent means no limit.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "tenant": {
+            "description": "The tenant.",
+            "type": "string"
+          },
+          "tools": {
+            "description": "Its tool ceiling. Absent means no limit.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "tenant"
+        ],
+        "type": "object"
       },
       "TextFormat": {
         "description": "The shape the answer must have.",
@@ -5777,6 +5844,94 @@
           }
         },
         "summary": "Remove a tool source, publishing a new generation without its tools."
+      }
+    },
+    "/v1/tenants/{tenant}/limits": {
+      "put": {
+        "operationId": "putTenantLimits",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TenantLimitsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantLimitsView"
+                }
+              }
+            },
+            "description": "The result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "Set what one tenant may use: a tool ceiling and a model allow-list."
       }
     },
     "/v1/tenants/{tenant}/policy": {

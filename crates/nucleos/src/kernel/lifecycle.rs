@@ -74,7 +74,9 @@ impl Kernel {
             {
                 session.routing.chain = vec![first.clone()];
             }
-            self.resolve_route(&session.routing)?;
+            // Resolved and filtered: a route naming a model this tenant may not use fails here, before
+            // a session exists, with a message about the tenant rather than about the model.
+            self.permit_route(&session.principal, self.resolve_route(&session.routing)?)?;
         }
         self.emit_state(&mut session).await?;
         self.write_checkpoint(&session).await?;

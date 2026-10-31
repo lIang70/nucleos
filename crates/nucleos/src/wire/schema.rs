@@ -52,6 +52,10 @@ pub struct Abi {
     pub model_request: api::ModelRequest,
     /// One model, as reported.
     pub model_view: api::ModelView,
+    /// `PUT /v1/tenants/{tenant}/limits`.
+    pub tenant_limits_request: api::TenantLimitsRequest,
+    /// What one tenant may use.
+    pub tenant_limits_view: api::TenantLimitsView,
     /// `POST /v1/admin/keys`.
     pub admin_key_request: api::AdminKeyRequest,
     /// `GET /v1/admin/keys`.

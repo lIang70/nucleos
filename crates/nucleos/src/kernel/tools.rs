@@ -208,12 +208,21 @@ impl Kernel {
             .iter()
             .map(|call| self.tool_in(session, &call.name))
             .collect();
+        // The ceiling is a permission, not a display setting: a tool the session's allow-list or the
+        // tenant's does not include is refused even though it exists. Hiding it from the prompt is the
+        // *other* half, and the two are deliberately separate — a model that guessed a name would
+        // otherwise reach a tool it was never meant to use.
+        let permitted: Vec<bool> = calls
+            .iter()
+            .map(|call| self.allowable(session, &call.name))
+            .collect();
 
         let futures = calls
             .iter()
             .zip(verdicts)
             .zip(resolved)
-            .map(|((call, denial), tool)| {
+            .zip(permitted)
+            .map(|(((call, denial), tool), permitted)| {
                 let progress_tx = progress_tx.clone();
                 let running = Arc::clone(&running);
             let args = call.arguments_json.clone();
@@ -237,6 +246,12 @@ impl Kernel {
                     deadline_unix_millis: deadline,
                     progress: &sink,
                 };
+                if !permitted {
+                    return ToolOutput::failed(format!(
+                        "{} is not available in this session's tool ceiling",
+                        call.name
+                    ));
+                }
                 match denial {
                     None => match tool {
                         // A model that produced broken JSON gets told so, and the turn
@@ -382,7 +397,12 @@ impl Kernel {
     pub(crate) fn allowable(&self, session: &session::Session, name: &str) -> bool {
         let generations = self.generations();
         let set = generations.set(session.generation);
-        set.contains_key(name) && (session.tools.is_empty() || session.tools.contains(&name.to_owned()))
+        set.contains_key(name)
+            && (session.tools.is_empty() || session.tools.contains(&name.to_owned()))
+            // The tenant's ceiling is a second filter, not instead of the session's: the session's is
+            // the application's decision about one session, this one is the deployment's about a
+            // tenant, and the narrower of the two decides.
+            && self.tenant_allows_tool(&session.principal.tenant, name)
     }
 
     /// How visible a tool is under the session's policy.
@@ -467,7 +487,13 @@ impl Kernel {
 
         let mut candidates: Vec<(crate::contract::Exposure, u64, crate::contract::ToolSpec)> = set
             .iter()
+            // Three ceilings, narrowest last: the generation decides what exists, the session decides
+            // what the application asked for, and the tenant decides what the deployment allows — which
+            // is checked here as well as in `allowable` because the prompt is where the model learns a
+            // tool is available, and a permission the prompt contradicts is a refused call the model
+            // cannot explain.
             .filter(|(name, _)| session.tools.is_empty() || session.tools.contains(name))
+            .filter(|(name, _)| self.tenant_allows_tool(&session.principal.tenant, name))
             .filter_map(|(name, tool)| {
                 let exposure = if *name == super::tool_search::NAME && !needs_door {
                     crate::contract::Exposure::Hidden

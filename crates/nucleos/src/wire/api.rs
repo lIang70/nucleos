@@ -204,6 +204,55 @@ pub struct DescribeResponse {
     pub generation: u64,
 }
 
+/// What one tenant may use.
+///
+/// `null` clears a limit; an empty array allows nothing. The two are different states and mean
+/// different things — "no limit" and "nothing permitted" — so neither is encoded as the other.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct TenantLimitsRequest {
+    /// The tools this tenant may use. Absent leaves it unchanged, `null` clears it.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub tools: Option<Option<Vec<String>>>,
+    /// The models it may route to. Same rules.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub models: Option<Option<Vec<String>>>,
+}
+
+/// Distinguish "absent" from "present and null".
+///
+/// `Option<Option<T>>` alone does not: serde maps `null` to the outer `None`, so a field that is present
+/// and null would be indistinguishable from one that was never sent — and "clear this limit" would become
+/// "leave it alone", silently. With `deserialize_with`, the field's absence is the `default`, and this
+/// runs only when the key is there, so `null` becomes `Some(None)`.
+fn deserialize_present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
+/// What one tenant may use, as the daemon reports it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct TenantLimitsView {
+    /// The tenant.
+    pub tenant: String,
+    /// Its tool ceiling. Absent means no limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<String>>,
+    /// Its model allow-list. Absent means no limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub models: Option<Vec<String>>,
+}
+
 /// An administrator's public key to enrol.
 ///
 /// Public by construction: this endpoint hands the daemon the *verifying* half, which is why enrolling

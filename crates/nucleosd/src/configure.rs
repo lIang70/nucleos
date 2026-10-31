@@ -26,6 +26,7 @@ use axum::Json;
 use nucleos::adapter::{ConfigScope, Verdict};
 use nucleos::error::{Error, Result};
 use nucleos::wire::api::{
+    TenantLimitsRequest, TenantLimitsView,
     AdminKeyListResponse, AdminKeyRequest, ConfigKey, ModelListResponse, ModelRequest, ModelView,
     PutResponse,
 };
@@ -259,6 +260,99 @@ pub async fn put_tenant_policy(
         changed: format!("policy/{tenant}"),
         rules: document.rules.len(),
     }))
+}
+
+/// Where one tenant's limits live.
+pub const TENANT_LIMITS_PREFIX: &str = "config/limits/tenant/";
+
+/// Set what one tenant may use.
+///
+/// Applied to the running kernel before it is stored, like every other change: a daemon reporting a
+/// limit it does not enforce is the failure mode this order exists to avoid.
+pub async fn put_tenant_limits(
+    State(app): State<Arc<App>>,
+    Path(tenant): Path<String>,
+    admin: Admin,
+) -> std::result::Result<Json<TenantLimitsView>, ApiError> {
+    let request: TenantLimitsRequest = serde_json::from_slice(&admin.body).map_err(|error| {
+        ApiError::from_error(&Error::invalid(format!(
+            "the limits are not valid JSON: {error}"
+        )))
+    })?;
+    if tenant.trim().is_empty() {
+        return Err(ApiError::from_error(&Error::invalid(
+            "tenant limits need a tenant",
+        )));
+    }
+    permit_scope(&app, &admin, ConfigScope::Tenant(&tenant), "limits").await?;
+
+    let kernel = app.kernel()?;
+    let mut view = stored_limits(&app, &tenant)?;
+    // Absent leaves it unchanged; `null` clears; an array sets — including an empty one, which means
+    // "nothing", not "no limit".
+    if let Some(tools) = &request.tools {
+        kernel
+            .set_tenant_tools(&tenant, tools.clone())
+            .map_err(|error| ApiError::from_error(&error))?;
+        view.tools = tools.clone();
+    }
+    if let Some(models) = &request.models {
+        kernel
+            .set_tenant_models(&tenant, models.clone())
+            .map_err(|error| ApiError::from_error(&error))?;
+        view.models = models.clone();
+    }
+
+    let text = serde_json::to_string(&view).map_err(|error| {
+        ApiError::from_error(&Error::internal(format!("cannot encode the limits: {error}")))
+    })?;
+    system(&app)?
+        .set(&format!("{TENANT_LIMITS_PREFIX}{tenant}"), &text)
+        .await
+        .map_err(|error| ApiError::from_error(&error))?;
+    record(&app, &admin, "limits", &tenant).await?;
+
+    tracing::info!(
+        event = "tenant_limits_set",
+        tenant = %tenant,
+        tools = ?view.tools,
+        models = ?view.models,
+        by = %admin.principal.subject,
+    );
+    Ok(Json(view))
+}
+
+/// Apply every stored tenant limit to a kernel, at start-up.
+pub fn apply_tenant_limits(kernel: &nucleos::Kernel, system: &SystemStore) -> Result<()> {
+    for (key, value) in system.with_prefix(TENANT_LIMITS_PREFIX)? {
+        let Some(tenant) = key.strip_prefix(TENANT_LIMITS_PREFIX) else {
+            continue;
+        };
+        let view: nucleos::wire::api::TenantLimitsView = serde_json::from_str(&value).map_err(|error| {
+            Error::internal(format!("stored limits for {tenant:?} are unreadable: {error}"))
+        })?;
+        kernel.set_tenant_tools(tenant, view.tools)?;
+        kernel.set_tenant_models(tenant, view.models)?;
+    }
+    Ok(())
+}
+
+fn stored_limits(app: &Arc<App>, tenant: &str) -> std::result::Result<TenantLimitsView, ApiError> {
+    let Some(raw) = system(app)?
+        .get(&format!("{TENANT_LIMITS_PREFIX}{tenant}"))
+        .map_err(|error| ApiError::from_error(&error))?
+    else {
+        return Ok(TenantLimitsView {
+            tenant: tenant.to_owned(),
+            tools: None,
+            models: None,
+        });
+    };
+    serde_json::from_str(&raw).map_err(|error| {
+        ApiError::from_error(&Error::internal(format!(
+            "stored limits for {tenant:?} are unreadable: {error}"
+        )))
+    })
 }
 
 /// The policy in force, rebuilt from the store: the deployment's and every tenant's.
