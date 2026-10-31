@@ -21,7 +21,9 @@
 //! place for programs — the host that implements [`nucleos::adapter::Policy`].
 
 mod document;
+mod layered;
 mod ruleset;
 
 pub use document::{Decision, Document, Rule, Unmatched};
+pub use layered::Layered;
 pub use ruleset::Ruleset;

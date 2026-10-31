@@ -1001,3 +1001,21 @@ key works immediately. The first version of this command printed "restart nucleo
 then explained that it re-reads per request — two sentences that contradicted each other, in the output
 of the tool people run when they are already having a bad day.
 
+## 71. A tenant's policy is a second answer, not a replacement
+
+**Decision.** `Layered` evaluates the deployment's document and the tenant's, and the stricter verdict
+wins. `scope: "own"` compares the scope against the caller.
+
+**Why replacement would be a permission slip.** A tenant that wrote `{"default": "allow"}` would
+otherwise be a tenant that escaped every rule the deployment made — the narrow scope with the *wider*
+effect, which is the opposite of what narrowing means everywhere else in this design.
+
+**Why `own` rather than a tenant identity layer.** Delegation needs one comparison — "is this scope the
+caller's own tenant" — and a new identity concept would need a new column, a new token claim and a new
+way to be wrong. One scope value that compares against the principal answers the same question, and the
+policy document stays the only place authority is described.
+
+**What the composition costs.** Every check now asks two policies instead of one. Cheap, and the
+alternative is worse: cached per-tenant answers would have to be invalidated on every policy write, in a
+daemon whose whole point is that changes take effect on the next call.
+

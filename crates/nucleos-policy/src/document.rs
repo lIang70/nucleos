@@ -145,9 +145,10 @@ impl Document {
             if let Some(scope) = &rule.scope
                 && scope != "system"
                 && scope != "tenant"
+                && scope != "own"
             {
                 return Err(Error::invalid(format!(
-                    "config scope {scope:?} is not `system` or `tenant`"
+                    "config scope {scope:?} is not `system`, `tenant`, `own` or a tenant name"
                 )));
             }
             if !rule.argv_prefix.is_empty() && rule.program.is_none() {

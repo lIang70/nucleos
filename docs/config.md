@@ -247,17 +247,27 @@ behaviour — a cross-store transaction here would cost more than the window it 
 
 ## 5. Tenant configuration narrows, never widens
 
-A tenant administrator may restrict their own users, never lighten what the system decided:
+A tenant administrator may restrict their own users, never lighten what the system decided. **Built**
+for policy: `PUT /v1/tenants/{tenant}/policy`, composed at evaluation time rather than merged.
 
-| Setting | Composition |
-| --- | --- |
-| Policy | both documents evaluated; the stricter verdict wins (`deny` > `ask` > `allow`); if either defaults to deny, so does the result |
-| Tool ceiling | intersection |
-| Model allow-list | intersection |
+| Deployment | Tenant | Result |
+| --- | --- | --- |
+| allow | deny | **deny** |
+| deny | allow | **deny** — a tenant's permissive document is not a permission slip |
+| allow | ask | **ask** |
+| allow | (none) | allow — no tenant policy inherits the deployment's |
 
-This reuses the rule the kernel already applies to `config.tools` and `config.sandbox`: a narrower
-scope can take room away and cannot add it. Anything else would make a tenant the authority on its own
-permissions.
+The composition is `nucleos_policy::Layered`: both documents answer the same question and the stricter
+answer wins, in the order the policy document already uses internally (refuse beats ask, ask beats
+allow). A tenant can turn an allow into a question or a question into a refusal, and cannot do the
+reverse.
+
+`scope: "own"` is what makes delegation possible without a tenant identity layer: a rule with that
+scope matches when the scope's tenant equals the caller's, so a deployment can say "an administrator of
+a tenant may configure that tenant, and nobody else's" in one line.
+
+Still not built: the same composition for the **tool ceiling** and the **model allow-list**. Both are
+intersections of the same shape, and both are waiting for per-tenant rows in the store.
 
 ## 6. Secrets: who holds what
 

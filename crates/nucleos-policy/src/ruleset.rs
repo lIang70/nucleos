@@ -140,7 +140,14 @@ fn matches(rule: &Rule, request: &PolicyRequest<'_>) -> bool {
                 (None, _) => true,
                 (Some(wanted), nucleos::adapter::ConfigScope::System) => wanted == "system",
                 (Some(wanted), nucleos::adapter::ConfigScope::Tenant(tenant)) => {
-                    wanted == "tenant" || wanted == tenant
+                    // `own` is the only scope value that compares against the caller rather than
+                    // against the request: it is how a deployment says "an administrator of a tenant
+                    // may change that tenant's settings, and nobody else's".
+                    match wanted.as_str() {
+                        "tenant" => true,
+                        "own" => *tenant == request.principal.tenant,
+                        named => named == *tenant,
+                    }
                 }
             }
         }

@@ -404,6 +404,9 @@ pub struct ConfigResponse {
     /// The administrator keys enrolled.
     #[serde(default)]
     pub admin_keys: Vec<ConfigKey>,
+    /// The tenants that wrote a policy of their own, composed with the deployment's.
+    #[serde(default)]
+    pub tenant_policies: Vec<String>,
     /// The tool generation new sessions are pinned to.
     #[serde(default)]
     pub generation: u64,

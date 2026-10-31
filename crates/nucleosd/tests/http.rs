@@ -1072,7 +1072,8 @@ async fn a_signed_config_request_answers_with_what_the_daemon_is_running() {
 const GOVERNED_BY: &str = r#"{
   "default": "deny",
   "rules": [
-    {"decision": "allow", "config": "*", "scope": "system", "tenant": "acme", "subject": "admin"}
+    {"decision": "allow", "config": "*", "scope": "system", "tenant": "acme", "subject": "admin"},
+    {"decision": "allow", "config": "*", "scope": "own", "tenant": "acme", "subject": "admin"}
   ]
 }"#;
 
@@ -1088,8 +1089,12 @@ async fn governable() -> (Arc<App>, nucleos_auth::KeyPair, String) {
         )
         .await
         .unwrap();
+    // The store holds the same policy the kernel starts with. They must agree: a tenant write rebuilds
+    // the composed policy **from the store**, so a fixture whose store says something different would
+    // change the rules silently on the first change — which is a bug in the fixture and, in a daemon,
+    // the reason `load` never takes a policy from anywhere else.
     system
-        .set(nucleosd::http::POLICY_KEY, nucleos_cli::init::BOOTSTRAP_POLICY)
+        .set(nucleosd::http::POLICY_KEY, GOVERNED_BY)
         .await
         .unwrap();
 
@@ -1314,4 +1319,98 @@ async fn a_model_added_by_request_is_visible_without_a_restart() {
     )
     .await;
     assert_eq!(described["models"], serde_json::json!(["primary"]));
+}
+
+#[tokio::test]
+async fn a_tenant_policy_is_stored_and_reported() {
+    let (app, key, key_id) = governable().await;
+
+    let (status, reply) = signed(
+        &app,
+        &key,
+        &key_id,
+        "PUT",
+        "/v1/tenants/acme/policy",
+        r#"{"default":"deny","rules":[]}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["changed"], "policy/acme");
+
+    // "What is this daemon enforcing" is incomplete without knowing which tenants said something
+    // stricter — and the list is derived, not remembered.
+    let (_, config) = signed(&app, &key, &key_id, "GET", "/v1/config", "").await;
+    assert_eq!(config["tenant_policies"], serde_json::json!(["acme"]));
+}
+
+#[tokio::test]
+async fn a_tenant_may_change_only_its_own_configuration() {
+    // `scope: "own"` compares against the caller, which is what lets a deployment delegate
+    // self-service without one tenant editing another's settings.
+    let (app, key, key_id) = governable().await;
+
+    let (allowed, _) = signed(
+        &app,
+        &key,
+        &key_id,
+        "PUT",
+        "/v1/tenants/acme/policy",
+        r#"{"default":"deny","rules":[]}"#,
+    )
+    .await;
+    assert_eq!(allowed, StatusCode::OK);
+
+    let (refused, error) = signed(
+        &app,
+        &key,
+        &key_id,
+        "PUT",
+        "/v1/tenants/other/policy",
+        r#"{"default":"allow","rules":[]}"#,
+    )
+    .await;
+    assert_eq!(refused, StatusCode::FORBIDDEN, "{error}");
+}
+
+#[tokio::test]
+async fn a_tenant_policy_that_allows_everything_cannot_widen_the_deployment() {
+    // The composition rule, end to end: the tenant's document is a second answer, and the stricter
+    // answer is the answer. The deployment is made to refuse configuration outright; the tenant then
+    // writes an "allow everything" policy of its own, and the refusal still stands.
+    let (app, key, key_id) = governable().await;
+
+    signed(
+        &app,
+        &key,
+        &key_id,
+        "PUT",
+        "/v1/tenants/acme/policy",
+        r#"{"default":"allow","rules":[]}"#,
+    )
+    .await;
+
+    // Narrow the deployment's policy to models only — allowed while the old one permits it.
+    let (status, _) = signed(
+        &app,
+        &key,
+        &key_id,
+        "PUT",
+        "/v1/policy",
+        r#"{"default":"deny","rules":[{"decision":"allow","config":"models","scope":"system",
+            "tenant":"acme","subject":"admin"}]}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // The tenant's "allow everything" loses to the deployment's refusal.
+    let (status, error) = signed(
+        &app,
+        &key,
+        &key_id,
+        "PUT",
+        "/v1/tenants/acme/policy",
+        r#"{"default":"allow","rules":[]}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{error}");
 }

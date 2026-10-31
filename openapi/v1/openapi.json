@@ -5779,6 +5779,84 @@
         "summary": "Remove a tool source, publishing a new generation without its tools."
       }
     },
+    "/v1/tenants/{tenant}/policy": {
+      "put": {
+        "operationId": "putTenantPolicy",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PutResponse"
+                }
+              }
+            },
+            "description": "The result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "Replace one tenant's policy. It can narrow the deployment's, never widen it."
+      }
+    },
     "/v1/tokens": {
       "get": {
         "operationId": "listTokens",

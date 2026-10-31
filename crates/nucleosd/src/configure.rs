@@ -32,6 +32,9 @@ use nucleos::wire::api::{
 use nucleos_sqlite::{Change, SystemStore};
 use std::sync::Arc;
 
+/// Where one tenant's policy lives. The prefix is what `with_prefix` scans.
+pub const TENANT_POLICY_PREFIX: &str = "config/policy/tenant/";
+
 /// Where model definitions live in the system store.
 pub const MODELS_KEY: &str = "config/models";
 
@@ -203,6 +206,95 @@ pub fn adapter_for(request: &ModelRequest) -> Result<nucleos_openai::OpenAi> {
         supports_reasoning: request.reasoning,
         timeout: Some(std::time::Duration::from_secs(120)),
     })
+}
+
+/// Replace one tenant's policy.
+///
+/// The tenant's document cannot lighten the deployment's: both are evaluated and the stricter answer
+/// wins (see `nucleos_policy::Layered`). This endpoint is how a tenant gets a policy at all — and the
+/// gate is what decides *who* may write it, with `scope: "own"` meaning "an administrator of that
+/// tenant and nobody else".
+pub async fn put_tenant_policy(
+    State(app): State<Arc<App>>,
+    Path(tenant): Path<String>,
+    admin: Admin,
+) -> std::result::Result<Json<PutResponse>, ApiError> {
+    let kernel = app.kernel()?;
+    let text = String::from_utf8(admin.body.to_vec()).map_err(|error| {
+        ApiError::from_error(&Error::invalid(format!(
+            "the policy must be UTF-8 text: {error}"
+        )))
+    })?;
+    let document = nucleos_policy::Document::parse(&text).map_err(|error| {
+        ApiError::from_error(&error)
+    })?;
+    if tenant.trim().is_empty() {
+        return Err(ApiError::from_error(&Error::invalid(
+            "a tenant policy needs a tenant",
+        )));
+    }
+
+    permit_scope(&app, &admin, ConfigScope::Tenant(&tenant), "policy").await?;
+
+    let system = system(&app)?;
+    system
+        .set(&format!("{TENANT_POLICY_PREFIX}{tenant}"), &text)
+        .await
+        .map_err(|error| ApiError::from_error(&error))?;
+    // The whole policy is rebuilt and swapped: a tenant policy is not a patch on the deployment's, it
+    // is a second answer that has to be composed with it on every call.
+    let layered = layered_from(system).map_err(|error| ApiError::from_error(&error))?;
+    kernel
+        .set_policy(Arc::new(layered))
+        .map_err(|error| ApiError::from_error(&error))?;
+    record(&app, &admin, "tenants", &format!("policy {tenant}")).await?;
+
+    tracing::info!(
+        event = "tenant_policy_replaced",
+        tenant = %tenant,
+        rules = document.rules.len(),
+        by = %admin.principal.subject,
+    );
+    Ok(Json(PutResponse {
+        changed: format!("policy/{tenant}"),
+        rules: document.rules.len(),
+    }))
+}
+
+/// The policy in force, rebuilt from the store: the deployment's and every tenant's.
+pub fn layered_from(system: &SystemStore) -> Result<nucleos_policy::Layered> {
+    let text = system.get(POLICY_KEY)?.ok_or_else(|| {
+        Error::invalid("this deployment has no policy: run `nucleos init`")
+    })?;
+    let mut layered = nucleos_policy::Layered::system(nucleos_policy::Document::parse(&text)?)?;
+    for (key, value) in system.with_prefix(TENANT_POLICY_PREFIX)? {
+        let Some(tenant) = key.strip_prefix(TENANT_POLICY_PREFIX) else {
+            continue;
+        };
+        layered = layered.with_tenant(tenant, nucleos_policy::Document::parse(&value)?)?;
+    }
+    Ok(layered)
+}
+
+/// Ask the gate about one scope and subject.
+async fn permit_scope(
+    app: &Arc<App>,
+    admin: &Admin,
+    scope: ConfigScope<'_>,
+    subject: &str,
+) -> std::result::Result<(), ApiError> {
+    let kernel = app.kernel()?;
+    match kernel
+        .check_config(&admin.principal, scope, subject)
+        .await
+        .map_err(|error| ApiError::from_error(&error))?
+    {
+        Verdict::Allow => Ok(()),
+        Verdict::Deny { code, reason } => Err(ApiError::from_error(&Error::new(code, reason))),
+        Verdict::AskHuman { question, .. } => Err(ApiError::from_error(&Error::denied(format!(
+            "changing {subject} needs a human ({question}), and configuration cannot wait for one"
+        )))),
+    }
 }
 
 /// The administrators this deployment trusts.

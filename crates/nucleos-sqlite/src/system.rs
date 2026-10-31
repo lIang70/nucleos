@@ -179,6 +179,27 @@ impl SystemStore {
         .await
     }
 
+    /// Every entry whose key starts with `prefix`, in key order.
+    ///
+    /// Used for scoped configuration — `config/policy/tenant/` — where the set of tenants is whatever
+    /// has been written rather than a list somebody has to keep in step.
+    pub fn with_prefix(&self, prefix: &str) -> Result<Vec<(String, String)>> {
+        let connection = self.lock();
+        let mut statement = connection
+            .prepare("select key, value from meta where key >= ?1 and key < ?2 order by key")
+            .map_err(failed)?;
+        // `>= prefix` and `< prefix` with the last byte incremented: a range scan on the primary key
+        // rather than a `like` that cannot use it.
+        let mut upper = prefix.to_owned();
+        upper.push(char::MAX);
+        let rows = statement
+            .query_map(params![prefix, upper], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(failed)?;
+        rows.collect::<std::result::Result<_, _>>().map_err(failed)
+    }
+
     /// Record an issued token. The hash, never the token.
     pub async fn add_token(&self, token: &IssuedToken) -> Result<()> {
         let token = token.clone();

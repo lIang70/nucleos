@@ -257,24 +257,16 @@ impl App {
             Self::unconfigured().principal,
         );
 
-        let policy = match system.get(POLICY_KEY)? {
-            Some(text) => {
-                let document = nucleos_policy::Document::parse(&text)?;
-                tracing::info!(
-                    event = "policy_loaded",
-                    source = "system store",
-                    default = ?document.unmatched,
-                    rules = document.rules.len(),
-                );
-                Arc::new(nucleos_policy::Ruleset::new(document)?) as Arc<dyn nucleos::adapter::Policy>
-            }
-            None => {
-                return Err(nucleos::Error::invalid(format!(
-                    "{} has no policy: run `nucleos init` to write the bootstrap one",
-                    layout.root.display()
-                )));
-            }
-        };
+        // The deployment's policy, composed with one per tenant that wrote its own. Composed rather
+        // than replaced: a tenant that wrote an empty document would otherwise allow everything the
+        // deployment forbids.
+        let layered = crate::configure::layered_from(&system)?;
+        tracing::info!(
+            event = "policy_loaded",
+            source = "system store",
+            tenants = ?layered.tenants(),
+        );
+        let policy: Arc<dyn nucleos::adapter::Policy> = Arc::new(layered);
         // The routing a session inherits names the first stored model: a session that does not
         // choose one still has somewhere to go, and a deployment with no models has an empty chain
         // that fails by saying so.
@@ -542,6 +534,17 @@ pub const ROUTES: &[Route] = &[
             reply: openapi::Reply::Json("PutResponse"),
         },
         build: || put(crate::configure::put_policy),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "put",
+            path: "/v1/tenants/{tenant}/policy",
+            operation: "putTenantPolicy",
+            summary: "Replace one tenant's policy. It can narrow the deployment's, never widen it.",
+            request: None,
+            reply: openapi::Reply::Json("PutResponse"),
+        },
+        build: || put(crate::configure::put_tenant_policy),
     },
     Route {
         meta: openapi::Route {
@@ -899,7 +902,18 @@ async fn config(
         tenant = %admin.principal.tenant,
     );
 
+    let tenants = crate::configure::layered_from(system)
+        .map(|layered| {
+            layered
+                .tenants()
+                .into_iter()
+                .map(ToOwned::to_owned)
+                .collect::<Vec<String>>()
+        })
+        .unwrap_or_default();
+
     Ok(Json(ConfigResponse {
+        tenant_policies: tenants,
         schema_version: system
             .schema_version()
             .map_err(|error| ApiError::from_error(&error))?,
