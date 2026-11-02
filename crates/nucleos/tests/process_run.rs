@@ -3,8 +3,10 @@
 //! These are the only tests in the repository that spawn one, which is why they are also the only
 //! ones that have to care about timing: the supervisor appends output from its own tasks.
 //!
-//! No sandbox mechanism is wired up yet, so everything here runs under `danger_full_access` — and
-//! one test proves that anything stricter is *refused* rather than silently run unconfined.
+//! Most of these run under `danger_full_access`, because they are about the process and not about the
+//! policy. One test proves that anything stricter is *enforced or refused*, never silently run
+//! unconfined — and it decides which of the two at run time, because that depends on what the host
+//! can do, not on how it was compiled.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -186,25 +188,73 @@ async fn a_confining_policy_is_enforced_or_refused_never_ignored() {
         )
         .await;
 
-    #[cfg(target_os = "macos")]
-    {
-        let session = spawned.expect("seatbelt is available here");
-        let output = kernel.wait(&session).await.unwrap();
-        assert_eq!(
-            output.exit_code, 0,
-            "a read-only policy still runs a command"
-        );
+    // Enforced, or refused — decided by what this host can actually do. The compile-time split this
+    // test used to have ("macOS enforces, everything else refuses") was wrong on the first non-macOS
+    // machine that ran it: Linux has bubblewrap, CI installs it, and the spawn succeeded.
+    match spawned {
+        Ok(session) => {
+            if !mechanism_can_run() {
+                eprintln!(
+                    "skipping the enforcement half: this host has the mechanism but cannot start it"
+                );
+                return;
+            }
+            // Enforced — and the record says by what. A policy that was silently ignored would
+            // produce a running session with no mechanism, which is the failure this test names.
+            let started = kernel
+                .events(&principal(), session.id(), 0)
+                .await
+                .unwrap()
+                .into_iter()
+                .find_map(|event| match event.kind {
+                    EventKind::ExecStarted { mechanism, .. } => Some(mechanism),
+                    _ => None,
+                })
+                .expect("the start is recorded");
+            assert!(
+                started.is_some(),
+                "a confining policy ran a command with no mechanism: it was ignored"
+            );
+            let output = kernel.wait(&session).await.unwrap();
+            assert_eq!(
+                output.exit_code, 0,
+                "a read-only policy still runs a command"
+            );
+        }
+        Err(error) => {
+            // Refused — and for the reason the contract promises, so an operator knows what to do.
+            assert_eq!(error.code(), nucleos::contract::ErrorCode::Unavailable);
+            assert!(
+                error.reason().contains("danger_full_access")
+                    || error.reason().contains("bubblewrap")
+                    || error.reason().contains("seatbelt"),
+                "{}",
+                error.reason()
+            );
+        }
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let error = spawned.expect_err("no mechanism on this platform");
-        assert_eq!(error.code(), nucleos::contract::ErrorCode::Unavailable);
-        assert!(
-            error.reason().contains("danger_full_access"),
-            "{}",
-            error.reason()
-        );
-    }
+}
+
+/// Whether this host can actually start the mechanism it has.
+///
+/// `confine` checks that the program is on the path; whether the kernel lets it create namespaces is a
+/// different question, and one that only a probe answers. The same probe `tests/sandbox.rs` uses.
+#[cfg(target_os = "linux")]
+fn mechanism_can_run() -> bool {
+    std::process::Command::new("bwrap")
+        .args(["--unshare-all", "--ro-bind", "/", "/", "/bin/true"])
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+#[cfg(target_os = "macos")]
+fn mechanism_can_run() -> bool {
+    true
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn mechanism_can_run() -> bool {
+    true
 }
 
 #[tokio::test]
