@@ -653,6 +653,101 @@ async fn guarded() -> (Arc<App>, String) {
     (app, token.token)
 }
 
+/// Two subjects, one tenant: the event stream must not be readable across them.
+///
+/// Session ids are chosen by callers and are short, so within one tenant every subject can guess every
+/// other subject's. `events` is scoped by tenant — which is the wrong question for reading a
+/// conversation — so the route loads the session first, and that is where ownership is checked.
+#[tokio::test]
+async fn a_subject_cannot_read_another_subjects_event_stream() {
+    use nucleos::adapter::AllowAll;
+
+    let system = Arc::new(nucleos_sqlite::SystemStore::in_memory().unwrap());
+    let alice = nucleos_auth::token::issue();
+    let bob = nucleos_auth::token::issue();
+    for (token, subject) in [(&alice, "alice"), (&bob, "bob")] {
+        system
+            .add_token(&nucleos_sqlite::IssuedToken {
+                id: token.id.clone(),
+                tenant: "acme".to_owned(),
+                subject: subject.to_owned(),
+                hash: token.hash.clone(),
+                created_unix_millis: 1,
+            })
+            .await
+            .unwrap();
+    }
+    let kernel = Arc::new(
+        nucleos::Kernel::builder()
+            .model(
+                "primary",
+                Arc::new(nucleos_testkit::FakeModel::text(["unused"])),
+            )
+            .store(Arc::new(nucleos_sqlite::SqliteStore::in_memory().unwrap()))
+            .policy(Arc::new(AllowAll))
+            .routing(nucleos::contract::Routing {
+                chain: vec!["primary".to_owned()],
+                retries: 0,
+            })
+            .build()
+            .unwrap(),
+    );
+    kernel
+        .open(
+            &nucleos::contract::Principal {
+                tenant: "acme".to_owned(),
+                subject: "alice".to_owned(),
+            },
+            nucleos::contract::SessionId::new("s1"),
+            nucleos::kernel::SessionSpec {
+                credit_tokens: 1_000,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let app = Arc::new(
+        App::new(
+            Arc::clone(&kernel),
+            nucleos::contract::Principal::default(),
+            vec!["primary".to_owned()],
+        )
+        .with_system(
+            Arc::clone(&system),
+            std::path::PathBuf::from("/var/lib/nucleos"),
+            Arc::new(nucleos::adapter::SystemClock),
+        )
+        .with_tokens(nucleosd::auth::TokenAuth::new(
+            Arc::clone(&system),
+            nucleos::contract::Principal::default(),
+        )),
+    );
+
+    let events = |token: String| {
+        let app = Arc::clone(&app);
+        async move {
+            router(app)
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri("/v1/sessions/s1/events?from_seq=0")
+                        .header("authorization", format!("Bearer {token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .status()
+        }
+    };
+
+    // The owner reads their own log.
+    assert_eq!(events(alice.token.clone()).await, StatusCode::OK);
+    // Another subject in the same tenant gets the same answer as a session that does not exist:
+    // absent, not refused, because "this exists but is not yours" is a directory of identifiers.
+    assert_eq!(events(bob.token.clone()).await, StatusCode::NOT_FOUND);
+}
+
 #[tokio::test]
 async fn a_configured_token_is_required_on_every_route() {
     let (app, token) = guarded().await;

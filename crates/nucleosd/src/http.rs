@@ -1865,6 +1865,12 @@ async fn events(
         .and_then(|value| value.parse::<u64>().ok())
         .map_or(query.from_seq, |last| last.saturating_add(1));
 
+    // Loaded first, for the ownership check. `events` is scoped by tenant, which is the wrong
+    // question here: a session id is caller-chosen and short, so within one tenant every subject can
+    // guess every other subject's, and the log is the whole conversation including tool output. This
+    // is the one line between "I can read my session's events" and "I can read yours".
+    let _ = load(&kernel, &caller, &id).await?;
+
     let events = kernel
         .events(&caller.0, &SessionId::new(id), from_seq)
         .await
