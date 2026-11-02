@@ -254,7 +254,7 @@ impl SystemStore {
 
     /// Whether this deployment has ever issued a token.
     ///
-    /// Sticky, and separate from [`has_tokens`] on purpose: revoking the last token must not put the
+    /// Sticky, and separate from [`Self::has_tokens`] on purpose: revoking the last token must not put the
     /// daemon back into the mode where the socket's permissions are the whole authentication. A
     /// deployment that once had tenants still has them — they are just all revoked, which is what
     /// "no valid token" has to mean once the door has been opened.
@@ -342,7 +342,9 @@ impl SystemStore {
             }
             Some(value) => {
                 let version: u32 = value.parse().map_err(|_| {
-                    Error::invalid(format!("system store schema version {value:?} is not a number"))
+                    Error::invalid(format!(
+                        "system store schema version {value:?} is not a number"
+                    ))
                 })?;
                 if version > SCHEMA_VERSION {
                     // Refused rather than guessed: a newer daemon wrote this, and opening it with
@@ -370,7 +372,9 @@ impl SystemStore {
     {
         let connection = Arc::clone(&self.connection);
         tokio::task::spawn_blocking(move || {
-            let mut guard = connection.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut guard = connection
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             work(&mut guard)
         })
         .await

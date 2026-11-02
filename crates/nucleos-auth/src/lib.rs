@@ -1,6 +1,6 @@
 //! Credentials for the daemon: the recovery password, and — later — the administrator's keys.
 //!
-//! A separate crate because none of this belongs in the kernel. The kernel asks a [`Policy`] whether
+//! A separate crate because none of this belongs in the kernel. The kernel asks a `Policy` whether
 //! a call may happen and receives a principal; it does not hash passwords, verify signatures, or know
 //! that a keychain exists. Keeping the credential handling outside means the kernel keeps compiling
 //! without a crypto stack, and this crate can grow an algorithm without touching an ABI.
@@ -17,18 +17,18 @@
 //! checked at the same edge, and neither should reach the kernel.
 
 pub mod key;
-pub mod signature;
-pub mod token;
 pub mod keychain;
 pub mod password;
 pub mod seal;
+pub mod signature;
+pub mod token;
 
 pub use key::{KeyPair, PublicKey};
-pub use signature::{canonical, parse_header, Signed, SCHEME};
-pub use token::Issued;
 pub use keychain::Store as KeyStore;
 pub use password::{Cost, Limiter, MIN_PASSWORD_LEN, PasswordHash};
 pub use seal::SealKey;
+pub use signature::{SCHEME, Signed, canonical, parse_header};
+pub use token::Issued;
 
 /// The key under which a deployment's recovery password hash is kept.
 ///

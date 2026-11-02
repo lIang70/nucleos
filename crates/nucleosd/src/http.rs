@@ -15,17 +15,17 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{MethodRouter, delete, get, post, put};
 use axum::{Json, Router};
 use nucleos::contract::{ErrorCode, Principal, SessionId, SessionState};
-use nucleos_sqlite::SqliteStore;
 use nucleos::kernel::{HitlVerdict, Kernel, SessionSpec, StateWrite};
 use nucleos::wire::api::{
-    DescribeResponse, ErrorBody, InferenceRequest, InferenceResponse, ProcessInfo,
-    CancelResponse, ConfigKey, RetireResponse, ConfigResponse, MetricsResponse, ProcessListResponse, SessionListResponse,
-    SessionSummary, ProcessStartRequest, ProcessStartResponse, ReloadResponse,
-    SessionView, StartRequest,
-    StartResponse, StateRequest, StdinRequest, ToolBatchRequest, ToolBatchResponse, VerdictRequest,
+    CancelResponse, ConfigKey, ConfigResponse, DescribeResponse, ErrorBody, InferenceRequest,
+    InferenceResponse, MetricsResponse, ProcessInfo, ProcessListResponse, ProcessStartRequest,
+    ProcessStartResponse, ReloadResponse, RetireResponse, SessionListResponse, SessionSummary,
+    SessionView, StartRequest, StartResponse, StateRequest, StdinRequest, ToolBatchRequest,
+    ToolBatchResponse, VerdictRequest,
 };
 use nucleos::wire::openapi;
 use nucleos_agent as agent;
+use nucleos_sqlite::SqliteStore;
 use std::convert::Infallible;
 use std::sync::Arc;
 use tokio_stream::StreamExt;
@@ -35,7 +35,7 @@ pub const ABI_VERSION: &str = "v1";
 
 /// Where `nucleos init` writes the policy the daemon enforces.
 ///
-/// The same string as [`nucleos_cli::init::POLICY_KEY`], and duplicated rather than depended on: the
+/// The same string as `nucleos_cli::init::POLICY_KEY`, and duplicated rather than depended on: the
 /// daemon must not link the CLI to learn a key name. The pair is held together by a test on each side
 /// rather than by a shared import, which is the cheaper of the two ways to keep them in step.
 pub const POLICY_KEY: &str = "config/policy";
@@ -274,14 +274,9 @@ impl App {
 
         // Two files with two lifecycles: configuration is versioned and kept, sessions are pruned.
         // Both are named inside one root, so a second instance on this host is one more `--root`.
-        layout
-            .create()
-            .map_err(|error| {
-                nucleos::Error::unavailable(format!(
-                    "cannot create {}: {error}",
-                    layout.root.display()
-                ))
-            })?;
+        layout.create().map_err(|error| {
+            nucleos::Error::unavailable(format!("cannot create {}: {error}", layout.root.display()))
+        })?;
         let store: Arc<dyn nucleos::adapter::Store> =
             Arc::new(SqliteStore::open(layout.session_store())?);
         let sources = crate::sources::SourceSet::load(&system).await?;
@@ -296,10 +291,8 @@ impl App {
         // Tokens come from the store, not from the environment: a deployment's callers are state, and
         // state has one writer. A deployment with none is the socket-permissions case, which the
         // authenticator answers by itself rather than by a variable somebody sets.
-        let tokens = crate::auth::TokenAuth::new(
-            Arc::clone(&system),
-            Self::unconfigured().principal,
-        );
+        let tokens =
+            crate::auth::TokenAuth::new(Arc::clone(&system), Self::unconfigured().principal);
 
         // The deployment's policy, composed with one per tenant that wrote its own. Composed rather
         // than replaced: a tenant that wrote an empty document would otherwise allow everything the
@@ -315,7 +308,11 @@ impl App {
         // choose one still has somewhere to go, and a deployment with no models has an empty chain
         // that fails by saying so.
         let routing = nucleos::contract::Routing {
-            chain: stored.first().map(|model| model.name.clone()).into_iter().collect(),
+            chain: stored
+                .first()
+                .map(|model| model.name.clone())
+                .into_iter()
+                .collect(),
             retries: 1,
         };
         let mut builder = Kernel::builder()
@@ -363,16 +360,16 @@ impl App {
         let models: Vec<String> = stored.into_iter().map(|model| model.name).collect();
 
         let app = Self::new(Arc::new(kernel), Self::unconfigured().principal, models)
-        .with_system(
-            system,
-            layout.root.clone(),
-            Arc::new(nucleos::adapter::SystemClock),
-        )
-        .with_sources(sources)
-        .with_store(store)
-        .with_seal(seal)
-        .with_tools(discovered)
-        .with_tokens(tokens);
+            .with_system(
+                system,
+                layout.root.clone(),
+                Arc::new(nucleos::adapter::SystemClock),
+            )
+            .with_sources(sources)
+            .with_store(store)
+            .with_seal(seal)
+            .with_tools(discovered)
+            .with_tokens(tokens);
         Ok(app)
     }
 
@@ -919,7 +916,8 @@ async fn observe(
 
     let response = next.run(request).await;
     let millis = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    app.metrics.observe(&method, &route, response.status().as_u16());
+    app.metrics
+        .observe(&method, &route, response.status().as_u16());
     tracing::info!(
         kind = "request",
         method = %method,
@@ -983,7 +981,11 @@ async fn describe(State(app): State<Arc<App>>) -> Json<DescribeResponse> {
         abi_version: ABI_VERSION.to_owned(),
         models: app.models_now(),
         tools: app.tools_now(),
-        generation: app.kernel.as_ref().map(|kernel| kernel.generation().0).unwrap_or(0),
+        generation: app
+            .kernel
+            .as_ref()
+            .map(|kernel| kernel.generation().0)
+            .unwrap_or(0),
     })
 }
 
@@ -1075,7 +1077,9 @@ async fn metrics(State(app): State<Arc<App>>) -> Json<MetricsResponse> {
 /// checkable — "nothing was running" and "everything was running" must not produce the same answer.
 async fn retire(State(app): State<Arc<App>>) -> Result<Json<RetireResponse>, ApiError> {
     let kernel = app.kernel()?.clone();
-    let retired = kernel.retire().map_err(|error| ApiError::from_error(&error))?;
+    let retired = kernel
+        .retire()
+        .map_err(|error| ApiError::from_error(&error))?;
     Ok(Json(RetireResponse {
         current: kernel.generation().0,
         retired: retired.into_iter().map(|generation| generation.0).collect(),
@@ -1390,7 +1394,10 @@ async fn list_sessions(
             tenant: caller.0.tenant.clone(),
             kind,
             limit: limit as usize,
-            after: query.page_token.clone().map(nucleos::contract::SessionId::new),
+            after: query
+                .page_token
+                .clone()
+                .map(nucleos::contract::SessionId::new),
         })
         .await
         .map_err(|error| ApiError::from_error(&error))?;
@@ -1467,11 +1474,14 @@ async fn list_processes(
     };
 
     let page = kernel
-        .processes(&caller.0.tenant, &nucleos::contract::ProcessQuery {
-            phase,
-            limit: query.limit,
-            after: query.page_token.map(nucleos::contract::SessionId::new),
-        })
+        .processes(
+            &caller.0.tenant,
+            &nucleos::contract::ProcessQuery {
+                phase,
+                limit: query.limit,
+                after: query.page_token.map(nucleos::contract::SessionId::new),
+            },
+        )
         .await
         .map_err(|error| ApiError::from_error(&error))?;
 
@@ -1713,7 +1723,11 @@ mod tests {
         let root = std::env::temp_dir().join(format!("nucleos-nopolicy-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        let layout = crate::layout::Layout::resolve(Some(root.clone()), None, Some(root.with_extension("seal.key")));
+        let layout = crate::layout::Layout::resolve(
+            Some(root.clone()),
+            None,
+            Some(root.with_extension("seal.key")),
+        );
 
         // A store that exists and is empty: `init` has not run.
         SystemStore::open(layout.system_store()).unwrap();
