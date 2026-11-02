@@ -339,7 +339,10 @@ async fn a_confining_policy_that_cannot_be_enforced_is_refused_not_ignored() {
     let _ = std::fs::remove_dir_all(&directory);
 }
 
-#[cfg(not(target_os = "macos"))]
+// Only for platforms that have no mechanism at all. This used to be `not(target_os = "macos")`,
+// which quietly claimed Linux was one of them — it is not, and the first CI run that installed
+// bubblewrap proved it by enforcing the policy instead of refusing it.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 #[tokio::test]
 async fn a_confining_policy_is_refused_on_a_platform_without_a_mechanism() {
     // Honest refusal beats a sandbox that is not there.
@@ -352,6 +355,34 @@ async fn a_confining_policy_is_refused_on_a_platform_without_a_mechanism() {
     .await
     .expect_err("no mechanism, no promise");
     assert_eq!(error.code(), nucleos::contract::ErrorCode::Unavailable);
+}
+
+/// The other half of the same promise, on the platform that has a mechanism but may not have it
+/// installed: no `bwrap`, and the refusal has to name the program to install rather than the policy.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_linux_without_bubblewrap_refuses_and_names_what_is_missing() {
+    if bwrap_usable() {
+        eprintln!(
+            "skipping: bubblewrap runs here, so the policy is enforced rather than refused, and \
+             the enforced path is covered by a_workspace_write_policy_is_enforced_by_bubblewrap"
+        );
+        return;
+    }
+    let error = run(
+        None,
+        SandboxPolicy::read_only(),
+        SandboxPermissions::UseDefault,
+        &["/bin/echo", "hello"],
+    )
+    .await
+    .expect_err("no mechanism, no promise");
+    assert_eq!(error.code(), nucleos::contract::ErrorCode::Unavailable);
+    assert!(
+        error.reason().contains("bubblewrap"),
+        "the message says what to install: {}",
+        error.reason()
+    );
 }
 
 // ---------------------------------------------------------------------------
