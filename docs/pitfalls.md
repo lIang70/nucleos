@@ -1264,3 +1264,32 @@ sequence number against the one taken when the turn was announced, rather than i
 can fail. A rule enforced at every site is a rule with as many chances to be forgotten as there are
 sites.
 
+## 85. `cfg(target_os)` cannot describe a runtime capability
+
+**Decision.** Tests that depend on a sandbox mechanism ask the *host* what it can do, and assert the
+property rather than the platform: enforced (a start event naming a mechanism) or refused (a reason
+naming the program to install or the flag to pass).
+
+**The mistake, three times in one day.** Each of these was written as "macOS enforces, everything else
+refuses", and each had to be discovered by CI on Linux:
+
+- `process_run.rs` — a test spawn: Linux has bubblewrap, the spawn succeeded, and the test asserted an
+  error that was not there.
+- `sandbox.rs` — the refusal test, same assumption, same result.
+- `http.rs` — the same thing over the ABI, and it *kept passing* for a year of imagination because
+  macOS is where it ran. `503` was asserted; Linux answered `200`.
+
+The pattern is the same every time: a compile-time split is a claim about the build, and the question
+underneath ("can this host sandbox a command?") is a claim about the machine. On the developer's laptop
+the answer was always the first branch, so the second was never executed anywhere.
+
+**What replaced them.** One property, three assertions: either the process ran and its start event names
+the mechanism, or it was refused with a reason naming what to install or the escape hatch. Both are true
+statements on every platform, and the one failure the tests exist to catch — a policy silently ignored,
+which produces a running process with *no* mechanism — fails on all of them.
+
+**The corollary, learned the same day.** "bwrap is installed" and "bwrap can run" are different
+questions, and only the first is the kernel's: it refuses a missing program, not a kernel without
+unprivileged namespaces. A test that tried to cover the second failed in CI, where bubblewrap is present
+and namespaces are not allowed.
+

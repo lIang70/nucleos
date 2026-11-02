@@ -216,6 +216,7 @@ async fn a_process_runs_over_the_abi_and_its_output_is_in_the_stream() {
 async fn a_confining_policy_is_enforced_or_refused_over_the_abi() {
     let app = router(running());
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -229,22 +230,55 @@ async fn a_confining_policy_is_enforced_or_refused_over_the_abi() {
         .await
         .unwrap();
 
-    #[cfg(target_os = "macos")]
-    {
-        // Seatbelt is available, so the process starts confined instead of being refused.
-        assert_eq!(response.status(), StatusCode::OK);
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        // Running unconfined while the policy claims otherwise is worse than refusing.
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-        let error = body_json(response).await;
-        assert!(
-            error["reason"]
+    // Enforced, or refused — and both have to say so. This split used to be
+    // `#[cfg(not(target_os = "macos"))]`, which claimed every other platform refuses: Linux has
+    // bubblewrap, and CI installs it.
+    match response.status() {
+        StatusCode::OK => {
+            // Enforced. The evidence is in the session: a start event naming the mechanism that
+            // carried the policy out. A policy silently ignored would run the command with none.
+            let body = body_json(response).await;
+            let session = body["session"]
                 .as_str()
-                .unwrap()
-                .contains("danger_full_access")
-        );
+                .expect("the response names the session");
+            let events = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(format!("/v1/sessions/{session}/events?from_seq=0"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(events.status(), StatusCode::OK);
+            let body = String::from_utf8(
+                axum::body::to_bytes(events.into_body(), 1 << 20)
+                    .await
+                    .unwrap()
+                    .to_vec(),
+            )
+            .unwrap();
+            assert!(body.contains("nucleos.v1.exec_started"), "{body}");
+            assert!(
+                body.contains(r#""mechanism":"bubblewrap""#)
+                    || body.contains(r#""mechanism":"seatbelt""#),
+                "the start names the mechanism: {body}"
+            );
+        }
+        StatusCode::SERVICE_UNAVAILABLE => {
+            // Refused. Running unconfined while the policy claims otherwise is worse than refusing.
+            let error = body_json(response).await;
+            let reason = error["reason"].as_str().unwrap_or_default();
+            assert!(
+                reason.contains("danger_full_access")
+                    || reason.contains("bubblewrap")
+                    || reason.contains("seatbelt"),
+                "{reason}"
+            );
+        }
+        other => panic!("neither enforced nor refused: {other}"),
     }
 }
 
