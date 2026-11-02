@@ -942,8 +942,13 @@ async fn authenticate(
         .and_then(|value| value.to_str().ok());
     // Two kinds of credential reach this daemon, and the middleware is admission for only one of
     // them: an administrative signature is verified by the `Admin` extractor, which needs the body.
-    // Passing it through here is not a bypass — that route's handler refuses a request the signature
-    // does not cover, and a tenant route refuses it for having no bearer token.
+    //
+    // Passing it through here is safe **only because every route extracts one of the two**: a tenant
+    // route answers 401 through `Caller` (no principal was installed), and an admin route verifies the
+    // signature itself. A route that extracted neither would be reachable by anyone who typed this
+    // header, which is what `describe`, `metrics`, `reload` and `retire` were until they were given the
+    // guard the rest of the table had. `every_published_route_refuses_a_signature_that_verifies_nothing`
+    // is the test that keeps that sentence true.
     if header.is_some_and(|value| value.trim_start().starts_with("Nucleos-Admin")) {
         return next.run(request).await;
     }
@@ -977,7 +982,11 @@ pub fn openapi_routes() -> Vec<openapi::Route> {
     ROUTES.iter().map(|route| route.meta).collect()
 }
 
-async fn describe(State(app): State<Arc<App>>) -> Json<DescribeResponse> {
+async fn describe(caller: Caller, State(app): State<Arc<App>>) -> Json<DescribeResponse> {
+    // It reads the model and tool inventory, so it is a tenant read and not a public one — which is
+    // also what makes it safe for the middleware to pass an administrative signature through: this
+    // extractor answers 401 for a request that has no principal, and a signature is not one.
+    let _ = caller;
     Json(DescribeResponse {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         abi_version: ABI_VERSION.to_owned(),
@@ -1066,7 +1075,8 @@ async fn config(
 }
 
 /// What this daemon has counted.
-async fn metrics(State(app): State<Arc<App>>) -> Json<MetricsResponse> {
+async fn metrics(caller: Caller, State(app): State<Arc<App>>) -> Json<MetricsResponse> {
+    let _ = caller;
     Json(app.metrics().snapshot())
 }
 
@@ -1077,7 +1087,12 @@ async fn metrics(State(app): State<Arc<App>>) -> Json<MetricsResponse> {
 /// Safe to call at any time and safe to ignore: a session pinned to a retired set holds it, so the
 /// entry can be dropped without the session noticing. The count that comes back is what makes the claim
 /// checkable — "nothing was running" and "everything was running" must not produce the same answer.
-async fn retire(State(app): State<Arc<App>>) -> Result<Json<RetireResponse>, ApiError> {
+async fn retire(
+    State(app): State<Arc<App>>,
+    // A configuration-shaped action, so it takes the administrative credential and nothing else. It
+    // must stay last: it is the extractor that consumes the body the signature covered.
+    _admin: crate::admin::Admin,
+) -> Result<Json<RetireResponse>, ApiError> {
     let kernel = app.kernel()?.clone();
     let retired = kernel
         .retire()
@@ -1091,7 +1106,10 @@ async fn retire(State(app): State<Arc<App>>) -> Result<Json<RetireResponse>, Api
 /// This is the whole point of generations from the outside: a source is a process somebody else
 /// deploys, and reconnecting it must not be a restart. Sessions already running keep the set they
 /// are pinned to; sessions that start from now on get this one.
-async fn reload(State(app): State<Arc<App>>) -> Result<Json<ReloadResponse>, ApiError> {
+async fn reload(
+    State(app): State<Arc<App>>,
+    _admin: crate::admin::Admin,
+) -> Result<Json<ReloadResponse>, ApiError> {
     let kernel = app.kernel()?.clone();
     // Scoped: a read guard held across the reconnect below would make this handler's future
     // non-`Send`, and the whole route would stop compiling.

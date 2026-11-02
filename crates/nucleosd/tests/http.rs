@@ -543,26 +543,65 @@ async fn a_source_that_cannot_start_fails_the_request_rather_than_being_stored()
 
 #[tokio::test]
 async fn a_reload_with_no_sources_says_what_to_do() {
-    let response = router(running())
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/tools/reload")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    // Signed: a reload publishes a generation, so it is a configuration action and answers to the
+    // administrative credential. An unsigned request never reaches the business logic.
+    let (app, key, key_id) = governable().await;
+    let (status, error) = signed(&app, &key, &key_id, "POST", "/v1/tools/reload", "").await;
 
     // Not a silent no-op: a reload that did nothing is a caller believing it deployed something.
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let error = body_json(response).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert!(
         error["reason"]
             .as_str()
             .unwrap()
             .contains("nucleos sources add"),
         "{error}"
+    );
+}
+
+/// The invariant the authentication middleware relies on.
+///
+/// `authenticate` lets any `Authorization: Nucleos-Admin …` request reach its handler, on the argument
+/// that the handler will refuse a signature it cannot verify. That argument only holds for handlers
+/// that extract `Caller` or `Admin`. This walks **every published route** with a signature that
+/// verifies nothing and asserts none of them answers success — so a route added later without a guard
+/// fails here instead of shipping a public endpoint.
+#[tokio::test]
+async fn every_published_route_refuses_a_signature_that_verifies_nothing() {
+    let (app, _key, _key_id) = governable().await;
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("../../../openapi/v1/openapi.json")).unwrap();
+
+    let mut open = Vec::new();
+    for (path, methods) in schema["paths"].as_object().unwrap() {
+        for method in methods.as_object().unwrap().keys() {
+            let uri = path
+                .replace("{id}", "x")
+                .replace("{tenant}", "x")
+                .replace("{name}", "x");
+            let response = router(Arc::clone(&app))
+                .oneshot(
+                    Request::builder()
+                        .method(method.to_uppercase().as_str())
+                        .uri(&uri)
+                        .header("authorization", "Nucleos-Admin k:1:n:AAAA")
+                        .header("content-type", "application/json")
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            // 2xx is the bug. 3xx would be a redirect out of the guard; both are failures. A `4xx`
+            // from a body that does not parse is acceptable here — it proves nothing was *served*,
+            // and the route-specific tests prove the guard itself.
+            if response.status().is_success() || response.status().is_redirection() {
+                open.push(format!("{method} {uri} -> {}", response.status()));
+            }
+        }
+    }
+    assert!(
+        open.is_empty(),
+        "these routes answered a signature that verifies nothing: {open:?}"
     );
 }
 
