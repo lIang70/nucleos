@@ -932,5 +932,4 @@ sealed credentials, and the process ABI. None of those were on the roadmap, and 
 from a failure the earlier stages exposed.
 
 Still open, and tracked rather than promised: generation retirement (§8), forwarding MCP progress
-(`pitfalls` 56), seal-key rotation, cancelling a turn, quotas, and any transport other than the unix
-socket.
+(`pitfalls` 56), cancelling a turn, quotas, and any transport other than the unix socket.

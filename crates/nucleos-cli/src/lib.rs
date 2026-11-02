@@ -18,6 +18,7 @@ pub mod config;
 pub mod init;
 pub mod models;
 pub mod remote;
+pub mod seal;
 pub mod sources;
 pub mod tokens;
 

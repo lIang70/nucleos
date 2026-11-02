@@ -1073,3 +1073,21 @@ everything. A week of documentation discipline, undone to save one flag.
 that gets a flag, not the property. The test that now guards it asks the only question worth asking: is
 the key's path inside the root's path?
 
+## 75. A rotation is two phases, and the first writes nothing
+
+**Decision.** `nucleos seal rotate` opens every sealed row with the current key before it writes any of
+them back, verifies each row with the new key afterwards, and requires a restart.
+
+**Why the order.** A store half under the old key and half under the new is a store that loses models at
+the next start, and the failure appears at boot rather than at the command — where nobody connects it to
+the rotation. Opening first means the common failure (the operator named the wrong current key) leaves
+everything exactly as it was.
+
+**Why no hot swap.** The daemon resolves the seal key at start-up and keeps it. Swapping under a running
+daemon would produce the same split store, with the added confusion that the daemon would keep serving
+with a key the store no longer uses. A restart is a boundary the operator can see.
+
+**Why verify the write.** Writing a value the new key cannot open is indistinguishable, at write time,
+from writing one it can. The read-back is three lines and it is the difference between a rotation report
+that means something and one that means "no error was raised".
+

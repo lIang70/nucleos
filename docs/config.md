@@ -331,6 +331,15 @@ believing the weaker one has it.
 stronger source on this platform, because choosing one needs `systemd-creds` and a unit edit on Linux and
 `sudo` plus an ACL decision on macOS — neither of which a bootstrap command should do silently.
 
+**Rotation is two steps, and the second is a restart.** `nucleos seal rotate --new-seal-key <path>`
+re-seals every stored credential: it opens them all with the current key first, and only then writes any
+back — a store that fails halfway is a store that still works under the old key. It writes the new key,
+verifies each row opens with it, and records the change.
+
+The daemon keeps its seal key from start-up and does not hot-swap it. Swapping under a running daemon
+would leave a window where some rows are openable by the new key and some by the old, with nothing in the
+system saying which — so the command stops at a clean boundary, and its output says to restart.
+
 **The daemon says which source answered.** `seal_key_loaded` reports `kind: credential | keychain | file`
 at start-up. Without it, a deployment that moved the key to a TPM-sealed credential and a deployment that
 silently kept reading the old file look identical — the question "which one am I running" is the same one

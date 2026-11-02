@@ -16,6 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Some("tokens") => tokens(&args[1..]),
         Some("sources") => sources(&args[1..]),
         Some("admin") => admin(&args[1..]),
+        Some("seal") => seal(&args[1..]),
         Some("--help" | "-h") | None => {
             println!("{USAGE}");
             Ok(())
@@ -40,6 +41,7 @@ usage: nucleos <command> [options]
   sources add          run one            (--name --command [--arg …] [--env K=V …])
   sources remove <name> stop one, publishing a generation without its tools
   admin recover        enrol a new administrator key using the recovery password
+  seal rotate          re-seal stored credentials under a new key (stop the daemon first)
   --help               this text
 
 init options:
@@ -422,5 +424,58 @@ fn admin(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync>
     println!(
         "\nno restart needed: the daemon re-reads the key list on every request, so this key works now"
     );
+    Ok(())
+}
+
+/// `nucleos seal rotate`: re-seal everything under a new key.
+///
+/// Local, and documented as needing the daemon stopped: the daemon resolves its seal key at start-up
+/// and keeps it, so a rotation under a running daemon leaves rows it cannot open.
+fn seal(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let (command, rest) = match args.split_first() {
+        Some((command, rest)) => (command.as_str(), rest),
+        None => return Err(Box::from("seal needs a subcommand: rotate")),
+    };
+    if command != "rotate" {
+        return Err(Box::from(format!("unknown seal subcommand {command:?}")));
+    }
+
+    let (mut root, mut current, mut next) = (None, None, None);
+    let mut iter = rest.iter();
+    while let Some(arg) = iter.next() {
+        let mut value = |what: &str| -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+            iter.next()
+                .cloned()
+                .ok_or_else(|| Box::from(format!("{what} needs a value")))
+        };
+        match arg.as_str() {
+            "--root" => root = Some(PathBuf::from(value("--root")?)),
+            "--seal-key" => current = Some(PathBuf::from(value("--seal-key")?)),
+            "--new-seal-key" => next = Some(PathBuf::from(value("--new-seal-key")?)),
+            other => return Err(Box::from(format!("unknown option {other:?}"))),
+        }
+    }
+
+    let layout = nucleosd_layout(root, None);
+    let current = current.unwrap_or(layout.0.join("seal.key"));
+    let next = next.ok_or_else(|| {
+        Box::<dyn std::error::Error + Send + Sync>::from(
+            "--new-seal-key needs a path outside the data directory",
+        )
+    })?;
+
+    let runtime = tokio::runtime::Runtime::new()?;
+    let done = runtime.block_on(nucleos_cli::seal::rotate(&nucleos_cli::seal::Options {
+        root: layout.0.clone(),
+        current,
+        next: next.clone(),
+    }))?;
+
+    println!("✓ re-sealed        {} credential(s): {}", done.rotated, done.models.join(", "));
+    println!("✓ new key          {}", done.key_path.display());
+    println!("  previous source  {}", done.previous);
+    println!();
+    println!("The daemon keeps its seal key from start-up, so restart it now — and delete or revoke the");
+    println!("previous key once it reports the new source.");
     Ok(())
 }
