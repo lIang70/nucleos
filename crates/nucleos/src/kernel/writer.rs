@@ -14,16 +14,15 @@ use crate::contract::{Event, EventKind};
 use crate::error::Result;
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 
 /// A session's log, as a task sees it.
 #[derive(Clone)]
 pub(crate) struct EventWriter {
     pub(crate) store: Arc<dyn crate::adapter::Store>,
     pub(crate) session: SessionKey,
-    pub(crate) seq: Arc<AtomicU64>,
-    /// Shared with the session: taking a number and writing it is one step, not two.
-    lock: Arc<tokio::sync::Mutex<()>>,
+    /// The log's own counter and lock, shared with the session and every other writer of it.
+    pub(crate) head: Arc<super::log::LogHead>,
     clock: Arc<dyn Clock>,
 }
 
@@ -31,15 +30,13 @@ impl EventWriter {
     pub(crate) fn new(
         store: Arc<dyn crate::adapter::Store>,
         session: SessionKey,
-        seq: Arc<AtomicU64>,
-        lock: Arc<tokio::sync::Mutex<()>>,
+        head: Arc<super::log::LogHead>,
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
             store,
             session,
-            seq,
-            lock,
+            head,
             clock,
         }
     }
@@ -48,8 +45,8 @@ impl EventWriter {
         // Reservation and write, atomically with respect to every other writer of this log — the
         // kernel's `emit` included. Without it, stdout and stderr take numbers that reach the store
         // out of order, and the store refuses the second as a gap: the output is silently lost.
-        let _appending = self.lock.lock().await;
-        let seq = self.seq.fetch_add(1, Ordering::SeqCst);
+        let _appending = self.head.appending.lock().await;
+        let seq = self.head.seq.fetch_add(1, Ordering::SeqCst);
         let event = Event {
             seq,
             session: self.session.id.clone(),

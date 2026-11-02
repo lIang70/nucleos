@@ -37,20 +37,12 @@ pub struct Session {
     pub(crate) credit_tokens: u64,
     pub(crate) budget: Budget,
     pub(crate) started_unix_millis: u64,
-    /// The next event's sequence number.
-    /// One past the last event in the log.
+    /// The counter and the lock for this session's log.
     ///
-    /// Shared, not copied: a process supervisor appends to the same log, and two counters counting
-    /// the same events disagree the moment one of them writes — which is a sequence gap the store
-    /// refuses, on a call that did nothing wrong.
-    pub(crate) seq: Arc<std::sync::atomic::AtomicU64>,
-    /// Makes "take the next sequence number" and "write that event" one step.
-    ///
-    /// The counter alone is not enough. Two tasks reading a process's output — stdout and stderr —
-    /// both reserve a number and then await the store; if the second reservation reaches the store
-    /// first, the store sees a gap and refuses it, and that chunk of output is gone. The counter
-    /// guarantees the numbers are unique; this guarantees they arrive in order.
-    pub(crate) append_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Not the handle's own: the kernel keeps one per `(tenant, session)` and hands the same `Arc` to
+    /// every writer, because `load` builds a new handle per request and a copied counter is a counter
+    /// that disagrees with itself. See `kernel/log.rs`.
+    pub(crate) log: Arc<super::log::LogHead>,
     /// Calls waiting on a human. A batch can have several.
     pub(crate) pending: Vec<PendingCall>,
     /// The application's own state, opaque to the kernel.
@@ -85,6 +77,22 @@ pub struct Session {
     pub(crate) system: Option<String>,
     /// Tool names this session may use. Empty means every registered tool.
     pub(crate) tools: Vec<String>,
+}
+
+/// What it takes to open a session.
+///
+/// A struct rather than eight positional arguments: `Session::new` grew one argument at a time, and the
+/// ones that look alike — a generation and its tools, a budget and its credit — are exactly the ones a
+/// caller can transpose without the compiler noticing.
+pub(crate) struct New {
+    pub(crate) id: SessionId,
+    pub(crate) principal: Principal,
+    pub(crate) generation: Generation,
+    pub(crate) tools: Arc<super::generation::ToolSet>,
+    pub(crate) log: Arc<super::log::LogHead>,
+    pub(crate) budget: Budget,
+    pub(crate) credit_tokens: u64,
+    pub(crate) now_unix_millis: u64,
 }
 
 impl Session {
@@ -229,42 +237,33 @@ impl Session {
         &self.ledger
     }
 
-    /// The lock every writer to this session's log holds while it takes a number and appends.
+    /// The counter and lock every writer to this session's log shares.
     #[must_use]
-    pub(crate) fn append_lock(&self) -> Arc<tokio::sync::Mutex<()>> {
-        Arc::clone(&self.append_lock)
+    pub(crate) fn log_head(&self) -> Arc<super::log::LogHead> {
+        Arc::clone(&self.log)
     }
 
     /// The next event sequence number.
     #[must_use]
     pub fn next_seq(&self) -> u64 {
-        self.seq.load(std::sync::atomic::Ordering::SeqCst)
+        self.log.next()
     }
 
-    pub(crate) fn new(
-        id: SessionId,
-        principal: Principal,
-        generation: Generation,
-        tools: Arc<super::generation::ToolSet>,
-        budget: Budget,
-        credit_tokens: u64,
-        now_unix_millis: u64,
-    ) -> Self {
+    pub(crate) fn new(init: New) -> Self {
         Self {
-            id,
-            principal,
-            generation,
-            toolset: super::generation::Pinned::new(tools),
+            id: init.id,
+            principal: init.principal,
+            generation: init.generation,
+            toolset: super::generation::Pinned::new(init.tools),
             state: SessionState::Open,
             messages: Vec::new(),
             usage: Usage::default(),
             steps: 0,
             ledger: Ledger::default(),
-            credit_tokens,
-            budget,
-            started_unix_millis: now_unix_millis,
-            seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            append_lock: Arc::new(tokio::sync::Mutex::new(())),
+            credit_tokens: init.credit_tokens,
+            budget: init.budget,
+            started_unix_millis: init.now_unix_millis,
+            log: init.log,
             pending: Vec::new(),
             data: std::collections::BTreeMap::new(),
             workspace: None,
@@ -340,13 +339,13 @@ impl Session {
     /// `None` before anything has been recorded: a snapshot that includes no event would claim
     /// a `seq` the log does not have.
     pub(crate) fn snapshot(&self) -> Option<Snapshot> {
-        if self.seq.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+        if self.log.next() == 0 {
             return None;
         }
         Some(Snapshot {
             session: self.id.clone(),
             principal: self.principal.clone(),
-            seq: self.seq.load(std::sync::atomic::Ordering::SeqCst) - 1,
+            seq: self.log.next() - 1,
             generation: self.generation,
             state: self.state,
             messages: self.messages.clone(),
@@ -376,6 +375,7 @@ impl Session {
         snapshot: Snapshot,
         principal: Principal,
         tools: Arc<super::generation::ToolSet>,
+        log: Arc<super::log::LogHead>,
         budget: Budget,
         now_unix_millis: u64,
     ) -> Self {
@@ -395,11 +395,10 @@ impl Session {
             // waiting for a human is not the model's latency, and charging it would make every
             // wall-clock budget meaningless the first time somebody thought about it.
             started_unix_millis: now_unix_millis,
-            // The next event continues the log; the snapshot's `seq` is the last one included.
-            seq: Arc::new(std::sync::atomic::AtomicU64::new(
-                snapshot.seq.saturating_add(1),
-            )),
-            append_lock: Arc::new(tokio::sync::Mutex::new(())),
+            // The counter belongs to the log, not to this handle: `load` may be handing out a second
+            // handle for a session a supervisor is still writing to, and the head it resolves to is
+            // already at the right number.
+            log,
             pending: snapshot.pending,
             data: snapshot.data,
             routing: snapshot.routing,
@@ -426,18 +425,19 @@ mod tests {
     use super::*;
 
     fn session() -> Session {
-        Session::new(
-            SessionId::new("s1"),
-            Principal {
+        Session::new(New {
+            id: SessionId::new("s1"),
+            principal: Principal {
                 tenant: "acme".to_owned(),
                 subject: "alice".to_owned(),
             },
-            Generation(1),
-            std::sync::Arc::new(crate::kernel::generation::ToolSet::default()),
-            Budget::default(),
-            100,
-            0,
-        )
+            generation: Generation(1),
+            tools: std::sync::Arc::new(crate::kernel::generation::ToolSet::default()),
+            log: crate::kernel::log::LogHead::new(0),
+            budget: Budget::default(),
+            credit_tokens: 100,
+            now_unix_millis: 0,
+        })
     }
 
     #[test]

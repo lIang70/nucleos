@@ -1819,6 +1819,89 @@ async fn sessions_can_be_listed_and_filtered_by_kind() {
     assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
 }
 
+/// The page is chosen by the store, not narrowed afterwards.
+///
+/// A listing that asks the store for two rows and then discards the ones belonging to somebody else
+/// answers with one row *and* a cursor: the client is told "there is more" and "you have seen
+/// everything" by the same response. The subject has to be part of the query.
+#[tokio::test]
+async fn a_page_is_not_shortened_after_the_store_chose_it() {
+    use nucleos::adapter::AllowAll;
+    use nucleos::contract::{Principal, Routing};
+
+    let store: Arc<dyn nucleos::adapter::Store> =
+        Arc::new(nucleos_sqlite::SqliteStore::in_memory().unwrap());
+    let kernel = Arc::new(
+        nucleos::Kernel::builder()
+            .model(
+                "primary",
+                Arc::new(nucleos_testkit::FakeModel::text(["unused"])),
+            )
+            .store(Arc::clone(&store))
+            .policy(Arc::new(AllowAll))
+            .routing(Routing {
+                chain: vec!["primary".to_owned()],
+                retries: 0,
+            })
+            .build()
+            .unwrap(),
+    );
+    // The daemon's own principal is the caller when no tokens are configured, so this is "alice".
+    let alice = Principal {
+        tenant: "acme".to_owned(),
+        subject: "alice".to_owned(),
+    };
+    let bob = Principal {
+        tenant: "acme".to_owned(),
+        subject: "bob".to_owned(),
+    };
+    let app = Arc::new(
+        App::new(
+            Arc::clone(&kernel),
+            alice.clone(),
+            vec!["primary".to_owned()],
+        )
+        .with_store(Arc::clone(&store)),
+    );
+
+    let spec = || nucleos::kernel::SessionSpec {
+        credit_tokens: 1_000,
+        ..Default::default()
+    };
+    kernel
+        .open(&alice, nucleos::contract::SessionId::new("mine"), spec())
+        .await
+        .unwrap();
+    for id in ["theirs-1", "theirs-2", "theirs-3"] {
+        kernel
+            .open(&bob, nucleos::contract::SessionId::new(id), spec())
+            .await
+            .unwrap();
+    }
+
+    let body = body_json(
+        router(Arc::clone(&app))
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/sessions?limit=2")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+
+    let sessions = body["sessions"].as_array().unwrap();
+    assert_eq!(sessions.len(), 1, "only the caller's session: {body}");
+    assert_eq!(sessions[0]["session"], "mine");
+    assert!(
+        body["next_page_token"].is_null(),
+        "there is nothing after it, so there is no cursor: {body}"
+    );
+}
+
 #[tokio::test]
 async fn a_listing_pages_by_cursor() {
     let (app, _, _) = governable().await;

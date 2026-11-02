@@ -128,6 +128,7 @@ async fn a_listing_pages_by_cursor_and_filters_by_kind() {
     let first = store
         .sessions(&SessionQuery {
             tenant: "acme".to_owned(),
+            subject: None,
             kind: None,
             limit: 2,
             after: None,
@@ -140,6 +141,7 @@ async fn a_listing_pages_by_cursor_and_filters_by_kind() {
     let second = store
         .sessions(&SessionQuery {
             tenant: "acme".to_owned(),
+            subject: None,
             kind: None,
             limit: 2,
             after: Some(next),
@@ -156,6 +158,7 @@ async fn a_listing_pages_by_cursor_and_filters_by_kind() {
     let processes = store
         .sessions(&SessionQuery {
             tenant: "acme".to_owned(),
+            subject: None,
             kind: Some(SessionKind::Process),
             limit: 10,
             after: None,
@@ -304,6 +307,7 @@ async fn two_tenants_can_share_a_session_id() {
         let page = store
             .sessions(&SessionQuery {
                 tenant: tenant.to_owned(),
+                subject: None,
                 kind: None,
                 limit: 10,
                 after: None,
@@ -321,6 +325,7 @@ async fn two_tenants_can_share_a_session_id() {
     let stranger = store
         .sessions(&SessionQuery {
             tenant: "stranger".to_owned(),
+            subject: None,
             kind: None,
             limit: 10,
             after: None,

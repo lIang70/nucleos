@@ -642,8 +642,16 @@ That single choice buys four things: **recovery** after a crash, **replay** for 
 evaluation (recorded model deltas are fed back, no new calls), **audit** (a `denied` event
 is evidence), and **resumption** (`Run(from_seq)` needs no extra machinery).
 
-The cost is event-schema evolution, paid up front: every event carries `schema_version`
-and there is an upcaster table from day one.
+The cost is event-schema evolution, and the payment is split. Every event carries `schema_version`,
+and an event kind this build does not recognise is **carried, not refused** (`EventKind::Unknown`):
+a log is shared by whichever builds run against it, and "cannot parse one row" is not a state a
+durable record may have. `load` reads the version and says once, in the log, when a session contains
+events written by a newer build.
+
+What does **not** exist yet is the upcaster: no version has been incremented, so there is nothing to
+upcast from. The receptor is the part that has to exist first — it is what makes the first increment
+survivable — and `sessions.db` now refuses to open a store written by a newer build rather than
+failing at the first `load`.
 
 ## 10.1 Reloading a session that died mid-turn
 
@@ -834,6 +842,11 @@ Two things that had to be stated rather than discovered:
 TLS material is read once at start-up and reloading it means a restart, for the same reason the seal
 key does (`pitfalls` 12): a transport that changes under a live connection is a connection nobody can
 reason about.
+
+**One root, one writer.** The daemon takes an advisory lock on `<root>/nucleosd.lock` before it binds a
+socket (`layout::claim`). Without it, two daemons on one root interleave sequence numbers into one log, and
+the first symptom is a `load` refusing an event as a gap — hours later, on a session neither is watching. The
+lock is released by the kernel when the process dies, so a crash leaves nothing to clean up.
 
 **Tenant isolation is in the schema.** The store's key is `(tenant, session)`, not the id alone:
 session identifiers are chosen by callers, and two tenants each choosing `s1` is ordinary rather than

@@ -39,6 +39,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     layout
         .create()
         .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { Box::new(error) })?;
+    // Before the socket is bound and before a store is opened: two writers on one root interleave
+    // sequence numbers into a log that looks fine until a `load` refuses it, and nothing downstream
+    // would ever attribute that to a second daemon.
+    let _holding_the_root = nucleosd::layout::claim(&layout)?;
     let socket = layout.socket.clone();
 
     // A stale socket file from a previous run would make `bind` fail with an address-in-use

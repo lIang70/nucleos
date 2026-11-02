@@ -57,7 +57,7 @@ impl Kernel {
         // The turn is registered so a cancel can find it, and the call races the signal. Dropping the
         // call's future is what stops it: the adapter's stream owns the HTTP response, and dropping it
         // closes the connection rather than leaving a request running that nobody reads.
-        let cancel = self.begin_turn(&session.id);
+        let cancel = self.begin_turn(&session.key());
         let outcome = tokio::select! {
             result = self.call_model(session, messages, &targets) => result,
             () = cancel.cancelled() => Err(Error::new(
@@ -65,7 +65,7 @@ impl Kernel {
                 "the turn was cancelled by the caller",
             )),
         };
-        self.end_turn(&session.id);
+        self.end_turn(&session.key(), &cancel);
 
         let call = match outcome {
             Ok(call) => call,

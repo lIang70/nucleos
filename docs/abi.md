@@ -204,6 +204,9 @@ state, stop reason, cursor — for the sessions the caller owns. Not full views:
 sessions must not load a hundred conversations, and nothing a caller does with a listing needs the
 messages.
 
+The page is chosen by the store with the subject already applied, so a short page means there is nothing
+left — never that somebody else's rows were removed after the cursor was decided.
+
 `kind` is a filter, and an unknown value is a `400` rather than an empty page: answering "nothing" to a
 misspelled filter is how a caller concludes the feature is broken. Another subject's sessions are
 absent rather than refused — a listing that names what the caller may not open is a directory of other

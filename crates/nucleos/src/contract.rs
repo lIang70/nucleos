@@ -738,6 +738,20 @@ pub enum EventKind {
         /// For humans.
         message: String,
     },
+    /// An event this build does not understand.
+    ///
+    /// Written by a newer daemon and read by an older one: carried through loading rather than
+    /// refused, because a store is shared by whichever builds happen to run against it and "cannot
+    /// parse one row" is not a state a durable log may have. `wire.md` says the same thing about the
+    /// wire — an unknown union member is carried, not failed — and this is the half that applies to
+    /// the record.
+    ///
+    /// The original kind name is **not** preserved: serde's `other` arm keeps the event, not the tag.
+    /// That is deliberate. Rewriting an event is something this kernel never does, so the only copy of
+    /// the original body is the stored one, and the correct behaviour for a build that does not
+    /// understand an event is to leave it exactly as it found it.
+    #[serde(other)]
+    Unknown,
 }
 
 impl EventKind {
@@ -770,6 +784,7 @@ impl EventKind {
             Self::GenerationMigrated { .. } => "nucleos.v1.generation_migrated",
             Self::TurnStarted { .. } => "nucleos.v1.turn_started",
             Self::TurnFailed { .. } => "nucleos.v1.turn_failed",
+            Self::Unknown => "nucleos.v1.unknown",
             Self::MessageCompleted { .. } => "nucleos.v1.message_completed",
             Self::Progress { .. } => "nucleos.v1.progress",
         }

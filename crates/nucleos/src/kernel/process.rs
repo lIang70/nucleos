@@ -21,7 +21,6 @@ use crate::error::{Error, Result};
 use std::collections::BTreeMap;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, mpsc, oneshot};
@@ -84,9 +83,9 @@ pub(crate) struct Launch<'a> {
     pub spec: &'a ProcessSpec,
     pub workspace: Option<&'a String>,
     pub sandbox: &'a SandboxPolicy,
-    pub seq: &'a Arc<AtomicU64>,
-    /// The session's append lock: the supervisor is a second writer to the same log.
-    pub append_lock: Arc<tokio::sync::Mutex<()>>,
+    /// The session's log head: the supervisor is a second writer to the same log, and it must be the
+    /// same counter and the same lock or the two writers renumber each other.
+    pub head: Arc<super::log::LogHead>,
     pub clock: Arc<dyn crate::adapter::Clock>,
 }
 
@@ -100,8 +99,7 @@ impl Supervisor {
             spec,
             workspace,
             sandbox,
-            seq,
-            append_lock,
+            head,
             clock,
         } = launch;
         if spec.argv.is_empty() {
@@ -152,10 +150,8 @@ impl Supervisor {
                 tenant: tenant.to_owned(),
                 id: session.clone(),
             },
-            // The same counter the kernel's handle uses, not a copy of its value: this task and the
-            // caller both append to one log, and a copy is a second truth about where the log ends.
-            Arc::clone(seq),
-            append_lock,
+            // The log's head, not a copy: this task and the caller both append to one log.
+            Arc::clone(&head),
             clock,
         );
         let captured = Arc::new(Mutex::new(Captured::default()));
@@ -379,7 +375,7 @@ async fn supervise(
         .await;
     if let Ok(Some(mut snapshot)) = log.store.snapshot(&log.session).await {
         snapshot.state = crate::contract::SessionState::Closed;
-        snapshot.seq = log.seq.load(Ordering::SeqCst).saturating_sub(1);
+        snapshot.seq = log.head.next().saturating_sub(1);
         if let Some(process) = snapshot.process.as_mut() {
             process.status = crate::contract::ProcessStatus::Exited { output: summary };
         }
@@ -453,6 +449,10 @@ impl Kernel {
                 .store
                 .sessions(&crate::adapter::SessionQuery {
                     tenant: tenant.to_owned(),
+                    // The process listing is per tenant, not per subject: a process session is a
+                    // supervisor's handle on a child, and which operator started it does not narrow
+                    // what the node is running.
+                    subject: None,
                     kind: Some(crate::contract::SessionKind::Process),
                     limit: page_size,
                     after: after.clone(),
@@ -558,8 +558,7 @@ impl Kernel {
                 spec: &process.spec,
                 workspace: session.workspace.as_ref(),
                 sandbox: &session.sandbox,
-                seq: &session.seq,
-                append_lock: session.append_lock(),
+                head: session.log_head(),
                 tenant: &session.principal.tenant,
                 clock: Arc::clone(&self.clock),
             })

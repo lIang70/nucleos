@@ -42,6 +42,12 @@ impl std::fmt::Display for SessionKey {
 pub struct SessionQuery {
     /// Only this tenant's sessions. The listing is scoped for the same reason the lookups are.
     pub tenant: String,
+    /// Only this subject's sessions within the tenant.
+    ///
+    /// A filter in the store rather than a filter afterwards: a page that is narrowed by the caller
+    /// after the store has already chosen it can come back short *and* with a cursor, which tells a
+    /// client both "there are more" and "you have seen them all".
+    pub subject: Option<String>,
     /// Only sessions of this kind.
     pub kind: Option<SessionKind>,
     /// How many to return.

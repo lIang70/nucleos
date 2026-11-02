@@ -23,7 +23,7 @@
 !/README.md
 !/LICENSE
 !/docs/
-!/docs/**
+!/docs/**.md
 !/openapi/
 !/openapi/**
 

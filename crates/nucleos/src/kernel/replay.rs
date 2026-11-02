@@ -147,6 +147,9 @@ pub(crate) fn fold(session: &mut Session, event: &Event) -> Applied {
             Applied::State
         }
         EventKind::TurnFailed { .. } => Applied::Narrative,
+        // Written by a build that knows more than this one. It is narrative by definition: nothing
+        // here can say what state it implies, and guessing is how a downgrade corrupts a session.
+        EventKind::Unknown => Applied::Narrative,
         EventKind::Failed { .. } => {
             session.stop = Some(crate::contract::StopReason::Failed);
             Applied::State

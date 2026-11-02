@@ -171,8 +171,7 @@ impl Kernel {
         let writer = super::writer::EventWriter::new(
             Arc::clone(&self.store),
             session.key(),
-            Arc::clone(&session.seq),
-            session.append_lock(),
+            session.log_head(),
             Arc::clone(&self.clock),
         );
         let progress_writer = tokio::spawn(async move {

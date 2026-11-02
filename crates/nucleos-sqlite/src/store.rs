@@ -68,14 +68,49 @@ impl SqliteStore {
                      tenant  text    not null,
                      session text    not null,
                      kind    text,
+                     subject text,
                      primary key (tenant, session)
                  ) without rowid;
-                 create index if not exists sessions_by_kind on sessions (tenant, kind, session);",
+                 create index if not exists sessions_by_kind on sessions (tenant, kind, session);
+
+                 -- The session store's own version, separate from system.db's: the two files have two
+                 -- lifecycles, and a version that covers both would refuse an upgrade of one because
+                 -- the other had not caught up.
+                 create table if not exists meta (
+                     key   text primary key,
+                     value text not null
+                 );",
             )
             .map_err(failed)?;
-        Ok(Self {
+        // Additive migration for a database written before `subject` existed. The listing can filter
+        // by a column that is null for those rows, which is honest: an old row's owner is unknown
+        // here, and `snapshot` still knows it.
+        let has_subject = connection
+            .prepare("pragma table_info(sessions)")
+            .and_then(|mut statement| {
+                statement
+                    .query_map([], |row| row.get::<_, String>(1))
+                    .and_then(|names| {
+                        let mut found = false;
+                        for name in names {
+                            if name? == "subject" {
+                                found = true;
+                            }
+                        }
+                        Ok(found)
+                    })
+            })
+            .map_err(failed)?;
+        if !has_subject {
+            connection
+                .execute_batch("alter table sessions add column subject text")
+                .map_err(failed)?;
+        }
+        let store = Self {
             connection: Arc::new(Mutex::new(connection)),
-        })
+        };
+        store.check_version()?;
+        Ok(store)
     }
 
     /// Run `work` on the blocking pool with the connection.
@@ -167,14 +202,17 @@ impl Store for SqliteStore {
             let mut statement = connection
                 .prepare(
                     "select session from sessions
-                     where tenant = ?1 and session > ?2 and (?3 is null or kind = ?3)
+                     where tenant = ?1 and session > ?2
+                       and (?3 is null or kind = ?3)
+                       and (?5 is null or subject = ?5)
                      order by session limit ?4",
                 )
                 .map_err(failed)?;
             let rows = statement
-                .query_map(params![query.tenant, after, kind, limit], |row| {
-                    row.get::<_, String>(0)
-                })
+                .query_map(
+                    params![query.tenant, after, kind, limit, query.subject],
+                    |row| row.get::<_, String>(0),
+                )
                 .map_err(failed)?;
             let mut ids: Vec<String> = rows
                 .collect::<std::result::Result<_, _>>()
@@ -247,12 +285,14 @@ impl Store for SqliteStore {
                 .map_err(failed)?;
             transaction
                 .execute(
-                    "insert into sessions (tenant, session, kind) values (?1, ?2, ?3)
-                     on conflict (tenant, session) do update set kind = excluded.kind",
+                    "insert into sessions (tenant, session, kind, subject) values (?1, ?2, ?3, ?4)
+                     on conflict (tenant, session) do update set kind = excluded.kind,
+                                                                 subject = excluded.subject",
                     params![
                         snapshot.principal.tenant,
                         snapshot.session.as_str(),
-                        kind_name(snapshot.kind)
+                        kind_name(snapshot.kind),
+                        snapshot.principal.subject.clone(),
                     ],
                 )
                 .map_err(failed)?;
@@ -311,4 +351,171 @@ fn kind_name(kind: SessionKind) -> &'static str {
 fn failed(error: rusqlite::Error) -> Error {
     tracing::error!(event = "store_failed", detail = %error);
     Error::internal(format!("store: {error}"))
+}
+
+/// The session store's schema version.
+pub const SCHEMA_VERSION: u32 = 1;
+
+impl SqliteStore {
+    /// Record the version on first open, and refuse a store written by a newer build.
+    ///
+    /// The refusal is the point. `sessions.db` is the durable record of every conversation; opening one
+    /// written by a newer daemon with older assumptions is how events stop being written (a column that
+    /// is now required), or worse, are written in a shape the new build cannot fold. "Upgrade the
+    /// daemon, do not downgrade the store" is a sentence an operator can act on; a parse error at the
+    /// first `load` is not.
+    fn check_version(&self) -> Result<()> {
+        let connection = self
+            .connection
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let stored: Option<String> = connection
+            .query_row(
+                "select value from meta where key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(failed)?;
+        match stored {
+            None => {
+                connection
+                    .execute(
+                        "insert into meta (key, value) values ('schema_version', ?1)",
+                        params![SCHEMA_VERSION.to_string()],
+                    )
+                    .map_err(failed)?;
+                Ok(())
+            }
+            Some(value) => {
+                let version: u32 = value.parse().map_err(|_| {
+                    Error::invalid(format!(
+                        "session store schema version {value:?} is not a number"
+                    ))
+                })?;
+                if version > SCHEMA_VERSION {
+                    return Err(Error::invalid(format!(
+                        "session store is schema {version}, this build understands {SCHEMA_VERSION}; \
+                         upgrade nucleosd rather than downgrading the store"
+                    )));
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// The version this store records.
+    pub fn schema_version(&self) -> Result<u32> {
+        let connection = self
+            .connection
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let stored: Option<String> = connection
+            .query_row(
+                "select value from meta where key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(failed)?;
+        Ok(stored
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(SCHEMA_VERSION))
+    }
+}
+
+#[cfg(test)]
+mod version_and_foreign_kinds {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    /// An event written by a build that knows more kinds than this one.
+    ///
+    /// Inserted as raw JSON, the way a newer daemon would have written it. Refusing it would make the
+    /// whole session unreadable over one event the reader does not recognise — the exact failure mode a
+    /// durable format may not have.
+    #[tokio::test]
+    async fn a_kind_from_the_future_is_carried_not_refused() {
+        let store = SqliteStore::in_memory().unwrap();
+        let key = SessionKey::new("acme", SessionId::new("s1"));
+        let body = r#"{"seq":0,"session":"s1","at_unix_millis":1,"schema_version":99,
+                       "kind":"something_from_the_future","detail":{"anything":true}}"#;
+        store
+            .run(move |connection| {
+                connection
+                    .execute(
+                        "insert into events (tenant, session, seq, body) values ('acme','s1',0,?1)",
+                        params![body],
+                    )
+                    .map_err(failed)?;
+                connection
+                    .execute(
+                        "insert into sessions (tenant, session, kind) values ('acme','s1',null)",
+                        [],
+                    )
+                    .map_err(failed)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        let events = store.events_since(&key, 0).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, nucleos::contract::EventKind::Unknown);
+        assert_eq!(events[0].schema_version, 99, "the version is carried too");
+    }
+
+    /// A store written by a newer daemon refuses to open, and says what to do about it.
+    #[tokio::test]
+    async fn a_store_from_a_newer_build_is_refused() {
+        let path = std::env::temp_dir().join(format!("nucleos-future-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        {
+            let store = SqliteStore::open(&path).unwrap();
+            store
+                .run(|connection| {
+                    connection
+                        .execute(
+                            "update meta set value = '99' where key = 'schema_version'",
+                            [],
+                        )
+                        .map_err(failed)?;
+                    Ok(())
+                })
+                .await
+                .unwrap();
+        }
+        let error = SqliteStore::open(&path).unwrap_err();
+        assert!(
+            error.reason().contains("upgrade nucleosd"),
+            "{}",
+            error.reason()
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// An older store opens: tolerating additive change is what the version is for.
+    #[tokio::test]
+    async fn a_store_from_an_older_build_opens() {
+        let path = std::env::temp_dir().join(format!("nucleos-past-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        {
+            let store = SqliteStore::open(&path).unwrap();
+            store
+                .run(|connection| {
+                    connection
+                        .execute(
+                            "update meta set value = '0' where key = 'schema_version'",
+                            [],
+                        )
+                        .map_err(failed)?;
+                    Ok(())
+                })
+                .await
+                .unwrap();
+        }
+        assert!(SqliteStore::open(&path).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
 }

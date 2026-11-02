@@ -16,6 +16,7 @@ pub(crate) mod generation;
 pub(crate) mod inference;
 pub(crate) mod lifecycle;
 pub(crate) mod live;
+pub(crate) mod log;
 pub(crate) mod process;
 pub(crate) mod replay;
 pub(crate) mod route;
@@ -124,11 +125,19 @@ pub struct Kernel {
     generations: std::sync::RwLock<generation::Generations>,
     /// The events this kernel has written, for anything watching a turn as it runs.
     live: live::Hub,
+    /// The head of every log this kernel is writing to.
+    ///
+    /// Keyed by the log, not by the handle: `load` mints a handle per request, and a counter that is
+    /// copied per handle is a counter that disagrees with itself. See `kernel/log.rs`.
+    logs: std::sync::Mutex<
+        std::collections::BTreeMap<crate::adapter::SessionKey, std::sync::Arc<log::LogHead>>,
+    >,
     /// Turns that are running right now, so a cancel can reach the one it names.
     ///
-    /// Keyed by session because a session runs one turn at a time: two concurrent inferences on one
-    /// session would interleave in its message list, which the kernel has never allowed.
-    turns: RwLock<std::collections::BTreeMap<SessionId, Arc<cancel::Cancel>>>,
+    /// Keyed by `(tenant, session)`, like every other per-session thing: session ids are chosen by
+    /// callers, so two tenants each naming one `s1` is ordinary. Keyed by id alone, one tenant's
+    /// `end_turn` could retire another tenant's turn and its `cancel` would address the wrong one.
+    turns: RwLock<std::collections::BTreeMap<crate::adapter::SessionKey, Arc<cancel::Cancel>>>,
     /// Per-tenant ceilings: what a tenant may use, whatever its sessions ask for.
     ///
     /// A second filter beside the session's own, not instead of it — the session's ceiling is the
@@ -379,6 +388,7 @@ impl Builder {
             models: Arc::new(RwLock::new(self.models)),
             generations: std::sync::RwLock::new(generation::Generations::first(self.tools)?),
             live: live::Hub::new(),
+            logs: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             turns: RwLock::new(std::collections::BTreeMap::new()),
             tenant_tools: std::sync::RwLock::new(std::collections::BTreeMap::new()),
             tenant_models: std::sync::RwLock::new(std::collections::BTreeMap::new()),
@@ -420,6 +430,27 @@ impl Kernel {
         Ok(())
     }
 
+    /// The head of a session's log, created on first use.
+    ///
+    /// `next_seq` is where the log continues *if this kernel has not seen it before*: `open` passes 0,
+    /// `load` passes the snapshot's last sequence plus one. An existing head wins, because a head only
+    /// exists while something is writing — a process supervisor, a turn — and its counter is the one that
+    /// is current.
+    pub(crate) fn log_head(
+        &self,
+        key: &crate::adapter::SessionKey,
+        next_seq: u64,
+    ) -> std::sync::Arc<log::LogHead> {
+        let mut logs = self
+            .logs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::sync::Arc::clone(
+            logs.entry(key.clone())
+                .or_insert_with(|| log::LogHead::new(next_seq)),
+        )
+    }
+
     /// Follow the events this kernel writes, from now on.
     ///
     /// Subscribe **before** starting the turn: the kernel announces events as it writes them, so a
@@ -435,7 +466,7 @@ impl Kernel {
     ///
     /// The turn returns `Cancelled`, the session stays open, and what the attempt had produced stays in
     /// the log — cancelling stops a call, it does not undo a conversation.
-    pub fn cancel(&self, session: &SessionId) -> bool {
+    pub fn cancel(&self, session: &crate::adapter::SessionKey) -> bool {
         let turns = self
             .turns
             .read()
@@ -450,7 +481,7 @@ impl Kernel {
     }
 
     /// Register a turn so a cancel can find it.
-    pub(crate) fn begin_turn(&self, session: &SessionId) -> Arc<cancel::Cancel> {
+    pub(crate) fn begin_turn(&self, session: &crate::adapter::SessionKey) -> Arc<cancel::Cancel> {
         let cancel = Arc::new(cancel::Cancel::new());
         self.turns
             .write()
@@ -460,11 +491,25 @@ impl Kernel {
     }
 
     /// Forget a turn once it has ended, however it ended.
-    pub(crate) fn end_turn(&self, session: &SessionId) {
-        self.turns
+    /// Retire the turn that registered *this* signal.
+    ///
+    /// Pointer equality, not key equality: a second turn on the same session replaces the entry, and a
+    /// first turn that finished afterwards must not delete its successor's registration — otherwise
+    /// `cancel` answers "nothing running" for a turn that is still running and billing.
+    pub(crate) fn end_turn(
+        &self,
+        session: &crate::adapter::SessionKey,
+        mine: &Arc<cancel::Cancel>,
+    ) {
+        let mut turns = self
+            .turns
             .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(session);
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(registered) = turns.get(session)
+            && Arc::ptr_eq(registered, mine)
+        {
+            turns.remove(session);
+        }
     }
 
     /// Restrict what one tenant may use. `None` clears the limit; `Some(vec![])` allows nothing.

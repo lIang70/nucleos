@@ -121,7 +121,7 @@ async fn cancelling_stops_the_turn_and_leaves_the_session_open() {
                     .iter()
                     .any(|event| matches!(event.kind, EventKind::TextDelta { .. }));
                 if spoken {
-                    return kernel.cancel(&id);
+                    return kernel.cancel(&nucleos::adapter::SessionKey::new("acme", id));
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             }
@@ -171,5 +171,5 @@ async fn cancelling_a_session_that_is_not_running_says_nothing_happened() {
         .await
         .unwrap();
     // Not an error: a caller racing the end of a turn is a normal race, not a mistake.
-    assert!(!kernel.cancel(session.id()));
+    assert!(!kernel.cancel(&session.key()));
 }

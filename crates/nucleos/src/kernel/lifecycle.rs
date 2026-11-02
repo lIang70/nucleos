@@ -33,15 +33,23 @@ impl Kernel {
             let generations = self.generations();
             (generations.current(), generations.current_set())
         };
-        let mut session = session::Session::new(
+        let head = self.log_head(
+            &crate::adapter::SessionKey {
+                tenant: principal.tenant.clone(),
+                id: id.clone(),
+            },
+            0,
+        );
+        let mut session = session::Session::new(session::New {
             id,
-            principal.clone(),
+            principal: principal.clone(),
             generation,
             tools,
-            spec.budget.clone(),
-            spec.credit_tokens,
-            now,
-        );
+            log: head,
+            budget: spec.budget.clone(),
+            credit_tokens: spec.credit_tokens,
+            now_unix_millis: now,
+        });
         // The kernel's default route, then whatever the caller asked to start from.
         session.routing = self.routing.clone();
         session.retries = session.routing.retries.max(self.retries);
@@ -114,10 +122,15 @@ impl Kernel {
         // (a restore into a fresh daemon) falls back to the current one, and that fallback is what the
         // session is now pinned to.
         let tools = self.generations().set(snapshot.generation);
+        // The head of the log, not a copy of its counter. A supervisor may still be writing to this
+        // session, in which case its counter is current and this handle must join it rather than
+        // re-derive a number from the checkpoint.
+        let head = self.log_head(&key, snapshot.seq.saturating_add(1));
         let mut session = session::Session::from_snapshot(
             snapshot.clone(),
             principal.clone(),
             tools,
+            head,
             Default::default(),
             self.now(),
         );
@@ -127,7 +140,23 @@ impl Kernel {
         // reload hands back a session that owes money it forgets and forgets work it was told.
         let tail = self.store.events_since(&key, snapshot.seq + 1).await?;
         let mut unfinished = false;
+        let mut warned_about_the_future = false;
         for event in &tail {
+            // The version is read, not just written. It cannot make an event readable that is not, but
+            // it can say why a session is behaving oddly after a downgrade — and once per load is
+            // enough, because the alternative is one line per event on a long log.
+            if event.schema_version > crate::contract::Event::SCHEMA_VERSION
+                && !warned_about_the_future
+            {
+                warned_about_the_future = true;
+                tracing::warn!(
+                    event = "event_from_a_newer_build",
+                    session = %session.id,
+                    written = event.schema_version,
+                    understood = crate::contract::Event::SCHEMA_VERSION,
+                    consequence = "events this build does not recognise are carried, not applied",
+                );
+            }
             if super::replay::fold(&mut session, event) == super::replay::Applied::AbandonedTurn {
                 unfinished = true;
             }
@@ -137,9 +166,13 @@ impl Kernel {
             if super::replay::completes_a_unit(&event.kind) {
                 unfinished = false;
             }
+            // `fetch_max`, not `store`: another writer (a supervisor, a concurrent request) may have
+            // moved the head past this event while the tail was being read, and rewinding it would
+            // hand out a number that is already in the log.
             session
+                .log
                 .seq
-                .store(event.seq + 1, std::sync::atomic::Ordering::SeqCst);
+                .fetch_max(event.seq + 1, std::sync::atomic::Ordering::SeqCst);
         }
 
         // A turn the runtime did not survive is recorded rather than inferred. Nothing else in the

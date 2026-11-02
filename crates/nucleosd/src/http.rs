@@ -1256,6 +1256,8 @@ async fn inference(
     }
 
     let key = session.key();
+    // The guard needs its own copy: the pump takes `key` to filter the feed.
+    let guard_key = key.clone();
     let principal = session.principal().clone();
     let session_id = session.id().clone();
     // One past the last event, taken before anything can write: this is where this turn's events
@@ -1389,7 +1391,7 @@ async fn inference(
     Ok(Sse::new(CancelOnDrop {
         inner: ReceiverStream::new(receiver),
         kernel,
-        session: session_id,
+        session: guard_key,
         armed: true,
     })
     // A comment frame while the model is thinking: without it a silent provider is indistinguishable
@@ -1409,7 +1411,9 @@ async fn inference(
 struct CancelOnDrop {
     inner: ReceiverStream<Result<SseEvent, Infallible>>,
     kernel: Arc<Kernel>,
-    session: SessionId,
+    /// The log's key, not the id: cancelling by id alone reaches across tenants that chose the same
+    /// name, and the guard fires on a client hanging up — nobody is watching what it hits.
+    session: nucleos::adapter::SessionKey,
     armed: bool,
 }
 
@@ -1432,7 +1436,11 @@ impl tokio_stream::Stream for CancelOnDrop {
 impl Drop for CancelOnDrop {
     fn drop(&mut self) {
         if self.armed && self.kernel.cancel(&self.session) {
-            tracing::info!(event = "turn_cancelled_by_disconnect", session = %self.session);
+            tracing::info!(
+                event = "turn_cancelled_by_disconnect",
+                session = %self.session.id,
+                tenant = %self.session.tenant,
+            );
         }
     }
 }
@@ -1596,7 +1604,7 @@ async fn cancel_turn(
 ) -> Result<Json<CancelResponse>, ApiError> {
     let kernel = app.kernel()?.clone();
     let session = load(&kernel, &caller, &id).await?;
-    let cancelled = kernel.cancel(session.id());
+    let cancelled = kernel.cancel(&session.key());
     tracing::info!(event = "turn_cancelled", session = %id, cancelled);
     Ok(Json(CancelResponse { cancelled }))
 }
@@ -1629,6 +1637,10 @@ async fn list_sessions(
     let page = store
         .sessions(&nucleos::adapter::SessionQuery {
             tenant: caller.0.tenant.clone(),
+            // Filtered by the store, not by this loop. Narrowing a page after the store has chosen it
+            // can return a short page *and* a cursor — the client is told there is more and that it
+            // has seen everything, in the same response.
+            subject: Some(caller.0.subject.clone()),
             kind,
             limit: limit as usize,
             after: query
@@ -1653,11 +1665,6 @@ async fn list_sessions(
             // A session with events but no checkpoint yet: it exists, and nothing about it is known.
             continue;
         };
-        // Another subject's session is not listed rather than listed-and-refused: a listing that names
-        // what the caller may not open is a directory of other people's work.
-        if snapshot.principal.subject != caller.0.subject {
-            continue;
-        }
         sessions.push(SessionSummary {
             session: id.as_str().to_owned(),
             kind: snapshot.kind,

@@ -1322,3 +1322,73 @@ which is where the loss was visible.
 retry in the store or a queue per stream. The invariant is "one log, one order"; the cheapest place to
 enforce it is where the order is decided.
 
+## 87. A lock that lives on the handle locks nothing
+
+**Decision.** The sequence counter and the append lock live in one `LogHead` per `(tenant, session)`, owned
+by the kernel; every writer resolves to the same `Arc`.
+
+**The bug this replaced.** #86 put the lock *on the session*, which reads as "per session" and is not: a
+`Session` is a handle, and `load` mints one per request. So the supervisor held one lock and the next request
+held another, over one log. The append that #86 fixed stayed fixed only while exactly one handle existed for a
+session — which is the case every unit test happened to be in.
+
+**Why the test could not see it.** The regression test appended from one handle at a time, so it proved the
+lock worked, not that there was one lock. The new test (`tests/log_head.rs`) takes two handles on one session
+and has both write at once; with per-handle counters they reserve the same number and the store refuses the
+loser as a gap.
+
+**The generalisation worth keeping.** State that must be unique per *thing* cannot live on a type that is
+constructed per *use*. A handle may own caches; it may not own a counter, a lock, or a lease.
+
+## 88. One root has one writer, and nothing said so
+
+**Decision.** `nucleosd` takes an advisory `flock` on `<root>/nucleosd.lock` before it binds anything, and
+refuses to start if another process holds it.
+
+**The failure it prevents.** Two daemons on one root both append to one event log, each with its own idea of
+the last sequence number. The store refuses the second as a gap, the losing writer drops its event, and the
+first symptom is a `load` that fails hours later on a session neither daemon is looking at. Nothing in the
+system would ever attribute that to a second process.
+
+**Why advisory and not mandatory.** The root is private to the daemon's user, and a mandatory lock on a file
+somebody might legitimately inspect would turn a read into an outage. Release is automatic: the kernel drops
+an `flock` when the process dies, so a crash leaves no stale lock for an operator to hunt down — which is the
+one thing that makes lock files annoying.
+
+## 89. Narrowing a page after the store chose it is a lie with a cursor
+
+**Decision.** The subject is part of `SessionQuery`; the store filters, and the daemon does not.
+
+**The failure.** `GET /v1/sessions` asked for `limit + 1` rows, then dropped the ones belonging to another
+subject. A caller with one session of their own and three of somebody else's in the same tenant received **one
+row and a `next_page_token`** — told "there is more" and "you have seen everything" in the same response. A
+client that trusts the cursor loops forever on pages that contain nothing.
+
+**The rule.** A filter the caller cannot express is a filter the store has to apply. Post-filtering is only
+safe when it cannot change the size of the page, and "belongs to me" can.
+
+## 90. A durable format needs a receptor before it needs an upcaster
+
+**Decision.** `EventKind` has an `#[serde(other)] Unknown` arm, and `sessions.db` carries a
+`schema_version` that refuses a store written by a newer build.
+
+**The failure it prevents, in order of arrival.** A log is shared by whichever builds run against it —
+during a rolling upgrade, or after a downgrade somebody did to escape a bad release. Without a receptor,
+one event kind added in the new build makes every `load` of every session containing it fail with
+`invalid type`, so the *old* build cannot read the *new* build's work at all. That is not a schema
+incompatibility; it is a total one.
+
+**Why the receptor came before the upcaster.** The docs promised an upcaster table "from day one" and
+there is none, because no version has been incremented — there is nothing to upcast. Promising both at
+once would have produced an empty table and a false claim. The receptor is the part that has to be true
+first, and the document now says exactly that.
+
+**What the `other` arm costs.** The original kind name is lost on read: serde keeps the event, not the
+tag. That is acceptable only because this kernel never rewrites an event — the stored body stays the
+only copy — and it is worth stating, because a reader that assumed it could re-serialise an event
+faithfully would be wrong.
+
+**The store's version, and why it is a separate one.** `system.db` and `sessions.db` have two
+lifecycles; a single version would refuse to open the session store because the configuration store had
+not caught up, or the reverse. The refusal names the fix — "upgrade nucleosd rather than downgrading
+the store" — because a parse error at the first `load` names nothing.

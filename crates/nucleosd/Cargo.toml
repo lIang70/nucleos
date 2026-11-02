@@ -11,6 +11,7 @@ keywords = ["agent", "kernel", "daemon", "grpc"]
 categories = ["development-tools"]
 
 [dependencies]
+fs2 = "0.4"
 axum = { workspace = true }
 axum-server = { workspace = true }
 nucleos = { workspace = true }

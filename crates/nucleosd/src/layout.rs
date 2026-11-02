@@ -77,6 +77,12 @@ impl Layout {
         Ok(())
     }
 
+    /// Where the single-instance lock lives.
+    #[must_use]
+    pub fn lock_path(&self) -> PathBuf {
+        self.root.join("nucleosd.lock")
+    }
+
     /// One line per path, for `--print-paths`.
     #[must_use]
     pub fn describe(&self) -> String {
@@ -252,6 +258,41 @@ mod tests {
 }
 
 #[cfg(test)]
+mod claim_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    #[test]
+    fn a_second_daemon_on_one_root_is_refused_while_the_first_holds_it() {
+        let root = std::env::temp_dir().join(format!("nucleos-claim-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let layout = Layout {
+            root: root.clone(),
+            socket: root.join("n.sock"),
+            seal_key: root.with_extension("seal.key"),
+        };
+        layout.create().unwrap();
+
+        let held = claim(&layout).expect("the first claim succeeds");
+        let error = claim(&layout).expect_err("the second claim must be refused");
+        assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
+        assert!(
+            error.to_string().contains("one root has one writer"),
+            "{error}"
+        );
+        // The message names the file, so an operator can find who is holding it.
+        assert!(error.to_string().contains("nucleosd.lock"), "{error}");
+
+        // Releasing is a drop, which is what a crashed daemon also does: no stale lock to clean up.
+        drop(held);
+        claim(&layout).expect("the root is free once the first holder is gone");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
 mod seal_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -271,4 +312,39 @@ mod seal_tests {
             );
         }
     }
+}
+
+/// Claim a root for this process, or say who has it.
+///
+/// One root has one writer. Nothing else refuses a second daemon, and the damage is invisible at
+/// start-up: both append to the same log, each with its own idea of the last sequence number, and the
+/// first symptom is a `load` that refuses an event as a gap — hours later, on a session neither of them
+/// is looking at.
+///
+/// The lock is an advisory `flock` on a file inside the root, taken non-blocking. Advisory rather than
+/// mandatory because the root is private to the daemon's user; the release is automatic, because the
+/// kernel drops it when the process dies — a stale lock file from a crash is not a thing anybody has to
+/// clean up.
+pub fn claim(layout: &Layout) -> std::io::Result<std::fs::File> {
+    use fs2::FileExt as _;
+
+    let path = layout.lock_path();
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&path)?;
+    file.try_lock_exclusive().map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            format!(
+                "{} is locked by another nucleosd ({error}); one root has one writer — \
+                 stop that daemon, or pass a different --root",
+                path.display()
+            ),
+        )
+    })?;
+    tracing::info!(event = "root_claimed", path = %path.display());
+    Ok(file)
 }

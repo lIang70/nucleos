@@ -1267,6 +1267,19 @@
               "message"
             ],
             "type": "object"
+          },
+          {
+            "description": "An event this build does not understand.\n\nWritten by a newer daemon and read by an older one: carried through loading rather than\nrefused, because a store is shared by whichever builds happen to run against it and \"cannot\nparse one row\" is not a state a durable log may have. `wire.md` says the same thing about the\nwire — an unknown union member is carried, not failed — and this is the half that applies to\nthe record.\n\nThe original kind name is **not** preserved: serde's `other` arm keeps the event, not the tag.\nThat is deliberate. Rewriting an event is something this kernel never does, so the only copy of\nthe original body is the stored one, and the correct behaviour for a build that does not\nunderstand an event is to leave it exactly as it found it.",
+            "properties": {
+              "kind": {
+                "const": "unknown",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
           }
         ],
         "properties": {
