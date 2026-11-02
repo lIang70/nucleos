@@ -231,6 +231,26 @@ impl App {
         // Resolved before any adapter is built: a sealed key has to be openable at start-up, and a
         // missing seal key with sealed rows in the store is a deployment that cannot reach its models.
         let seal = nucleos_auth::SealKey::resolve(&layout.seal_key)?;
+        // Said at start-up, because "which one am I actually using" is the question that follows moving
+        // the key to a stronger store, and a daemon still reading the old file looks identical to one
+        // that read the new credential.
+        match &seal {
+            Some(resolved) => tracing::info!(
+                event = "seal_key_loaded",
+                source = %resolved.source.describe(),
+                kind = match resolved.source {
+                    nucleos_auth::seal::Source::Credential(_) => "credential",
+                    nucleos_auth::seal::Source::Keychain { .. } => "keychain",
+                    nucleos_auth::seal::Source::File(_) => "file",
+                },
+            ),
+            None => tracing::info!(
+                event = "seal_key_absent",
+                consequence = "a model API key cannot be stored; pass a key_file instead, or create a \
+                               seal key with `nucleos init`",
+            ),
+        }
+        let seal = seal.map(|resolved| resolved.key);
 
         // Sources are rows in the system store, written by `nucleos sources add`. What the daemon
         // connects here is what a previous run was told to run; a server that will not start is a

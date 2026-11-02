@@ -89,16 +89,25 @@ impl SealKey {
         sources
     }
 
-    /// Where the key comes from, resolved.
-    pub fn resolve(configured: &Path) -> Result<Option<Self>> {
+    /// Where the key comes from, resolved, and **which source** answered.
+    ///
+    /// The source comes back with the key because "which one am I running" is the question an operator
+    /// asks after moving the key to a stronger store: without it, a daemon that still read the old file
+    /// looks exactly like one that read the new credential.
+    pub fn resolve(configured: &Path) -> Result<Option<Resolved>> {
         Self::resolve_from(&Self::sources(configured))
     }
 
     /// Resolve from an explicit list, so the order can be tested without a systemd or a keychain.
-    pub fn resolve_from(sources: &[Source]) -> Result<Option<Self>> {
+    pub fn resolve_from(sources: &[Source]) -> Result<Option<Resolved>> {
         for source in sources {
             match source.read()? {
-                Some(key) => return Ok(Some(key)),
+                Some(key) => {
+                    return Ok(Some(Resolved {
+                        key,
+                        source: source.clone(),
+                    }));
+                }
                 None => continue,
             }
         }
@@ -152,6 +161,15 @@ impl SealKey {
         String::from_utf8(plaintext)
             .map_err(|_| Error::invalid("the sealed value is not UTF-8; it was not a string"))
     }
+}
+
+/// A key, and where it came from.
+#[derive(Debug)]
+pub struct Resolved {
+    /// The key itself.
+    pub key: SealKey,
+    /// The source that answered.
+    pub source: Source,
 }
 
 /// One place a key might be.
@@ -311,8 +329,11 @@ mod tests {
         write_key(&path, &bytes).unwrap();
 
         let reloaded = SealKey::resolve(&path).unwrap().expect("the file is there");
+        // The source comes back with the key: a test can assert *which* one answered, which is the
+        // question an operator asks after moving the key somewhere stronger.
+        assert_eq!(reloaded.source, Source::File(path.clone()));
         let sealed = key.seal("api-key").unwrap();
-        assert_eq!(reloaded.open(&sealed).unwrap(), "api-key");
+        assert_eq!(reloaded.key.open(&sealed).unwrap(), "api-key");
 
         let _ = std::fs::remove_file(&path);
     }

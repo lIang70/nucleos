@@ -327,6 +327,15 @@ LoadCredentialEncrypted=seal.key:/etc/nucleos/seal.key.enc
 comes from the `Encrypted` form plus `systemd-creds encrypt` — the difference is worth knowing before
 believing the weaker one has it.
 
+**`init` does not choose for the operator.** It writes the file, then prints the exact command for the
+stronger source on this platform, because choosing one needs `systemd-creds` and a unit edit on Linux and
+`sudo` plus an ACL decision on macOS — neither of which a bootstrap command should do silently.
+
+**The daemon says which source answered.** `seal_key_loaded` reports `kind: credential | keychain | file`
+at start-up. Without it, a deployment that moved the key to a TPM-sealed credential and a deployment that
+silently kept reading the old file look identical — the question "which one am I running" is the same one
+`describe` answers for policy, and it deserved the same answer.
+
 **macOS is weaker and the document says so.** A LaunchDaemon can read a System keychain item, but the
 item's protection is an ACL rather than a machine-bound secret, and `launchd` has no equivalent of
 `LoadCredentialEncrypted=`. The keychain source exists so that such a deployment is configured rather

@@ -130,9 +130,27 @@ fn init(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
     // Said out loud because the default location is the one place the design says it should not be:
     // a backup of the data directory would carry the key that makes the backup useless.
     println!(
-        "✓ seal key        {} (0600 — move it out of the data directory for a real deployment)",
-        options.root.join("seal.key").display()
+        "✓ seal key        {} (0600)",
+        options.seal_key.display()
     );
+    println!();
+    // The two stronger sources, with the commands filled in. `init` cannot choose one for the
+    // operator: the systemd one needs `systemd-creds` and a unit edit, and the macOS one needs sudo and
+    // a decision about ACLs. Printing the commands is the part a bootstrap command can do honestly.
+    println!("the file above protects the data-directory backup. To protect a whole-machine backup too:");
+    if cfg!(target_os = "macos") {
+        println!(
+            "  sudo security add-generic-password -s nucleos-seal -a seal \\\n      -w \"$(openssl rand -hex 32)\" /Library/Keychains/System.keychain"
+        );
+        println!("  (then delete {}; the daemon prefers the keychain)", options.seal_key.display());
+    } else {
+        println!(
+            "  systemd-creds encrypt --name=seal.key {} /etc/nucleos/seal.key.enc",
+            options.seal_key.display()
+        );
+        println!("  # then in the unit: LoadCredentialEncrypted=seal.key:/etc/nucleos/seal.key.enc");
+        println!("  # and delete {} once the daemon reports source=credential", options.seal_key.display());
+    }
     println!("✓ bootstrap policy deny by default; this administrator may add models and sources");
     println!("\nnext: start nucleosd, then `nucleos models add`");
     Ok(())
