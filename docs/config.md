@@ -309,9 +309,28 @@ The sealing key itself is resolved in this order, each source strictly better th
 
 | Source | Property |
 | --- | --- |
-| `$CREDENTIALS_DIRECTORY/seal.key` | `systemd-creds`: sealed to the machine's TPM, materialised in memory at start-up, never on disk |
-| the configured path (`--seal-key`, default `/etc/nucleos/seal.key`) | a `0600` file in the config tree, outside the directory that gets copied |
+| `$CREDENTIALS_DIRECTORY/seal.key` | a `systemd` credential — with `LoadCredentialEncrypted=` the blob is TPM-sealed at rest and decrypted into memory at start-up |
+| the macOS System keychain (`security find-generic-password -s nucleos-seal -a seal`) | a LaunchDaemon that keeps the key there and manages the item's ACLs |
+| `--seal-key` (default `/etc/nucleos/seal.key`) | a `0600` file in the config tree, outside the directory that gets copied |
 | nothing | no sealing: a key can only be a `key_file` path, and the daemon says so |
+
+The order is the design, and it is a list a test asserts rather than a probe: a deployment that set up a
+TPM-sealed credential must not silently fall back to a file that happens to exist.
+
+```ini
+# the only line a deployment needs for the strongest source
+[Service]
+LoadCredentialEncrypted=seal.key:/etc/nucleos/seal.key.enc
+```
+
+`LoadCredential=` (unencrypted) also works and is only a file copy performed by systemd. The TPM property
+comes from the `Encrypted` form plus `systemd-creds encrypt` — the difference is worth knowing before
+believing the weaker one has it.
+
+**macOS is weaker and the document says so.** A LaunchDaemon can read a System keychain item, but the
+item's protection is an ACL rather than a machine-bound secret, and `launchd` has no equivalent of
+`LoadCredentialEncrypted=`. The keychain source exists so that such a deployment is configured rather
+than improvised; it is below the systemd source because it protects less.
 
 `nucleos init` writes the file at `/etc/nucleos/seal.key` by default — **outside** the root, because the
 root is the directory that gets copied. `init` refuses a path inside it, and `nucleosd` takes

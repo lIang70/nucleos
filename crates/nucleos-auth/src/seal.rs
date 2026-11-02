@@ -11,13 +11,19 @@
 //! why the key can come from `systemd`'s credential directory (TPM-sealed, materialised in memory at
 //! start-up) instead of a file.
 //!
-//! Three sources, in this order, because each is strictly better than the one after it:
+//! Sources, in this order, because each is strictly better than the one after it:
 //!
-//! 1. `$CREDENTIALS_DIRECTORY/seal.key` — `systemd-creds`, sealed to the machine's TPM, never written
-//!    to disk in the clear.
-//! 2. the configured path — a `0600` file, the default for a deployment that has not set up credentials.
-//! 3. nothing — no sealing; a model key can only be a file path, and the daemon says so when asked to
-//!    store one.
+//! 1. **A `systemd` credential** (`$CREDENTIALS_DIRECTORY/seal.key`). With
+//!    `LoadCredentialEncrypted=seal.key:/etc/nucleos/seal.key.enc`, systemd decrypts a TPM-sealed blob at
+//!    start-up and materialises it in a directory that only this service can read — the key itself is
+//!    never on disk in the clear. Plain `LoadCredential=` also works and is only a file copy; the TPM
+//!    property comes from the `Encrypted` form, and the difference is worth knowing before believing it.
+//! 2. **The macOS System keychain** (`security find-generic-password`), for a LaunchDaemon whose
+//!    deployment keeps the key there and is willing to manage the item's ACLs.
+//! 3. **A `0600` file** at the configured path — the default, and the one that travels with a
+//!    whole-machine backup.
+//! 4. **Nothing** — no sealing; a model key can only be a file path, and the daemon says so when asked
+//!    to store one.
 //!
 //! ChaCha20-Poly1305 rather than AES-GCM: constant-time in software without AES-NI, which is the common
 //! case on the machines this runs on, and the nonce is generated per value rather than derived from a
@@ -63,19 +69,38 @@ impl SealKey {
         }
     }
 
-    /// Where the key comes from, resolved.
+    /// The sources to try, best first, for this deployment and platform.
     ///
-    /// `systemd` first: when a deployment uses `LoadCredential=`, the key has never been on disk and
-    /// preferring the file would silently fall back to a weaker source that happens to exist.
-    pub fn resolve(configured: &Path) -> Result<Option<Self>> {
+    /// Built rather than probed inline so the order is a value a test can assert: a deployment that sets
+    /// up `LoadCredentialEncrypted=` must not silently fall back to a weaker file that happens to exist,
+    /// which is what "try in order until one works" means if the order is wrong.
+    pub fn sources(configured: &Path) -> Vec<Source> {
+        let mut sources = Vec::new();
         if let Some(directory) = std::env::var_os(CREDENTIALS_DIR_ENV) {
-            let path = PathBuf::from(directory).join(KEY_FILE);
-            if path.exists() {
-                return Self::read(&path).map(Some);
-            }
+            sources.push(Source::Credential(PathBuf::from(directory).join(KEY_FILE)));
         }
-        if configured.exists() {
-            return Self::read(configured).map(Some);
+        if cfg!(target_os = "macos") {
+            sources.push(Source::Keychain {
+                service: KEYCHAIN_SERVICE.to_owned(),
+                account: KEYCHAIN_ACCOUNT.to_owned(),
+            });
+        }
+        sources.push(Source::File(configured.to_path_buf()));
+        sources
+    }
+
+    /// Where the key comes from, resolved.
+    pub fn resolve(configured: &Path) -> Result<Option<Self>> {
+        Self::resolve_from(&Self::sources(configured))
+    }
+
+    /// Resolve from an explicit list, so the order can be tested without a systemd or a keychain.
+    pub fn resolve_from(sources: &[Source]) -> Result<Option<Self>> {
+        for source in sources {
+            match source.read()? {
+                Some(key) => return Ok(Some(key)),
+                None => continue,
+            }
         }
         Ok(None)
     }
@@ -127,6 +152,82 @@ impl SealKey {
         String::from_utf8(plaintext)
             .map_err(|_| Error::invalid("the sealed value is not UTF-8; it was not a string"))
     }
+}
+
+/// One place a key might be.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Source {
+    /// A file `systemd` materialised from a `LoadCredential[Encrypted]=` declaration.
+    Credential(PathBuf),
+    /// A macOS keychain item: `service` and `account`, as `security` names them.
+    Keychain {
+        /// The service name.
+        service: String,
+        /// The account within it.
+        account: String,
+    },
+    /// A file the operator protects.
+    File(PathBuf),
+}
+
+impl Source {
+    /// Read this source. `Ok(None)` means "not configured here", not "broken".
+    pub fn read(&self) -> Result<Option<SealKey>> {
+        match self {
+            Self::Credential(path) | Self::File(path) => {
+                // A credential directory exists even when the named file was never declared, so absence
+                // is the normal case and not an error.
+                if !path.exists() {
+                    return Ok(None);
+                }
+                SealKey::read(path).map(Some)
+            }
+            Self::Keychain { service, account } => keychain(service, account),
+        }
+    }
+
+    /// A description for the log line, never containing the key.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Credential(path) | Self::File(path) => path.display().to_string(),
+            Self::Keychain { service, account } => format!("keychain {service}/{account}"),
+        }
+    }
+}
+
+/// The keychain entry a macOS deployment would create.
+const KEYCHAIN_SERVICE: &str = "nucleos-seal";
+/// One item per deployment; the account names it.
+const KEYCHAIN_ACCOUNT: &str = "seal";
+
+/// Read the seal key from the macOS keychain.
+///
+/// `security` rather than a keychain crate: the daemon needs to read one generic password, and a
+/// dependency that wraps the same command is a dependency with a supply chain. On any other platform
+/// this is not a source at all, so it compiles away.
+#[cfg(target_os = "macos")]
+fn keychain(service: &str, account: &str) -> Result<Option<SealKey>> {
+    let output = std::process::Command::new("security")
+        .args(["find-generic-password", "-s", service, "-a", account, "-w"])
+        .output()
+        .map_err(|error| Error::invalid(format!("cannot run `security`: {error}")))?;
+    if !output.status.success() {
+        // 44 is "item not found", which is a deployment that does not use the keychain.
+        return Ok(None);
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let bytes = decode_hex(text.trim())
+        .map_err(|_| Error::invalid("the keychain item is not 64 hex characters"))?;
+    let array: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| Error::invalid("the keychain item is not 32 bytes"))?;
+    Ok(Some(SealKey::from_bytes(&array)))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn keychain(_service: &str, _account: &str) -> Result<Option<SealKey>> {
+    Ok(None)
 }
 
 /// Write a key to disk, `0600`, created with that mode rather than chmod-ed afterwards.
@@ -231,5 +332,39 @@ mod tests {
         let error = SealKey::resolve(&path).unwrap_err();
         assert!(error.reason().contains("seal key"), "{error:?}");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn the_sources_are_ordered_best_first() {
+        // The order is the design: a deployment that set up a TPM-sealed credential must not silently
+        // fall back to a file that happens to exist. Asserted on the list rather than on a probe, because
+        // a probe can only be run on one platform at a time.
+        let configured = std::path::Path::new("/etc/nucleos/seal.key");
+        let sources = SealKey::sources(configured);
+        // Whatever the platform, the file is last: it is the weakest source and the fallback.
+        assert!(matches!(sources.last(), Some(Source::File(path)) if path == configured));
+        // And nothing appears twice.
+        for (at, source) in sources.iter().enumerate() {
+            assert!(!sources[..at].contains(source), "{sources:?}");
+        }
+    }
+
+    #[test]
+    fn a_missing_source_is_skipped_rather_than_fatal() {
+        let missing = Source::Credential(PathBuf::from("/nonexistent/creds/seal.key"));
+        assert!(missing.read().unwrap().is_none());
+        assert!(SealKey::resolve_from(&[missing]).unwrap().is_none());
+    }
+
+    #[test]
+    fn the_keychain_is_not_a_source_off_macos() {
+        let source = Source::Keychain {
+            service: "nucleos-seal".to_owned(),
+            account: "seal".to_owned(),
+        };
+        // On this platform it must answer "not configured" rather than fail: a deployment that names a
+        // keychain item on Linux has simply configured a source that does not exist here.
+        assert!(source.read().unwrap().is_none());
+        assert!(source.describe().contains("keychain"));
     }
 }
