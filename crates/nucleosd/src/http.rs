@@ -19,7 +19,8 @@ use nucleos_sqlite::SqliteStore;
 use nucleos::kernel::{HitlVerdict, Kernel, SessionSpec, StateWrite};
 use nucleos::wire::api::{
     DescribeResponse, ErrorBody, InferenceRequest, InferenceResponse, ProcessInfo,
-    ConfigKey, ConfigResponse, MetricsResponse, ProcessListResponse, ProcessStartRequest, ProcessStartResponse, ReloadResponse,
+    ConfigKey, ConfigResponse, MetricsResponse, ProcessListResponse, SessionListResponse,
+    SessionSummary, ProcessStartRequest, ProcessStartResponse, ReloadResponse,
     SessionView, StartRequest,
     StartResponse, StateRequest, StdinRequest, ToolBatchRequest, ToolBatchResponse, VerdictRequest,
 };
@@ -109,6 +110,11 @@ pub struct App {
     seal: Option<nucleos_auth::SealKey>,
     /// Where the data lives, reported by `GET /v1/config`.
     root: Option<std::path::PathBuf>,
+    /// The session store, for a listing that must not go through a conversation.
+    ///
+    /// Optional because `App::new` is what every test uses, and only the listing needs it: a required
+    /// parameter would have changed every construction site for one endpoint.
+    store: Option<Arc<dyn nucleos::adapter::Store>>,
 }
 
 impl App {
@@ -120,6 +126,7 @@ impl App {
             tokens: None,
             principal,
             models: std::sync::RwLock::new(models),
+            store: None,
             tools: std::sync::RwLock::new(Vec::new()),
             sources: tokio::sync::RwLock::new(crate::sources::SourceSet::default()),
             admins: None,
@@ -180,6 +187,13 @@ impl App {
         if let Ok(mut current) = self.tools.write() {
             *current = tools;
         }
+        self
+    }
+
+    /// Give the daemon the store its listings read.
+    #[must_use]
+    pub fn with_store(mut self, store: Arc<dyn nucleos::adapter::Store>) -> Self {
+        self.store = Some(store);
         self
     }
 
@@ -268,7 +282,8 @@ impl App {
                     layout.root.display()
                 ))
             })?;
-        let store = SqliteStore::open(layout.session_store())?;
+        let store: Arc<dyn nucleos::adapter::Store> =
+            Arc::new(SqliteStore::open(layout.session_store())?);
         let sources = crate::sources::SourceSet::load(&system).await?;
         for source in sources.views() {
             tracing::info!(
@@ -304,7 +319,7 @@ impl App {
             retries: 1,
         };
         let mut builder = Kernel::builder()
-            .store(Arc::new(store))
+            .store(Arc::clone(&store))
             .policy(policy)
             .routing(routing);
         for model in &stored {
@@ -354,6 +369,7 @@ impl App {
             Arc::new(nucleos::adapter::SystemClock),
         )
         .with_sources(sources)
+        .with_store(store)
         .with_seal(seal)
         .with_tools(discovered)
         .with_tokens(tokens);
@@ -370,6 +386,7 @@ impl App {
                 subject: "local".to_owned(),
             },
             models: std::sync::RwLock::new(Vec::new()),
+            store: None,
             tools: std::sync::RwLock::new(Vec::new()),
             sources: tokio::sync::RwLock::new(crate::sources::SourceSet::default()),
             tokens: None,
@@ -541,6 +558,17 @@ pub const ROUTES: &[Route] = &[
             reply: openapi::Reply::Json("ProcessStartResponse"),
         },
         build: || post(start_process),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "get",
+            path: "/v1/sessions",
+            operation: "listSessions",
+            summary: "The sessions this caller owns, newest page first.",
+            request: None,
+            reply: openapi::Reply::Json("SessionListResponse"),
+        },
+        build: || get(list_sessions),
     },
     Route {
         meta: openapi::Route {
@@ -1270,6 +1298,95 @@ struct ProcessesQuery {
     #[serde(default)]
     limit: u32,
     /// Continue after this session id.
+    #[serde(default)]
+    page_token: Option<String>,
+}
+
+/// The sessions this caller owns.
+///
+/// The store could always answer this — `Session::` listings were only exposed for processes, so an
+/// application that opened agent sessions had no way to enumerate what it had created. A listing is a
+/// page of summaries, not of conversations: a hundred sessions must not load a hundred histories.
+async fn list_sessions(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    Query(query): Query<SessionsQuery>,
+) -> Result<Json<SessionListResponse>, ApiError> {
+    let kernel = app.kernel()?.clone();
+    let store = app
+        .store
+        .clone()
+        .ok_or_else(|| ApiError::from_error(&nucleos::Error::unavailable("no store")))?;
+
+    // An unknown kind is a client bug, not an empty page: answering "nothing" to a misspelled filter is
+    // how a caller concludes the feature is broken.
+    let kind = match query.kind.as_deref() {
+        None | Some("") => None,
+        Some("agent") => Some(nucleos::contract::SessionKind::Agent),
+        Some("process") => Some(nucleos::contract::SessionKind::Process),
+        Some(other) => {
+            return Err(ApiError::from_error(&nucleos::Error::invalid(format!(
+                "unknown kind {other:?}; expected agent or process"
+            ))));
+        }
+    };
+
+    let limit = if query.limit == 0 { 20 } else { query.limit };
+    let page = store
+        .sessions(&nucleos::adapter::SessionQuery {
+            tenant: caller.0.tenant.clone(),
+            kind,
+            limit: limit as usize,
+            after: query.page_token.clone().map(nucleos::contract::SessionId::new),
+        })
+        .await
+        .map_err(|error| ApiError::from_error(&error))?;
+
+    let mut sessions = Vec::new();
+    for id in page.sessions {
+        let key = nucleos::adapter::SessionKey {
+            tenant: caller.0.tenant.clone(),
+            id: id.clone(),
+        };
+        let Some(snapshot) = store
+            .snapshot(&key)
+            .await
+            .map_err(|error| ApiError::from_error(&error))?
+        else {
+            // A session with events but no checkpoint yet: it exists, and nothing about it is known.
+            continue;
+        };
+        // Another subject's session is not listed rather than listed-and-refused: a listing that names
+        // what the caller may not open is a directory of other people's work.
+        if snapshot.principal.subject != caller.0.subject {
+            continue;
+        }
+        sessions.push(SessionSummary {
+            session: id.as_str().to_owned(),
+            kind: snapshot.kind,
+            state: snapshot.state,
+            stop: snapshot.stop,
+            next_seq: snapshot.seq + 1,
+        });
+    }
+    let _ = kernel;
+
+    Ok(Json(SessionListResponse {
+        sessions,
+        next_page_token: page.next.map(|next| next.as_str().to_owned()),
+    }))
+}
+
+/// Query parameters for the session listing.
+#[derive(Debug, serde::Deserialize)]
+struct SessionsQuery {
+    /// `agent`, `process`, or absent for both.
+    #[serde(default)]
+    kind: Option<String>,
+    /// Page size. Zero asks for the default.
+    #[serde(default)]
+    limit: u32,
+    /// Continue after this id.
     #[serde(default)]
     page_token: Option<String>,
 }

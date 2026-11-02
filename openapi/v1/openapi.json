@@ -2725,6 +2725,27 @@
           }
         ]
       },
+      "SessionListResponse": {
+        "description": "A page of sessions.",
+        "properties": {
+          "next_page_token": {
+            "description": "Where the next page starts. Absent means there is nothing more.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sessions": {
+            "default": [],
+            "description": "In id order.",
+            "items": {
+              "$ref": "#/components/schemas/SessionSummary"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
       "SessionState": {
         "description": "Where a session is in its life.\n\nThe vocabulary is the session's, not a provider's. `AwaitingHuman` is a state rather\nthan a callback, so a confirmation that arrives three hours later resumes a session\ninstead of reviving a stack frame.",
         "oneOf": [
@@ -2739,6 +2760,47 @@
             "type": "string"
           }
         ]
+      },
+      "SessionSummary": {
+        "description": "One session, as a listing reports it.\n\nA summary rather than a [`SessionView`]: a page of a hundred sessions must not load a hundred\nconversations, and nothing a caller does with a listing (pick one, count them) needs the messages.",
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/SessionKind",
+            "description": "What it is for."
+          },
+          "next_seq": {
+            "default": 0,
+            "description": "The cursor a client resumes its stream from.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session": {
+            "description": "Its identifier.",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/SessionState",
+            "description": "Whether it still takes calls."
+          },
+          "stop": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StopReason"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why it stopped, when it has."
+          }
+        },
+        "required": [
+          "session",
+          "kind",
+          "state"
+        ],
+        "type": "object"
       },
       "SessionView": {
         "description": "What a session looks like from outside.",
@@ -4632,6 +4694,82 @@
       }
     },
     "/v1/sessions": {
+      "get": {
+        "operationId": "listSessions",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionListResponse"
+                }
+              }
+            },
+            "description": "The result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "The sessions this caller owns, newest page first."
+      },
       "post": {
         "operationId": "openSession",
         "requestBody": {

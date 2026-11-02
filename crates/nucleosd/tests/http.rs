@@ -1111,8 +1111,22 @@ async fn governable_with(
         nucleos_policy::Document::parse(GOVERNED_BY).unwrap(),
     )
     .unwrap();
+    // The store is kept: `GET /v1/sessions` reads it directly, because a page of a hundred sessions
+    // must not load a hundred conversations.
+    let sessions: Arc<dyn nucleos::adapter::Store> =
+        Arc::new(nucleos_sqlite::SqliteStore::in_memory().unwrap());
     let kernel = nucleos::Kernel::builder()
-        .store(Arc::new(nucleos_sqlite::SqliteStore::in_memory().unwrap()))
+        // A model, so the fixture can open an agent session: `GET /v1/sessions` is only interesting
+        // when there is something to list.
+        .model(
+            "primary",
+            Arc::new(nucleos_testkit::FakeModel::text(["unused"])),
+        )
+        .routing(nucleos::contract::Routing {
+            chain: vec!["primary".to_owned()],
+            retries: 0,
+        })
+        .store(Arc::clone(&sessions))
         .policy(Arc::new(policy))
         .build()
         .unwrap();
@@ -1122,6 +1136,7 @@ async fn governable_with(
             nucleos::contract::Principal::default(),
             Vec::new(),
         )
+        .with_store(sessions)
         .with_system(
             system,
             std::path::PathBuf::from("/var/lib/nucleos"),
@@ -1524,4 +1539,124 @@ async fn an_api_key_without_a_seal_key_is_refused_rather_than_stored_in_the_clea
     // The alternative — storing it anyway — would make every backup of the store a credential dump.
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{error}");
     assert!(error["reason"].as_str().unwrap().contains("seal key"), "{error}");
+}
+
+#[tokio::test]
+async fn sessions_can_be_listed_and_filtered_by_kind() {
+    let (app, _, _) = governable().await;
+
+    // Three sessions: two agent, one process — all owned by the same caller.
+    for id in ["a1", "a2"] {
+        let (status, _) = request(&app, "POST", "/v1/sessions", "", &format!(r#"{{"session":"{id}"}}"#)).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    let all = body_json(
+        router(Arc::clone(&app))
+            .oneshot(Request::builder().method("GET").uri("/v1/sessions?limit=10").body(Body::empty()).unwrap())
+            .await
+            .unwrap(),
+    )
+    .await;
+    let ids: Vec<&str> = all["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["session"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"a1") && ids.contains(&"a2"), "{ids:?}");
+
+    let agents = body_json(
+        router(Arc::clone(&app))
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/sessions?kind=agent&limit=10")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(agents["sessions"].as_array().unwrap().len(), 2);
+    assert!(agents["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|row| row["kind"] == "agent"));
+
+    // The filter is a filter, not a decoration: a kind with no sessions is an empty page, not every
+    // session.
+    let processes = body_json(
+        router(Arc::clone(&app))
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/sessions?kind=process&limit=10")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(processes["sessions"], serde_json::json!([]));
+
+    // A misspelled kind is a client bug, not an empty page.
+    let bad = router(Arc::clone(&app))
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/sessions?kind=aghast")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn a_listing_pages_by_cursor() {
+    let (app, _, _) = governable().await;
+    for id in ["a1", "a2", "a3"] {
+        request(&app, "POST", "/v1/sessions", "", &format!(r#"{{"session":"{id}"}}"#)).await;
+    }
+
+    let first = body_json(
+        router(Arc::clone(&app))
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/sessions?kind=agent&limit=2")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(first["sessions"].as_array().unwrap().len(), 2);
+    let cursor = first["next_page_token"].as_str().expect("a third session exists");
+
+    let second = body_json(
+        router(Arc::clone(&app))
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/v1/sessions?kind=agent&limit=2&page_token={cursor}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    let ids: Vec<&str> = second["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["session"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["a3"], "the cursor resumes after the page");
 }

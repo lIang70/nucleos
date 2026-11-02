@@ -366,6 +366,37 @@ pub struct TokenListResponse {
     pub tokens: Vec<TokenView>,
 }
 
+/// One session, as a listing reports it.
+///
+/// A summary rather than a [`SessionView`]: a page of a hundred sessions must not load a hundred
+/// conversations, and nothing a caller does with a listing (pick one, count them) needs the messages.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SessionSummary {
+    /// Its identifier.
+    pub session: String,
+    /// What it is for.
+    pub kind: crate::contract::SessionKind,
+    /// Whether it still takes calls.
+    pub state: crate::contract::SessionState,
+    /// Why it stopped, when it has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop: Option<crate::contract::StopReason>,
+    /// The cursor a client resumes its stream from.
+    #[serde(default)]
+    pub next_seq: u64,
+}
+
+/// A page of sessions.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SessionListResponse {
+    /// In id order.
+    #[serde(default)]
+    pub sessions: Vec<SessionSummary>,
+    /// Where the next page starts. Absent means there is nothing more.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_page_token: Option<String>,
+}
+
 /// One model to add or replace.
 ///
 /// No API key: `key_file` names a path. The system store is backed up and copied, and a store that

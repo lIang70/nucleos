@@ -197,6 +197,18 @@ REQUIRED` that quietly became `AUTO` is a session behaving differently than it w
   that needs the prompt must reconstruct it from the events, not ask the server for
   hidden state.
 
+## 4.0 Listing sessions
+
+`GET /v1/sessions?kind=agent|process&limit=&page_token=` returns a page of **summaries** — id, kind,
+state, stop reason, cursor — for the sessions the caller owns. Not full views: a page of a hundred
+sessions must not load a hundred conversations, and nothing a caller does with a listing needs the
+messages.
+
+`kind` is a filter, and an unknown value is a `400` rather than an empty page: answering "nothing" to a
+misspelled filter is how a caller concludes the feature is broken. Another subject's sessions are
+absent rather than refused — a listing that names what the caller may not open is a directory of other
+people's work.
+
 ## 4.1 The ceiling and the exposure
 
 A session has two tool sets. `config.tools` is the **ceiling**: what the session may ever use,
