@@ -917,8 +917,20 @@ carries stays in the request; and a change to exposure or sandbox narrows and ne
 
 ## 14. Stages
 
-| Stage | Content                                                                  | Passes when                                              |
-| ----- | ------------------------------------------------------------------------ | -------------------------------------------------------- |
-| P1    | contract + kernel + in-memory store + one model adapter + one MCP source | a multi-turn session with a tool call runs end to end    |
-| P2    | SQLite store, checkpoint/restore, credit enforcement                     | `kill -9` then resume continues the session              |
-| P3    | context management: budget, compaction, retrieval references             | a session stays coherent past the model's context window |
+The original plan had three stages. They are recorded here as **what happened**, because a roadmap kept
+next to a finished system becomes a description of the system, and a stale one is worse than none.
+
+| Stage | Content | Passes when | State |
+| --- | --- | --- | --- |
+| P1 | contract + kernel + store + one model adapter + one MCP source | a multi-turn session with a tool call runs end to end | done |
+| P2 | durable store, checkpoint/restore, credit enforcement | `kill -9` then resume continues the session | done, and stricter than planned: `load` folds the log past the checkpoint, so a crash loses neither the spend nor a completed message |
+| P3 | context management | a session stays coherent past the window | **the kernel half is done** — `count_tokens` is enforced and a prompt that cannot fit is refused. Compaction is the caller's, by design (§11.2), because the kernel does not own the message list |
+
+What the plan did not contain, and the system needed: tool generations and hot reload, the exposure
+policy, per-tenant limits, configuration as signed requests, signed administration with a recovery path,
+sealed credentials, and the process ABI. None of those were on the roadmap, and every one of them came
+from a failure the earlier stages exposed.
+
+Still open, and tracked rather than promised: generation retirement (§8), forwarding MCP progress
+(`pitfalls` 56), seal-key rotation, listing agent sessions, cancelling a turn, quotas, and any transport
+other than the unix socket.

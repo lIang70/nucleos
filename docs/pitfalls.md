@@ -897,10 +897,12 @@ has sequence numbers and a replay. But that log is per session and is pruned; a 
 trail must outlive the sessions it audited. The two stores were split by lifecycle for exactly this
 reason, and putting configuration history in the prunable one would undo the split.
 
-**What is deliberately not in it.** API keys. A model takes a `key_file` path rather than a key,
-because the system store is backed up and copied, and a backup that contains a credential is a
-credential dump. Sealed credentials are designed (§4) and not built, and until they are, this is the
-honest shape.
+**What is deliberately not in it.** API keys in the clear. The system store is backed up and copied, and
+a backup that contains a credential is a credential dump — so a model key is either a `key_file` path or
+a value **sealed** with a key that lives outside the store (`docs/config.md` §6.0). This paragraph said
+"sealed credentials are designed and not built" for two commits after they were built; the pitfall is
+recorded here because a document that describes a property it no longer has is the failure mode this file
+exists to catch.
 
 ## 65. Revoking the last token must not reopen the door
 
