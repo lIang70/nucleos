@@ -46,7 +46,11 @@ impl PublicKey {
     ///
     /// The id is derived here rather than accepted from the caller: an id that a submitter chooses is
     /// an id that can collide with an existing administrator's.
-    pub fn from_public(key: &str, tenant: impl Into<String>, subject: impl Into<String>) -> Result<Self> {
+    pub fn from_public(
+        key: &str,
+        tenant: impl Into<String>,
+        subject: impl Into<String>,
+    ) -> Result<Self> {
         let bytes = base64_decode(key)?;
         let length = bytes.len();
         let array: [u8; 32] = bytes
@@ -54,8 +58,9 @@ impl PublicKey {
             .map_err(|_| Error::invalid(format!("a public key is 32 bytes; this is {length}")))?;
         // Parsed, not just length-checked: a 32-byte string that is not a curve point would fail
         // every verification later, with a message about the signature rather than the key.
-        VerifyingKey::from_bytes(&array)
-            .map_err(|error| Error::invalid(format!("that is not an Ed25519 public key: {error}")))?;
+        VerifyingKey::from_bytes(&array).map_err(|error| {
+            Error::invalid(format!("that is not an Ed25519 public key: {error}"))
+        })?;
         Ok(Self {
             id: fingerprint(&array),
             key: base64_encode(&array),
@@ -131,9 +136,11 @@ impl PublicKey {
     /// Whether a signature over `canonical` was made by this key.
     pub fn verifies(&self, canonical: &[u8], signature: &str) -> Result<bool> {
         let bytes = base64_decode(&self.key)?;
-        let verifying = VerifyingKey::from_bytes(&bytes.try_into().map_err(|_| {
-            Error::invalid(format!("public key {} is not 32 bytes", self.id))
-        })?)
+        let verifying = VerifyingKey::from_bytes(
+            &bytes
+                .try_into()
+                .map_err(|_| Error::invalid(format!("public key {} is not 32 bytes", self.id)))?,
+        )
         .map_err(|error| Error::invalid(format!("public key {} is unusable: {error}", self.id)))?;
 
         let signature = Signature::from_slice(&base64_decode(signature)?)
@@ -149,7 +156,11 @@ impl PublicKey {
 /// accident, and a re-enrolment of the same key is recognisable.
 #[must_use]
 pub fn fingerprint(verifying: &[u8]) -> String {
-    verifying.iter().take(4).map(|byte| format!("{byte:02x}")).collect()
+    verifying
+        .iter()
+        .take(4)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn base64_encode(bytes: &[u8]) -> String {
@@ -177,14 +188,25 @@ mod tests {
         let canonical = b"nucleos-admin-v1\nPOST\n/v1/models\n";
 
         let signature = mine.sign(canonical);
-        assert!(mine.public("acme", "alice").verifies(canonical, &signature).unwrap());
+        assert!(
+            mine.public("acme", "alice")
+                .verifies(canonical, &signature)
+                .unwrap()
+        );
         // The property the whole design rests on: a signature is not transferable to another key.
-        assert!(!theirs.public("acme", "mallory").verifies(canonical, &signature).unwrap());
+        assert!(
+            !theirs
+                .public("acme", "mallory")
+                .verifies(canonical, &signature)
+                .unwrap()
+        );
         // Nor to another request.
-        assert!(!mine
-            .public("acme", "alice")
-            .verifies(b"nucleos-admin-v1\nPOST\n/v1/policy\n", &signature)
-            .unwrap());
+        assert!(
+            !mine
+                .public("acme", "alice")
+                .verifies(b"nucleos-admin-v1\nPOST\n/v1/policy\n", &signature)
+                .unwrap()
+        );
     }
 
     #[test]
@@ -192,7 +214,10 @@ mod tests {
         // The keychain holds bytes; a restart has to rebuild the same key from them.
         let original = KeyPair::generate();
         let restored = KeyPair::from_secret(&original.secret()).unwrap();
-        assert_eq!(original.public("acme", "alice"), restored.public("acme", "alice"));
+        assert_eq!(
+            original.public("acme", "alice"),
+            restored.public("acme", "alice")
+        );
         assert_eq!(
             original.public("acme", "alice").key,
             restored.public("acme", "alice").key

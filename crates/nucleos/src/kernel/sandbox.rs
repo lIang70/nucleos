@@ -236,7 +236,11 @@ pub(crate) fn on_path(program: &str) -> bool {
 }
 
 /// The writable roots and network setting a policy and one command's permissions add up to.
-fn writable(policy: &SandboxPolicy, permissions: &SandboxPermissions, workspace: Option<&String>) -> (bool, Vec<String>) {
+fn writable(
+    policy: &SandboxPolicy,
+    permissions: &SandboxPermissions,
+    workspace: Option<&String>,
+) -> (bool, Vec<String>) {
     let mut network = policy.network_access();
     let mut roots = Vec::new();
 
@@ -295,7 +299,10 @@ fn profile(
         // to `/private/var`, and seatbelt matches against the resolved path — so a profile that
         // names only what the caller typed denies writes to the very directory it meant to allow.
         for real in realized(root) {
-            profile.push_str(&format!("(allow file-write* (subpath {}))\n", quoted(&real)));
+            profile.push_str(&format!(
+                "(allow file-write* (subpath {}))\n",
+                quoted(&real)
+            ));
         }
     }
     if network {
@@ -357,9 +364,13 @@ mod tests {
     #[test]
     fn full_access_and_an_external_sandbox_are_not_wrapped() {
         assert!(
-            confine(&SandboxPolicy::DangerFullAccess, &SandboxPermissions::UseDefault, None)
-                .unwrap()
-                .is_none()
+            confine(
+                &SandboxPolicy::DangerFullAccess,
+                &SandboxPermissions::UseDefault,
+                None
+            )
+            .unwrap()
+            .is_none()
         );
         assert!(
             confine(
@@ -449,7 +460,8 @@ mod tests {
         // The failure this prevents is the one the end-to-end test caught first: on macOS the temp
         // directory is reached through `/var`, which is a symlink to `/private/var`, and a profile
         // naming only the former denies the writes it was written to allow.
-        let directory = std::env::temp_dir().join(format!("nucleos-realized-{}", std::process::id()));
+        let directory =
+            std::env::temp_dir().join(format!("nucleos-realized-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         let profile = profile(
             &SandboxPolicy::WorkspaceWrite {
@@ -534,9 +546,13 @@ mod bwrap_tests {
 
     #[test]
     fn a_read_only_policy_binds_nothing_writable() {
-        let args = bwrap_args(&SandboxPolicy::read_only(), &SandboxPermissions::UseDefault, None)
-            .unwrap()
-            .unwrap();
+        let args = bwrap_args(
+            &SandboxPolicy::read_only(),
+            &SandboxPermissions::UseDefault,
+            None,
+        )
+        .unwrap()
+        .unwrap();
 
         assert!(args.contains(&"--unshare-all".to_owned()));
         assert!(args.contains(&"--die-with-parent".to_owned()));
@@ -628,9 +644,15 @@ mod bwrap_tests {
         .unwrap()
         .unwrap();
 
-        assert!(args.windows(3).any(|w| w[1] == workspaced(&workspace)), "{args:?}");
+        assert!(
+            args.windows(3).any(|w| w[1] == workspaced(&workspace)),
+            "{args:?}"
+        );
         assert!(args.contains(&extra), "{args:?}");
-        assert!(args.contains(&"--share-net".to_owned()), "the widening asked for it");
+        assert!(
+            args.contains(&"--share-net".to_owned()),
+            "the widening asked for it"
+        );
 
         let _ = std::fs::remove_dir_all(&workspace);
         let _ = std::fs::remove_dir_all(&extra);

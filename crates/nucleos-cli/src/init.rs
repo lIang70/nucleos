@@ -124,14 +124,15 @@ pub async fn run(options: &Options) -> Result<Done> {
     // password and add another administrator key, and the operator who ran it would have been trying
     // to do something else.
     if !options.force
-        && let Some(existing) = system.get(RECOVERY_KEY)? {
-            let _ = existing;
-            return Err(Error::invalid(format!(
-                "{} is already initialised; use `nucleos admin recover` to re-enrol a key, or pass \
+        && let Some(existing) = system.get(RECOVERY_KEY)?
+    {
+        let _ = existing;
+        return Err(Error::invalid(format!(
+            "{} is already initialised; use `nucleos admin recover` to re-enrol a key, or pass \
                  --force to replace this installation",
-                options.root.display()
-            )));
-        }
+            options.root.display()
+        )));
+    }
 
     // 1. The recovery password.
     let hash = PasswordHash::new(&options.password, options.cost)?;
@@ -146,10 +147,14 @@ pub async fn run(options: &Options) -> Result<Done> {
         None => KeyStore::keychain(public.id.clone()),
     };
     store.put(&key.secret())?;
-    system.set(ADMIN_KEYS_KEY, &serde_json::to_string(&vec![&public]).map_err(|error| {
-        Error::internal(format!("cannot encode the public key: {error}"))
-    })?)
-    .await?;
+    system
+        .set(
+            ADMIN_KEYS_KEY,
+            &serde_json::to_string(&vec![&public]).map_err(|error| {
+                Error::internal(format!("cannot encode the public key: {error}"))
+            })?,
+        )
+        .await?;
 
     // 3. The key that seals credentials in the store.
     //
@@ -198,11 +203,8 @@ fn write_client_config(path: &Path, socket: &Path, key_id: &str) -> Result<()> {
             Error::invalid(format!("cannot create {}: {error}", parent.display()))
         })?;
     }
-    std::fs::write(
-        path,
-        format!("socket={}\nkey={key_id}\n", socket.display()),
-    )
-    .map_err(|error| Error::invalid(format!("cannot write {}: {error}", path.display())))
+    std::fs::write(path, format!("socket={}\nkey={key_id}\n", socket.display()))
+        .map_err(|error| Error::invalid(format!("cannot write {}: {error}", path.display())))
 }
 
 /// The config tree, matching `nucleosd`'s default: not the data directory, which is what gets copied.
@@ -274,7 +276,10 @@ mod tests {
         assert!(root.join("admin.key").exists());
         // A client can find the daemon.
         let client = std::fs::read_to_string(root.join("client/socket")).unwrap();
-        assert!(client.contains(&format!("socket={}", options.socket.display())), "{client}");
+        assert!(
+            client.contains(&format!("socket={}", options.socket.display())),
+            "{client}"
+        );
         assert!(client.contains(&format!("key={}", done.key_id)), "{client}");
 
         let _ = std::fs::remove_dir_all(&root);
@@ -290,7 +295,10 @@ mod tests {
             .await
             .expect_err("a live deployment is not re-initialised");
         assert!(error.reason().contains("already initialised"), "{error:?}");
-        assert!(error.reason().contains("--force"), "and it says how: {error:?}");
+        assert!(
+            error.reason().contains("--force"),
+            "and it says how: {error:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -350,7 +358,10 @@ mod tests {
         let error = run(&options)
             .await
             .expect_err("a key beside the ciphertext seals nothing");
-        assert!(error.reason().contains("outside the data directory"), "{error:?}");
+        assert!(
+            error.reason().contains("outside the data directory"),
+            "{error:?}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

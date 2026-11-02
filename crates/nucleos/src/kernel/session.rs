@@ -382,7 +382,9 @@ impl Session {
             // wall-clock budget meaningless the first time somebody thought about it.
             started_unix_millis: now_unix_millis,
             // The next event continues the log; the snapshot's `seq` is the last one included.
-            seq: Arc::new(std::sync::atomic::AtomicU64::new(snapshot.seq.saturating_add(1))),
+            seq: Arc::new(std::sync::atomic::AtomicU64::new(
+                snapshot.seq.saturating_add(1),
+            )),
             pending: snapshot.pending,
             data: snapshot.data,
             routing: snapshot.routing,

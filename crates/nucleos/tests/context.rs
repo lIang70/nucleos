@@ -24,7 +24,6 @@ fn key(id: &SessionId) -> nucleos::adapter::SessionKey {
     nucleos::adapter::SessionKey::new("acme", id.clone())
 }
 
-
 fn principal() -> Principal {
     Principal {
         tenant: "acme".to_owned(),
@@ -189,7 +188,10 @@ async fn a_session_with_no_credit_never_reaches_the_model() {
 
     // Closed, with the reason on the session, and the stop recorded once.
     assert!(session.is_closed());
-    assert_eq!(session.stop_reason(), Some(nucleos::contract::StopReason::Tokens));
+    assert_eq!(
+        session.stop_reason(),
+        Some(nucleos::contract::StopReason::Tokens)
+    );
     let events = store.events_since(&key(session.id()), 0).await.unwrap();
     let budgets = events
         .iter()
@@ -210,14 +212,20 @@ async fn a_second_call_after_exhaustion_does_not_write_a_second_stop() {
     // turn one stop into two.
     assert!(kernel.inference(&mut session, &[]).await.is_err());
     assert!(kernel.inference(&mut session, &[]).await.is_err());
-    assert!(kernel.invoke_tools(&mut session, &[]).await.is_ok(), "an empty batch spends nothing");
+    assert!(
+        kernel.invoke_tools(&mut session, &[]).await.is_ok(),
+        "an empty batch spends nothing"
+    );
 
     let events = store.events_since(&key(session.id()), 0).await.unwrap();
     let budgets = events
         .iter()
         .filter(|event| matches!(event.kind, EventKind::BudgetExhausted { .. }))
         .count();
-    assert_eq!(budgets, 1, "the stop is recorded once, not once per attempt");
+    assert_eq!(
+        budgets, 1,
+        "the stop is recorded once, not once per attempt"
+    );
 }
 
 #[tokio::test]

@@ -48,9 +48,10 @@ impl Metrics {
     #[must_use]
     pub fn started_now() -> Self {
         let metrics = Self::default();
-        metrics
-            .since_unix_millis
-            .store(nucleos::adapter::Clock::now_unix_millis(&nucleos::adapter::SystemClock), Ordering::Relaxed);
+        metrics.since_unix_millis.store(
+            nucleos::adapter::Clock::now_unix_millis(&nucleos::adapter::SystemClock),
+            Ordering::Relaxed,
+        );
         metrics
     }
 
@@ -136,7 +137,11 @@ mod tests {
         let snapshot = metrics.snapshot();
         assert_eq!(snapshot.requests.get("GET /v1/describe"), Some(&2));
         assert_eq!(snapshot.unauthorized, 1);
-        assert_eq!(snapshot.requests.len(), 2, "one key per route, not per path");
+        assert_eq!(
+            snapshot.requests.len(),
+            2,
+            "one key per route, not per path"
+        );
     }
 
     #[test]

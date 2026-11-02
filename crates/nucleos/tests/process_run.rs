@@ -9,12 +9,12 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use nucleos::adapter::{AllowAll, Store};
-use nucleos_sqlite::SqliteStore;
-use nucleos_testkit::{FakeModel, FixedClock};
 use nucleos::contract::{
     EventKind, ExecStream, Principal, ProcessSpec, Routing, SandboxPolicy, SessionId, SessionKind,
 };
 use nucleos::kernel::{Kernel, SessionSpec};
+use nucleos_sqlite::SqliteStore;
+use nucleos_testkit::{FakeModel, FixedClock};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -23,7 +23,6 @@ use std::time::{Duration, Instant};
 fn key(id: &SessionId) -> nucleos::adapter::SessionKey {
     nucleos::adapter::SessionKey::new("acme", id.clone())
 }
-
 
 fn principal() -> Principal {
     Principal {
@@ -76,8 +75,8 @@ async fn output_text(store: &SqliteStore, id: &SessionId) -> String {
     loop {
         let text: String = store
             .events_since(&key(id), 0)
-        .await
-        .unwrap()
+            .await
+            .unwrap()
             .iter()
             .filter_map(|event| match &event.kind {
                 EventKind::ExecOutput { chunk, .. } => Some(chunk.clone()),
@@ -191,7 +190,10 @@ async fn a_confining_policy_is_enforced_or_refused_never_ignored() {
     {
         let session = spawned.expect("seatbelt is available here");
         let output = kernel.wait(&session).await.unwrap();
-        assert_eq!(output.exit_code, 0, "a read-only policy still runs a command");
+        assert_eq!(
+            output.exit_code, 0,
+            "a read-only policy still runs a command"
+        );
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -272,8 +274,8 @@ async fn stderr_is_a_separate_stream() -> nucleos::Result<()> {
     loop {
         let streams: Vec<ExecStream> = store
             .events_since(&key(&id), 0)
-        .await
-        .unwrap()
+            .await
+            .unwrap()
             .iter()
             .filter_map(|event| match &event.kind {
                 EventKind::ExecOutput { stream, .. } => Some(*stream),
@@ -387,11 +389,14 @@ async fn a_page_fills_through_a_phase_filter_and_says_where_to_continue() -> nuc
     // One page of two, filtered to the ones that ended: the page has to be *filled*, not just
     // truncated, so the kernel walks the store until it has two rows or runs out.
     let page = kernel
-        .processes("acme", &nucleos::contract::ProcessQuery {
-            phase: Some(nucleos::contract::ProcessPhase::Exited),
-            limit: 2,
-            after: None,
-        })
+        .processes(
+            "acme",
+            &nucleos::contract::ProcessQuery {
+                phase: Some(nucleos::contract::ProcessPhase::Exited),
+                limit: 2,
+                after: None,
+            },
+        )
         .await?;
     assert_eq!(page.processes.len(), 2);
     assert!(page.next.is_some(), "there is a third");
@@ -399,11 +404,14 @@ async fn a_page_fills_through_a_phase_filter_and_says_where_to_continue() -> nuc
     // The cursor resumes after the last row examined, so nothing is visited twice and nothing is
     // skipped.
     let next = kernel
-        .processes("acme", &nucleos::contract::ProcessQuery {
-            phase: Some(nucleos::contract::ProcessPhase::Exited),
-            limit: 2,
-            after: page.next.clone(),
-        })
+        .processes(
+            "acme",
+            &nucleos::contract::ProcessQuery {
+                phase: Some(nucleos::contract::ProcessPhase::Exited),
+                limit: 2,
+                after: page.next.clone(),
+            },
+        )
         .await?;
     assert_eq!(next.processes.len(), 1);
     assert_eq!(next.next, None, "the third was the last");
@@ -419,11 +427,14 @@ async fn a_page_fills_through_a_phase_filter_and_says_where_to_continue() -> nuc
         .await?;
     kernel.wait(&tail).await?;
     let after_running = kernel
-        .processes("acme", &nucleos::contract::ProcessQuery {
-            phase: Some(nucleos::contract::ProcessPhase::Exited),
-            limit: 2,
-            after: Some(nucleos::contract::SessionId::new("live-0")),
-        })
+        .processes(
+            "acme",
+            &nucleos::contract::ProcessQuery {
+                phase: Some(nucleos::contract::ProcessPhase::Exited),
+                limit: 2,
+                after: Some(nucleos::contract::SessionId::new("live-0")),
+            },
+        )
         .await?;
     assert_eq!(
         after_running
@@ -438,11 +449,14 @@ async fn a_page_fills_through_a_phase_filter_and_says_where_to_continue() -> nuc
 
     // A filter that matches nothing is an empty page, not an error.
     let none = kernel
-        .processes("acme", &nucleos::contract::ProcessQuery {
-            phase: Some(nucleos::contract::ProcessPhase::Pending),
-            limit: 10,
-            after: None,
-        })
+        .processes(
+            "acme",
+            &nucleos::contract::ProcessQuery {
+                phase: Some(nucleos::contract::ProcessPhase::Pending),
+                limit: 10,
+                after: None,
+            },
+        )
         .await?;
     assert!(none.processes.is_empty());
 
@@ -518,9 +532,15 @@ async fn a_resumed_process_session_can_still_answer_what_it_did() -> nucleos::Re
     // The supervisor is memory and has forgotten this process. The answer is in the log: the chunks
     // the reader wrote, and the summary the exit wrote.
     assert_eq!(after.exit_code, 0);
-    assert_eq!(after.stdout.text, "out", "the text comes back from the stream");
+    assert_eq!(
+        after.stdout.text, "out",
+        "the text comes back from the stream"
+    );
     assert_eq!(after.stderr.text, "err");
-    assert_eq!(after.duration_millis, before.duration_millis, "the summary is the record");
+    assert_eq!(
+        after.duration_millis, before.duration_millis,
+        "the summary is the record"
+    );
 
     let _ = std::fs::remove_dir_all(&directory);
     Ok(())

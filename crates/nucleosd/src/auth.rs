@@ -19,8 +19,8 @@
 //! the deployment is the signature's.
 
 use nucleos::contract::{ErrorCode, Principal};
-use nucleos::wire::api::ErrorBody;
 use nucleos::error::Error;
+use nucleos::wire::api::ErrorBody;
 use nucleos_auth::token;
 use nucleos_sqlite::SystemStore;
 use std::sync::Arc;
@@ -50,12 +50,9 @@ impl TokenAuth {
             return Ok(self.fallback.clone());
         }
 
-        let presented = header
-            .map(token::from_header)
-            .transpose()?
-            .ok_or_else(|| {
-                Error::denied("this daemon needs a bearer token: send `Authorization: Bearer <token>`")
-            })?;
+        let presented = header.map(token::from_header).transpose()?.ok_or_else(|| {
+            Error::denied("this daemon needs a bearer token: send `Authorization: Bearer <token>`")
+        })?;
 
         // The lookup is by hash, so a wrong token and an unknown token are one comparison — there is
         // no per-entry scan whose timing would leak which tokens exist.
@@ -201,13 +198,7 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert!(listed[0].hash.is_empty(), "a listing carries no hash");
         // And the row that does carry one carries the hash, not the token.
-        assert!(system
-            .tenant_for_hash(&issued.hash)
-            .unwrap()
-            .is_some());
-        assert!(system
-            .tenant_for_hash(&issued.token)
-            .unwrap()
-            .is_none());
+        assert!(system.tenant_for_hash(&issued.hash).unwrap().is_some());
+        assert!(system.tenant_for_hash(&issued.token).unwrap().is_none());
     }
 }

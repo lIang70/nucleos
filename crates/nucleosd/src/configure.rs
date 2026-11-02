@@ -21,14 +21,13 @@
 
 use crate::admin::Admin;
 use crate::http::{ApiError, App, POLICY_KEY};
-use axum::extract::{Path, State};
 use axum::Json;
+use axum::extract::{Path, State};
 use nucleos::adapter::{ConfigScope, Verdict};
 use nucleos::error::{Error, Result};
 use nucleos::wire::api::{
-    TenantLimitsRequest, TenantLimitsView,
     AdminKeyListResponse, AdminKeyRequest, ConfigKey, ModelListResponse, ModelRequest, ModelView,
-    PutResponse,
+    PutResponse, TenantLimitsRequest, TenantLimitsView,
 };
 use nucleos_sqlite::{Change, SystemStore};
 use std::sync::Arc;
@@ -61,14 +60,12 @@ pub async fn put_policy(
     // Parsed and validated before the gate: a document that cannot mean what it says is a caller
     // error, and asking the policy whether an invalid policy may replace it is a question with no
     // useful answer.
-    let document = nucleos_policy::Document::parse(&text).map_err(|error| {
-        ApiError::from_error(&error)
-    })?;
+    let document =
+        nucleos_policy::Document::parse(&text).map_err(|error| ApiError::from_error(&error))?;
 
     permit(&app, &admin, "policy").await?;
-    let ruleset = nucleos_policy::Ruleset::new(document.clone()).map_err(|error| {
-        ApiError::from_error(&error)
-    })?;
+    let ruleset = nucleos_policy::Ruleset::new(document.clone())
+        .map_err(|error| ApiError::from_error(&error))?;
 
     // Applied first, then stored: a daemon enforcing a policy it cannot explain is a smaller problem
     // than one reporting a change that never took effect.
@@ -199,8 +196,9 @@ pub fn stored_models(system: &SystemStore) -> Result<Vec<ModelView>> {
     let Some(raw) = system.get(MODELS_KEY)? else {
         return Ok(Vec::new());
     };
-    serde_json::from_str(&raw)
-        .map_err(|error| Error::internal(format!("stored model definitions are unreadable: {error}")))
+    serde_json::from_str(&raw).map_err(|error| {
+        Error::internal(format!("stored model definitions are unreadable: {error}"))
+    })
 }
 
 /// Build the provider adapter for one definition.
@@ -208,7 +206,10 @@ pub fn stored_models(system: &SystemStore) -> Result<Vec<ModelView>> {
 /// `api_key` is passed in rather than read here: at add time it came from the request and was sealed, at
 /// start-up it comes from the sealed row. One function, two callers, one way to disagree about which key
 /// a model uses.
-pub fn adapter_for(request: &ModelRequest, api_key: Option<String>) -> Result<nucleos_openai::OpenAi> {
+pub fn adapter_for(
+    request: &ModelRequest,
+    api_key: Option<String>,
+) -> Result<nucleos_openai::OpenAi> {
     let api_key = match (api_key, &request.key_file) {
         (Some(key), _) => Some(key),
         // A path is the alternative to sealing, not a fallback for it: a credential with two sources has
@@ -258,9 +259,8 @@ pub async fn put_tenant_policy(
             "the policy must be UTF-8 text: {error}"
         )))
     })?;
-    let document = nucleos_policy::Document::parse(&text).map_err(|error| {
-        ApiError::from_error(&error)
-    })?;
+    let document =
+        nucleos_policy::Document::parse(&text).map_err(|error| ApiError::from_error(&error))?;
     if tenant.trim().is_empty() {
         return Err(ApiError::from_error(&Error::invalid(
             "a tenant policy needs a tenant",
@@ -336,7 +336,9 @@ pub async fn put_tenant_limits(
     }
 
     let text = serde_json::to_string(&view).map_err(|error| {
-        ApiError::from_error(&Error::internal(format!("cannot encode the limits: {error}")))
+        ApiError::from_error(&Error::internal(format!(
+            "cannot encode the limits: {error}"
+        )))
     })?;
     system(&app)?
         .set(&format!("{TENANT_LIMITS_PREFIX}{tenant}"), &text)
@@ -360,9 +362,12 @@ pub fn apply_tenant_limits(kernel: &nucleos::Kernel, system: &SystemStore) -> Re
         let Some(tenant) = key.strip_prefix(TENANT_LIMITS_PREFIX) else {
             continue;
         };
-        let view: nucleos::wire::api::TenantLimitsView = serde_json::from_str(&value).map_err(|error| {
-            Error::internal(format!("stored limits for {tenant:?} are unreadable: {error}"))
-        })?;
+        let view: nucleos::wire::api::TenantLimitsView =
+            serde_json::from_str(&value).map_err(|error| {
+                Error::internal(format!(
+                    "stored limits for {tenant:?} are unreadable: {error}"
+                ))
+            })?;
         kernel.set_tenant_tools(tenant, view.tools)?;
         kernel.set_tenant_models(tenant, view.models)?;
     }
@@ -389,9 +394,9 @@ fn stored_limits(app: &Arc<App>, tenant: &str) -> std::result::Result<TenantLimi
 
 /// The policy in force, rebuilt from the store: the deployment's and every tenant's.
 pub fn layered_from(system: &SystemStore) -> Result<nucleos_policy::Layered> {
-    let text = system.get(POLICY_KEY)?.ok_or_else(|| {
-        Error::invalid("this deployment has no policy: run `nucleos init`")
-    })?;
+    let text = system
+        .get(POLICY_KEY)?
+        .ok_or_else(|| Error::invalid("this deployment has no policy: run `nucleos init`"))?;
     let mut layered = nucleos_policy::Layered::system(nucleos_policy::Document::parse(&text)?)?;
     for (key, value) in system.with_prefix(TENANT_POLICY_PREFIX)? {
         let Some(tenant) = key.strip_prefix(TENANT_POLICY_PREFIX) else {
@@ -573,8 +578,8 @@ pub async fn post_token(
     State(app): State<Arc<App>>,
     admin: Admin,
 ) -> std::result::Result<Json<nucleos::wire::api::TokenIssued>, ApiError> {
-    let request: nucleos::wire::api::TokenIssueRequest =
-        serde_json::from_slice(&admin.body).map_err(|error| {
+    let request: nucleos::wire::api::TokenIssueRequest = serde_json::from_slice(&admin.body)
+        .map_err(|error| {
             ApiError::from_error(&Error::invalid(format!(
                 "the token request is not valid JSON: {error}"
             )))
@@ -602,7 +607,13 @@ pub async fn post_token(
         })
         .await
         .map_err(|error| ApiError::from_error(&error))?;
-    record(&app, &admin, "tokens", &format!("issue {}", request.subject)).await?;
+    record(
+        &app,
+        &admin,
+        "tokens",
+        &format!("issue {}", request.subject),
+    )
+    .await?;
 
     tracing::info!(
         event = "token_issued",
@@ -691,9 +702,8 @@ async fn permit(app: &Arc<App>, admin: &Admin, subject: &str) -> std::result::Re
 }
 
 fn system(app: &Arc<App>) -> std::result::Result<&Arc<SystemStore>, ApiError> {
-    app.system().ok_or_else(|| {
-        ApiError::from_error(&Error::unavailable("this daemon has no system store"))
-    })
+    app.system()
+        .ok_or_else(|| ApiError::from_error(&Error::unavailable("this daemon has no system store")))
 }
 
 fn models_of(app: &Arc<App>) -> std::result::Result<Vec<ModelView>, ApiError> {

@@ -443,9 +443,7 @@ async fn a_source_is_added_by_request_and_its_tools_are_published() {
         &key_id,
         "POST",
         "/v1/sources",
-        &format!(
-            r#"{{"name":"echo","command":"python3","args":["-u","{script}"]}}"#
-        ),
+        &format!(r#"{{"name":"echo","command":"python3","args":["-u","{script}"]}}"#),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{added}");
@@ -526,7 +524,10 @@ async fn a_reload_with_no_sources_says_what_to_do() {
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let error = body_json(response).await;
     assert!(
-        error["reason"].as_str().unwrap().contains("nucleos sources add"),
+        error["reason"]
+            .as_str()
+            .unwrap()
+            .contains("nucleos sources add"),
         "{error}"
     );
 }
@@ -773,14 +774,7 @@ async fn request(
 async fn a_session_belongs_to_the_tenant_that_created_it() {
     let (app, acme, other) = multi_tenant().await;
 
-    let (created, _) = request(
-        &app,
-        "POST",
-        "/v1/sessions",
-        &acme,
-        r#"{"session":"s1"}"#,
-    )
-    .await;
+    let (created, _) = request(&app, "POST", "/v1/sessions", &acme, r#"{"session":"s1"}"#).await;
     assert_eq!(created, StatusCode::OK);
 
     // The owner can read it.
@@ -859,7 +853,10 @@ async fn the_session_view_reports_a_turn_that_was_cut_short() {
     // that never completed.
     let store = Arc::new(nucleos_sqlite::SqliteStore::in_memory().unwrap());
     let kernel = nucleos::Kernel::builder()
-        .model("primary", Arc::new(nucleos_testkit::FakeModel::text(["unused"])))
+        .model(
+            "primary",
+            Arc::new(nucleos_testkit::FakeModel::text(["unused"])),
+        )
         .store(Arc::clone(&store) as Arc<dyn nucleos::adapter::Store>)
         .policy(Arc::new(nucleos::adapter::AllowAll))
         .routing(nucleos::contract::Routing {
@@ -880,10 +877,7 @@ async fn the_session_view_reports_a_turn_that_was_cut_short() {
     request(&app, "POST", "/v1/sessions", "", r#"{"session":"s1"}"#).await;
     use nucleos::adapter::Store as _;
 
-    let key = nucleos::adapter::SessionKey::new(
-        "acme",
-        nucleos::contract::SessionId::new("s1"),
-    );
+    let key = nucleos::adapter::SessionKey::new("acme", nucleos::contract::SessionId::new("s1"));
     let head = store.events_since(&key, 0).await.unwrap().len() as u64;
     let events: Vec<nucleos::contract::Event> = [
         nucleos::contract::EventKind::TextDelta {
@@ -911,7 +905,10 @@ async fn the_session_view_reports_a_turn_that_was_cut_short() {
     let (status, view) = request(&app, "GET", "/v1/sessions/s1", "", "").await;
     assert_eq!(status, StatusCode::OK);
     // The caller no longer has to walk the event stream to find out what was said before the crash.
-    assert_eq!(view["partial"]["text"], "check the config, then run migrate");
+    assert_eq!(
+        view["partial"]["text"],
+        "check the config, then run migrate"
+    );
     assert!(
         view["partial"].get("unfinished_call").is_none(),
         "it stopped in the text, not inside a call: {view}"
@@ -1014,7 +1011,10 @@ async fn a_signed_config_request_answers_with_what_the_daemon_is_running() {
         .await
         .unwrap();
     system
-        .set(nucleosd::http::POLICY_KEY, r#"{"default":"deny","rules":[]}"#)
+        .set(
+            nucleosd::http::POLICY_KEY,
+            r#"{"default":"deny","rules":[]}"#,
+        )
         .await
         .unwrap();
 
@@ -1107,10 +1107,9 @@ async fn governable_with(
 
     // The kernel enforces the same policy that is stored, as the daemon does at start-up: a fixture
     // with a permissive gate would test the endpoints without testing the thing in front of them.
-    let policy = nucleos_policy::Ruleset::new(
-        nucleos_policy::Document::parse(GOVERNED_BY).unwrap(),
-    )
-    .unwrap();
+    let policy =
+        nucleos_policy::Ruleset::new(nucleos_policy::Document::parse(GOVERNED_BY).unwrap())
+            .unwrap();
     // The store is kept: `GET /v1/sessions` reads it directly, because a page of a hundred sessions
     // must not load a hundred conversations.
     let sessions: Arc<dyn nucleos::adapter::Store> =
@@ -1180,7 +1179,8 @@ async fn signed(
 #[tokio::test]
 async fn a_policy_change_is_applied_and_recorded() {
     let (app, key, key_id) = governable().await;
-    let document = r#"{"default":"deny","rules":[{"decision":"allow","config":"*","scope":"system"}]}"#;
+    let document =
+        r#"{"default":"deny","rules":[{"decision":"allow","config":"*","scope":"system"}]}"#;
 
     let (status, reply) = signed(&app, &key, &key_id, "PUT", "/v1/policy", document).await;
     assert_eq!(status, StatusCode::OK, "{reply}");
@@ -1207,7 +1207,13 @@ async fn an_invalid_policy_is_refused_before_it_is_stored() {
     .await;
     // A rule that names nothing is a caller error, not a policy.
     assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
-    assert!(error["reason"].as_str().unwrap().contains("matches nothing"), "{error}");
+    assert!(
+        error["reason"]
+            .as_str()
+            .unwrap()
+            .contains("matches nothing"),
+        "{error}"
+    );
 }
 
 #[tokio::test]
@@ -1223,8 +1229,7 @@ async fn a_model_can_be_added_listed_and_removed() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(list["models"][0]["name"], "primary");
 
-    let (status, list) =
-        signed(&app, &key, &key_id, "DELETE", "/v1/models/primary", "").await;
+    let (status, list) = signed(&app, &key, &key_id, "DELETE", "/v1/models/primary", "").await;
     assert_eq!(status, StatusCode::OK, "{list}");
     assert!(list["models"].as_array().unwrap().is_empty());
 }
@@ -1267,7 +1272,15 @@ async fn a_new_policy_governs_the_next_request() {
     let (app, key, key_id) = governable().await;
 
     // Replacing the policy is allowed while the old one allows it…
-    let (status, _) = signed(&app, &key, &key_id, "PUT", "/v1/policy", r#"{"default":"deny","rules":[]}"#).await;
+    let (status, _) = signed(
+        &app,
+        &key,
+        &key_id,
+        "PUT",
+        "/v1/policy",
+        r#"{"default":"deny","rules":[]}"#,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
 
     // …and the new one takes effect on the very next request, not at the next restart. The same
@@ -1516,7 +1529,11 @@ async fn an_api_key_is_sealed_and_never_stored_in_the_clear() {
     let stored = app
         .system()
         .unwrap()
-        .get(&format!("{}{}", nucleosd::configure::SEALED_KEY_PREFIX, "primary"))
+        .get(&format!(
+            "{}{}",
+            nucleosd::configure::SEALED_KEY_PREFIX,
+            "primary"
+        ))
         .unwrap()
         .expect("a sealed row was written");
     assert!(!stored.contains("sk-a-real-key"), "{stored}");
@@ -1538,7 +1555,10 @@ async fn an_api_key_without_a_seal_key_is_refused_rather_than_stored_in_the_clea
 
     // The alternative — storing it anyway — would make every backup of the store a credential dump.
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{error}");
-    assert!(error["reason"].as_str().unwrap().contains("seal key"), "{error}");
+    assert!(
+        error["reason"].as_str().unwrap().contains("seal key"),
+        "{error}"
+    );
 }
 
 #[tokio::test]
@@ -1547,12 +1567,25 @@ async fn sessions_can_be_listed_and_filtered_by_kind() {
 
     // Three sessions: two agent, one process — all owned by the same caller.
     for id in ["a1", "a2"] {
-        let (status, _) = request(&app, "POST", "/v1/sessions", "", &format!(r#"{{"session":"{id}"}}"#)).await;
+        let (status, _) = request(
+            &app,
+            "POST",
+            "/v1/sessions",
+            "",
+            &format!(r#"{{"session":"{id}"}}"#),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
     }
     let all = body_json(
         router(Arc::clone(&app))
-            .oneshot(Request::builder().method("GET").uri("/v1/sessions?limit=10").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/sessions?limit=10")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap(),
     )
@@ -1579,11 +1612,13 @@ async fn sessions_can_be_listed_and_filtered_by_kind() {
     )
     .await;
     assert_eq!(agents["sessions"].as_array().unwrap().len(), 2);
-    assert!(agents["sessions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|row| row["kind"] == "agent"));
+    assert!(
+        agents["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["kind"] == "agent")
+    );
 
     // The filter is a filter, not a decoration: a kind with no sessions is an empty page, not every
     // session.
@@ -1620,7 +1655,14 @@ async fn sessions_can_be_listed_and_filtered_by_kind() {
 async fn a_listing_pages_by_cursor() {
     let (app, _, _) = governable().await;
     for id in ["a1", "a2", "a3"] {
-        request(&app, "POST", "/v1/sessions", "", &format!(r#"{{"session":"{id}"}}"#)).await;
+        request(
+            &app,
+            "POST",
+            "/v1/sessions",
+            "",
+            &format!(r#"{{"session":"{id}"}}"#),
+        )
+        .await;
     }
 
     let first = body_json(
@@ -1637,14 +1679,18 @@ async fn a_listing_pages_by_cursor() {
     )
     .await;
     assert_eq!(first["sessions"].as_array().unwrap().len(), 2);
-    let cursor = first["next_page_token"].as_str().expect("a third session exists");
+    let cursor = first["next_page_token"]
+        .as_str()
+        .expect("a third session exists");
 
     let second = body_json(
         router(Arc::clone(&app))
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/v1/sessions?kind=agent&limit=2&page_token={cursor}"))
+                    .uri(format!(
+                        "/v1/sessions?kind=agent&limit=2&page_token={cursor}"
+                    ))
                     .body(Body::empty())
                     .unwrap(),
             )

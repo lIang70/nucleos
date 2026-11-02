@@ -7,11 +7,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use async_trait::async_trait;
-use nucleos::adapter::{
-    AllowAll, Gated, Model, ModelDelta, Policy, PolicyRequest, Store, Verdict,
-};
-use nucleos_sqlite::SqliteStore;
-use nucleos_testkit::{FakeModel, FakeTool, FixedClock, tool_call_deltas};
+use nucleos::adapter::{AllowAll, Gated, Model, ModelDelta, Policy, PolicyRequest, Store, Verdict};
 use nucleos::contract::{
     AttemptOutcome, Budget, ConfigPatch, ErrorCode, EventKind, PermissionKind, PermissionOption,
     Principal, Routing, SessionId, SessionState, StopReason,
@@ -19,6 +15,8 @@ use nucleos::contract::{
 use nucleos::kernel::{HitlVerdict, Kernel, SessionSpec};
 use nucleos::{Error, Result};
 use nucleos_agent as agent;
+use nucleos_sqlite::SqliteStore;
+use nucleos_testkit::{FakeModel, FakeTool, FixedClock, tool_call_deltas};
 use std::sync::Arc;
 
 /// The store's key for a test tenant. The tests all use one tenant, so the helper keeps them about
@@ -26,7 +24,6 @@ use std::sync::Arc;
 fn key(id: &SessionId) -> nucleos::adapter::SessionKey {
     nucleos::adapter::SessionKey::new("acme", id.clone())
 }
-
 
 fn principal() -> Principal {
     Principal {
@@ -171,7 +168,9 @@ async fn malformed_arguments_never_reach_the_tool() -> Result<()> {
     agent::start(&kernel, &principal(), id.clone(), spec()).await?;
 
     let result = store
-        .events_since(&key(&id), 0).await.unwrap()
+        .events_since(&key(&id), 0)
+        .await
+        .unwrap()
         .into_iter()
         .find_map(|event| match event.kind {
             EventKind::ToolFinished { result, .. } => Some(result),
@@ -216,7 +215,9 @@ async fn a_tool_that_reports_a_cost_is_charged_for_it() -> Result<()> {
     // alternative — a gateway endpoint so the kernel could make the call itself — was a second
     // product, not a fix.
     let charged = store
-        .events_since(&key(&id), 0).await.unwrap()
+        .events_since(&key(&id), 0)
+        .await
+        .unwrap()
         .into_iter()
         .find_map(|event| match event.kind {
             EventKind::ToolFinished { usage, .. } => usage,
@@ -239,7 +240,9 @@ async fn a_tool_that_reports_nothing_is_not_assumed_free() -> Result<()> {
     agent::start(&kernel, &principal(), id.clone(), spec()).await?;
 
     let usage = store
-        .events_since(&key(&id), 0).await.unwrap()
+        .events_since(&key(&id), 0)
+        .await
+        .unwrap()
         .into_iter()
         .find_map(|event| match event.kind {
             EventKind::ToolFinished { usage, .. } => Some(usage),
@@ -278,7 +281,11 @@ async fn the_step_cap_stops_a_session_that_would_loop() -> Result<()> {
 
     assert_eq!(outcome.state, SessionState::Closed);
     assert_eq!(outcome.stop, Some(StopReason::Steps));
-    assert!(kinds(&store, &id).await.contains(&"nucleos.v1.budget_exhausted"));
+    assert!(
+        kinds(&store, &id)
+            .await
+            .contains(&"nucleos.v1.budget_exhausted")
+    );
     Ok(())
 }
 
@@ -466,7 +473,9 @@ async fn a_denied_tool_answers_with_content_and_the_turn_continues() -> Result<(
     // A refusal is content the model reads, not a failed turn: the session keeps going.
     assert_eq!(outcome.state, SessionState::Closed);
     let refusal = store
-        .events_since(&key(&SessionId::new("s1")), 0).await.unwrap()
+        .events_since(&key(&SessionId::new("s1")), 0)
+        .await
+        .unwrap()
         .into_iter()
         .find_map(|event| match event.kind {
             EventKind::ToolFinished { result, .. } => Some(result),

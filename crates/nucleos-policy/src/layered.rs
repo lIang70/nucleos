@@ -146,7 +146,8 @@ mod tests {
 
     const ALLOW_READ: &str = r#"{"default":"deny","rules":[{"decision":"allow","tool":"read_*"}]}"#;
     const DENY_READ: &str = r#"{"default":"deny","rules":[{"decision":"deny","tool":"read_*"}]}"#;
-    const ASK_READ: &str = r#"{"default":"deny","rules":[{"decision":"ask","tool":"read_*","question":"read it?"}]}"#;
+    const ASK_READ: &str =
+        r#"{"default":"deny","rules":[{"decision":"ask","tool":"read_*","question":"read it?"}]}"#;
 
     #[tokio::test]
     async fn a_tenant_without_a_policy_inherits_the_deployments() {
@@ -161,7 +162,10 @@ mod tests {
             .with_tenant("acme", document(DENY_READ))
             .unwrap();
 
-        assert!(matches!(check(&layered, "acme").await, Verdict::Deny { .. }));
+        assert!(matches!(
+            check(&layered, "acme").await,
+            Verdict::Deny { .. }
+        ));
         // And only its own tenant: the other one is untouched.
         assert_eq!(check(&layered, "other").await, Verdict::Allow);
     }
@@ -174,7 +178,10 @@ mod tests {
             .unwrap()
             .with_tenant("acme", document(ALLOW_READ))
             .unwrap();
-        assert!(matches!(check(&layered, "acme").await, Verdict::Deny { .. }));
+        assert!(matches!(
+            check(&layered, "acme").await,
+            Verdict::Deny { .. }
+        ));
     }
 
     #[tokio::test]
@@ -226,11 +233,7 @@ mod tests {
                     },
                 })
                 .await;
-            assert_eq!(
-                matches!(verdict, Verdict::Allow),
-                expected,
-                "{scope:?}"
-            );
+            assert_eq!(matches!(verdict, Verdict::Allow), expected, "{scope:?}");
         }
     }
 }

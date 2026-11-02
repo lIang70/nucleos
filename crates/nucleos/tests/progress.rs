@@ -23,7 +23,6 @@ fn key(id: &SessionId) -> nucleos::adapter::SessionKey {
     nucleos::adapter::SessionKey::new("acme", id.clone())
 }
 
-
 fn principal() -> Principal {
     Principal {
         tenant: "acme".to_owned(),
@@ -117,11 +116,16 @@ async fn a_tool_that_reports_produces_one_event_per_step() {
     // One record per step, in order, addressed by the call they belong to: a stream of "50%"
     // without the id is unattributable when a batch runs eight calls at once.
     assert_eq!(progress.len(), 3, "{progress:?}");
-    assert!(progress
-        .iter()
-        .all(|(token, _, total, _)| token == "call-1" && *total == 3));
+    assert!(
+        progress
+            .iter()
+            .all(|(token, _, total, _)| token == "call-1" && *total == 3)
+    );
     assert_eq!(
-        progress.iter().map(|(_, done, _, _)| *done).collect::<Vec<_>>(),
+        progress
+            .iter()
+            .map(|(_, done, _, _)| *done)
+            .collect::<Vec<_>>(),
         [1, 2, 3]
     );
 }
@@ -210,10 +214,7 @@ impl Tool for Silent {
     }
 }
 
-fn kernel_with(
-    tool: Arc<dyn Tool>,
-    heartbeat: std::time::Duration,
-) -> (Kernel, Arc<SqliteStore>) {
+fn kernel_with(tool: Arc<dyn Tool>, heartbeat: std::time::Duration) -> (Kernel, Arc<SqliteStore>) {
     let store = Arc::new(SqliteStore::in_memory().unwrap());
     let kernel = Kernel::builder()
         .model("primary", Arc::new(FakeModel::text(["unused"])))
@@ -239,7 +240,10 @@ async fn progress_events(store: &Arc<SqliteStore>, id: &SessionId) -> Vec<(u64, 
         .into_iter()
         .filter_map(|event| match event.kind {
             EventKind::Progress {
-                done, total, message, ..
+                done,
+                total,
+                message,
+                ..
             } => Some((done, total, message)),
             _ => None,
         })
@@ -266,7 +270,9 @@ async fn a_silent_call_is_reported_as_alive() {
     // `total: 0` is this ABI's "unknown", and it is the truth here: nobody told the kernel how much
     // work is left.
     assert!(
-        events.iter().all(|(_, total, message)| *total == 0 && message == "still running"),
+        events
+            .iter()
+            .all(|(_, total, message)| *total == 0 && message == "still running"),
         "{events:?}"
     );
 }
@@ -301,7 +307,9 @@ async fn a_tool_that_reports_is_not_interrupted_by_the_heartbeat() {
         .position(|(_, total, _)| *total > 0)
         .unwrap_or_else(|| panic!("the tool reported nothing: {events:?}"));
     assert!(
-        events[first_report..].iter().all(|(_, total, _)| *total == 3),
+        events[first_report..]
+            .iter()
+            .all(|(_, total, _)| *total == 3),
         "no heartbeat after the tool started reporting: {events:?}"
     );
     assert_eq!(
@@ -332,10 +340,7 @@ async fn a_fast_call_produces_nothing() {
 
 #[tokio::test]
 async fn the_heartbeat_can_be_turned_off() {
-    let (kernel, store) = kernel_with(
-        Arc::new(Silent { millis: 60 }),
-        std::time::Duration::ZERO,
-    );
+    let (kernel, store) = kernel_with(Arc::new(Silent { millis: 60 }), std::time::Duration::ZERO);
     let mut session = kernel
         .open(&principal(), SessionId::new("s1"), spec())
         .await

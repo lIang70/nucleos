@@ -1294,15 +1294,22 @@ impl SandboxPolicy {
             (Self::DangerFullAccess, _) | (Self::ExternalSandbox { .. }, _) => true,
 
             // Within one rung: fewer roots, and no network that was not already allowed.
-            (Self::ReadOnly { network_access: was }, Self::ReadOnly { network_access }) => {
-                !network_access || *was
-            }
+            (
+                Self::ReadOnly {
+                    network_access: was,
+                },
+                Self::ReadOnly { network_access },
+            ) => !network_access || *was,
             (Self::ReadOnly { .. }, _) => false,
 
             // A read-only policy grants no writes, so it is narrower from any writing policy.
-            (Self::WorkspaceWrite { network_access: was, .. }, Self::ReadOnly { network_access }) => {
-                !network_access || *was
-            }
+            (
+                Self::WorkspaceWrite {
+                    network_access: was,
+                    ..
+                },
+                Self::ReadOnly { network_access },
+            ) => !network_access || *was,
             (
                 Self::WorkspaceWrite {
                     extra_writable_roots: was,
@@ -1316,9 +1323,7 @@ impl SandboxPolicy {
                 // Compared as written: a root that only differs by a symlink is a different grant,
                 // and treating it as equal would let a session swap one directory for another.
                 (!network_access || *was_net)
-                    && extra_writable_roots
-                        .iter()
-                        .all(|root| was.contains(root))
+                    && extra_writable_roots.iter().all(|root| was.contains(root))
             }
         }
     }
@@ -1611,7 +1616,9 @@ pub enum Truncation {
 /// The ceiling (`config.tools`) is the application's to narrow and only ever narrows. Exposure is
 /// what is in the prompt right now: it may grow up to the ceiling, by configuration or by a search
 /// tool asking. Keeping the two apart is what makes dynamic tool loading safe.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Exposure {
     /// In the prompt every turn. Keep this set small: it is the stable baseline.
@@ -1716,10 +1723,7 @@ impl ToolPolicy {
     /// The exposure of one tool.
     #[must_use]
     pub fn exposure_of(&self, name: &str) -> Exposure {
-        self.exposures
-            .get(name)
-            .copied()
-            .unwrap_or(self.default)
+        self.exposures.get(name).copied().unwrap_or(self.default)
     }
 
     /// Refuse a policy that would make discovery impossible.

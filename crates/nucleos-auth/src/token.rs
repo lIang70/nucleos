@@ -105,7 +105,10 @@ mod tests {
         assert_eq!(hash(&issued.token), issued.hash);
         assert_ne!(issued.hash, issued.token);
         assert_eq!(issued.hash.len(), 64, "sha256 in hex");
-        assert!(!issued.hash.contains(PREFIX), "the prefix would give it away");
+        assert!(
+            !issued.hash.contains(PREFIX),
+            "the prefix would give it away"
+        );
     }
 
     #[test]

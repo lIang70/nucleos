@@ -58,10 +58,7 @@ impl std::ops::Deref for Pinned {
 
 impl std::fmt::Debug for Pinned {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_list()
-            .entries(self.0.keys())
-            .finish()
+        formatter.debug_list().entries(self.0.keys()).finish()
     }
 }
 
@@ -187,7 +184,10 @@ pub(crate) fn compatible(pinned: &ToolSet, next: &ToolSet) -> bool {
         let (Some(before), Some(after)) = (pinned.get(&name), next.get(&name)) else {
             return false;
         };
-        schema_narrows(&before.spec().input_schema_json, &after.spec().input_schema_json)
+        schema_narrows(
+            &before.spec().input_schema_json,
+            &after.spec().input_schema_json,
+        )
     })
 }
 
@@ -246,7 +246,10 @@ fn schema_narrows(before: &str, after: &str) -> bool {
 }
 
 /// Record a migration on the session, if one is due.
-pub(crate) async fn migrate(kernel: &super::Kernel, session: &mut super::session::Session) -> Result<bool> {
+pub(crate) async fn migrate(
+    kernel: &super::Kernel,
+    session: &mut super::session::Session,
+) -> Result<bool> {
     // Everything that needs the registry is answered before the first await: a read guard held
     // across one makes the whole turn non-`Send`, and the handlers that drive it stop compiling.
     let resolved = {
@@ -345,7 +348,10 @@ mod tests {
 
     #[test]
     fn a_new_required_property_is_not() {
-        let before = set(vec![tool("read_file", r#"{"type":"object","properties":{"path":{}}}"#)]);
+        let before = set(vec![tool(
+            "read_file",
+            r#"{"type":"object","properties":{"path":{}}}"#,
+        )]);
         let after = set(vec![tool(
             "read_file",
             r#"{"type":"object","properties":{"path":{},"mode":{}},"required":["mode"]}"#,
@@ -365,17 +371,23 @@ mod tests {
             "read_file",
             r#"{"type":"object","properties":{"path":{"type":"integer"}}}"#,
         )]);
-        assert!(!compatible(&set(vec![tool(
-            "read_file",
-            r#"{"type":"object","properties":{"path":{"type":"string"}}}"#
-        )]), &retyped));
+        assert!(!compatible(
+            &set(vec![tool(
+                "read_file",
+                r#"{"type":"object","properties":{"path":{"type":"string"}}}"#
+            )]),
+            &retyped
+        ));
     }
 
     #[test]
     fn the_search_tool_never_blocks_a_migration() {
         // It is rebuilt per generation, so its schema changes with the catalog.
         let before = set(vec![tool("read_file", "{}"), tool(tool_search::NAME, "{}")]);
-        let after = set(vec![tool("read_file", "{}"), tool(tool_search::NAME, r#"{"x":1}"#)]);
+        let after = set(vec![
+            tool("read_file", "{}"),
+            tool(tool_search::NAME, r#"{"x":1}"#),
+        ]);
         assert!(compatible(&before, &after));
     }
 }

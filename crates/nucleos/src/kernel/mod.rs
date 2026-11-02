@@ -11,8 +11,8 @@
 pub(crate) mod bm25;
 pub(crate) mod budget;
 pub(crate) mod cancel;
-pub(crate) mod generation;
 pub(crate) mod config;
+pub(crate) mod generation;
 pub(crate) mod inference;
 pub(crate) mod lifecycle;
 pub(crate) mod process;
@@ -22,8 +22,8 @@ pub(crate) mod sandbox;
 pub(crate) mod session;
 pub(crate) mod state;
 pub(crate) mod tool_search;
-pub(crate) mod writer;
 pub(crate) mod tools;
+pub(crate) mod writer;
 
 pub use session::Session;
 
@@ -131,9 +131,11 @@ pub struct Kernel {
     /// A second filter beside the session's own, not instead of it — the session's ceiling is the
     /// application's decision about one session, this is the deployment's about a tenant. Present with
     /// an empty list means "nothing", absent means "no tenant limit".
-    tenant_tools: std::sync::RwLock<std::collections::BTreeMap<String, std::collections::BTreeSet<String>>>,
+    tenant_tools:
+        std::sync::RwLock<std::collections::BTreeMap<String, std::collections::BTreeSet<String>>>,
     /// Per-tenant model allow-lists. A route is filtered against these, so a fallback chain survives.
-    tenant_models: std::sync::RwLock<std::collections::BTreeMap<String, std::collections::BTreeSet<String>>>,
+    tenant_models:
+        std::sync::RwLock<std::collections::BTreeMap<String, std::collections::BTreeSet<String>>>,
     store: Arc<dyn Store>,
     /// Swappable: a deployment that can only tighten its policy by restarting will not tighten it.
     policy: Arc<RwLock<Arc<dyn Policy>>>,
@@ -158,7 +160,13 @@ impl std::fmt::Debug for Kernel {
                 &self
                     .generations
                     .read()
-                    .map(|generations| generations.current_set().keys().cloned().collect::<Vec<_>>())
+                    .map(|generations| {
+                        generations
+                            .current_set()
+                            .keys()
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    })
                     .unwrap_or_default(),
             )
             .field("generation", &self.generation())
@@ -240,17 +248,14 @@ impl Kernel {
     /// Never retires the current set: a session migrating at its next turn boundary has to have
     /// somewhere to migrate to.
     pub fn retire(&self) -> Result<Vec<Generation>> {
-        let mut generations = self.generations.write().map_err(|_| {
-            Error::internal("the tool registry is poisoned")
-        })?;
+        let mut generations = self
+            .generations
+            .write()
+            .map_err(|_| Error::internal("the tool registry is poisoned"))?;
         let retired = generations.retire();
         let kept = generations.len();
         drop(generations);
-        tracing::info!(
-            event = "generations_retired",
-            retired = retired.len(),
-            kept,
-        );
+        tracing::info!(event = "generations_retired", retired = retired.len(), kept,);
         Ok(retired)
     }
 
@@ -543,7 +548,9 @@ impl Kernel {
 
 /// Store or clear one tenant limit.
 fn set_limit(
-    limits: &std::sync::RwLock<std::collections::BTreeMap<String, std::collections::BTreeSet<String>>>,
+    limits: &std::sync::RwLock<
+        std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    >,
     tenant: &str,
     names: Option<Vec<String>>,
 ) -> Result<()> {

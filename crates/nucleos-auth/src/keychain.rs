@@ -58,7 +58,10 @@ impl Store {
         match self {
             Self::Keychain { service, account } => keychain_get(service, account),
             Self::File(path) => std::fs::read(path).map_err(|error| {
-                Error::invalid(format!("cannot read the key at {}: {error}", path.display()))
+                Error::invalid(format!(
+                    "cannot read the key at {}: {error}",
+                    path.display()
+                ))
             }),
         }
     }
@@ -203,7 +206,9 @@ fn keychain_put(service: &str, account: &str, secret: &[u8]) -> Result<()> {
     // `secret-tool` reads the secret from stdin, which is the behaviour `security` should have had.
     use std::io::Write as _;
     let mut child = std::process::Command::new("secret-tool")
-        .args(["store", "--label", service, "service", service, "account", account])
+        .args([
+            "store", "--label", service, "service", service, "account", account,
+        ])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .spawn()
@@ -260,7 +265,9 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 fn decode_hex(text: &str) -> Result<Vec<u8>> {
     if !text.len().is_multiple_of(2) {
-        return Err(Error::invalid("the keychain entry is not hex-encoded bytes"));
+        return Err(Error::invalid(
+            "the keychain entry is not hex-encoded bytes",
+        ));
     }
     (0..text.len())
         .step_by(2)
@@ -298,12 +305,19 @@ mod tests {
     fn the_description_never_contains_the_secret() {
         let store = Store::keychain("7f3a1b2c");
         assert!(store.describe().contains("7f3a1b2c"));
-        assert!(Store::File(PathBuf::from("/run/secrets/k")).describe().contains("/run/secrets/k"));
+        assert!(
+            Store::File(PathBuf::from("/run/secrets/k"))
+                .describe()
+                .contains("/run/secrets/k")
+        );
     }
 
     #[test]
     fn hex_round_trips_and_rejects_odd_length() {
-        assert_eq!(decode_hex(&hex_encode(&[0, 15, 255])).unwrap(), vec![0, 15, 255]);
+        assert_eq!(
+            decode_hex(&hex_encode(&[0, 15, 255])).unwrap(),
+            vec![0, 15, 255]
+        );
         assert!(decode_hex("abc").is_err());
         assert!(decode_hex("zz").is_err());
     }

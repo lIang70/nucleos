@@ -37,7 +37,10 @@ pub fn list(overrides: &Overrides) -> Result<String> {
     if list.tokens.is_empty() {
         return Ok("no tokens: this daemon trusts its socket's permissions".to_owned());
     }
-    let mut out = format!("{:<10} {:<12} {:<12} {}\n", "id", "tenant", "subject", "issued");
+    let mut out = format!(
+        "{:<10} {:<12} {:<12} {}\n",
+        "id", "tenant", "subject", "issued"
+    );
     for token in list.tokens {
         out.push_str(&format!(
             "{:<10} {:<12} {:<12} {}\n",

@@ -48,7 +48,13 @@ pub struct Signed {
 
 /// The bytes that were signed.
 #[must_use]
-pub fn canonical(method: &str, path: &str, body: &[u8], at_unix_millis: u64, nonce: &str) -> String {
+pub fn canonical(
+    method: &str,
+    path: &str,
+    body: &[u8],
+    at_unix_millis: u64,
+    nonce: &str,
+) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(body);
     let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
@@ -103,7 +109,9 @@ pub fn parse_header(value: &str) -> Result<Signed> {
         .parse::<u64>()
         .map_err(|_| Error::denied(format!("{at:?} is not a timestamp in unix milliseconds")))?;
     if key_id.is_empty() || nonce.is_empty() || signature.is_empty() {
-        return Err(Error::denied("the administrative signature has an empty part"));
+        return Err(Error::denied(
+            "the administrative signature has an empty part",
+        ));
     }
     Ok(Signed {
         key_id: (*key_id).to_owned(),
@@ -177,7 +185,11 @@ mod tests {
             signed.at_unix_millis,
             &signed.nonce,
         );
-        assert!(public.verifies(canonical.as_bytes(), &signed.signature).unwrap());
+        assert!(
+            public
+                .verifies(canonical.as_bytes(), &signed.signature)
+                .unwrap()
+        );
     }
 
     #[test]
@@ -192,7 +204,12 @@ mod tests {
 
     #[test]
     fn a_malformed_header_is_refused_with_the_shape_it_wanted() {
-        for bad in ["Bearer x", "Nucleos-Admin", "Nucleos-Admin a:b:c", "Nucleos-Admin a:x:c:d"] {
+        for bad in [
+            "Bearer x",
+            "Nucleos-Admin",
+            "Nucleos-Admin a:b:c",
+            "Nucleos-Admin a:x:c:d",
+        ] {
             let error = parse_header(bad).unwrap_err();
             assert!(!error.reason().is_empty(), "{bad}");
         }

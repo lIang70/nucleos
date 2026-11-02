@@ -8,12 +8,12 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use nucleos::adapter::{AllowAll, Store, Tool, ToolCtx, ToolOutput};
-use nucleos_sqlite::SqliteStore;
-use nucleos_testkit::{FakeModel, FixedClock};
 use nucleos::contract::{
     ConfigPatch, DiscoveryPolicy, Exposure, Principal, Routing, SessionId, ToolPolicy, ToolSpec,
 };
 use nucleos::kernel::{Kernel, SessionSpec};
+use nucleos_sqlite::SqliteStore;
+use nucleos_testkit::{FakeModel, FixedClock};
 use std::sync::Arc;
 
 /// The store's key for a test tenant. The tests all use one tenant, so the helper keeps them about
@@ -21,7 +21,6 @@ use std::sync::Arc;
 fn key(id: &SessionId) -> nucleos::adapter::SessionKey {
     nucleos::adapter::SessionKey::new("acme", id.clone())
 }
-
 
 fn principal() -> Principal {
     Principal {
@@ -263,11 +262,17 @@ async fn a_hidden_tool_stays_hidden_however_small_the_catalog() {
 #[tokio::test]
 async fn a_large_catalog_gets_one_search_tool() {
     let (kernel, _store) = kernel(20);
-    let session = kernel.open(&principal(), SessionId::new("s1"), spec(&[])).await.unwrap();
+    let session = kernel
+        .open(&principal(), SessionId::new("s1"), spec(&[]))
+        .await
+        .unwrap();
     let specs = kernel.tool_specs(&session);
 
     assert_eq!(
-        specs.iter().filter(|spec| spec.name == "tool_search").count(),
+        specs
+            .iter()
+            .filter(|spec| spec.name == "tool_search")
+            .count(),
         1
     );
     // It is described well enough that the model knows when to reach for it.
@@ -282,7 +287,10 @@ async fn a_large_catalog_gets_one_search_tool() {
 #[tokio::test]
 async fn a_search_widens_exposure_and_records_it() {
     let (kernel, store) = kernel(20);
-    let session = kernel.open(&principal(), SessionId::new("s1"), spec(&[])).await.unwrap();
+    let session = kernel
+        .open(&principal(), SessionId::new("s1"), spec(&[]))
+        .await
+        .unwrap();
     assert_eq!(
         session.tool_policy().default,
         Exposure::Deferred,
@@ -323,7 +331,11 @@ async fn a_search_widens_exposure_and_records_it() {
 async fn the_ceiling_still_wins_over_a_search() {
     let (kernel, _store) = kernel(20);
     // The application says: this session may search, and may read files. Nothing else exists.
-    let session = kernel.open(&principal(), SessionId::new("s1"), SessionSpec {
+    let session = kernel
+        .open(
+            &principal(),
+            SessionId::new("s1"),
+            SessionSpec {
                 config: ConfigPatch {
                     tools: Some(vec!["tool_search".to_owned(), "read_file".to_owned()]),
                     tool_policy: Some(policy(&[("read_file", Exposure::Always)])),
@@ -360,7 +372,9 @@ async fn the_ceiling_still_wins_over_a_search() {
         .map(|spec| spec.name)
         .collect();
     assert!(
-        visible.iter().all(|name| name == "tool_search" || name == "read_file"),
+        visible
+            .iter()
+            .all(|name| name == "tool_search" || name == "read_file"),
         "{visible:?}"
     );
 }
@@ -368,7 +382,11 @@ async fn the_ceiling_still_wins_over_a_search() {
 #[tokio::test]
 async fn an_exposure_outside_the_ceiling_is_refused() {
     let (kernel, _store) = kernel(20);
-    let session = kernel.open(&principal(), SessionId::new("s1"), SessionSpec {
+    let session = kernel
+        .open(
+            &principal(),
+            SessionId::new("s1"),
+            SessionSpec {
                 config: ConfigPatch {
                     tools: Some(vec!["read_file".to_owned()]),
                     ..ConfigPatch::default()
@@ -399,7 +417,10 @@ async fn an_exposure_outside_the_ceiling_is_refused() {
 #[tokio::test]
 async fn exposure_does_not_change_what_policy_approves() {
     let (kernel, _store) = kernel(20);
-    let mut session = kernel.open(&principal(), SessionId::new("s1"), spec(&[])).await.unwrap();
+    let mut session = kernel
+        .open(&principal(), SessionId::new("s1"), spec(&[]))
+        .await
+        .unwrap();
 
     // Narrow to nothing visible, then call a tool the prompt does not show. The gate decides, not
     // the prompt: exposure is a display concern, and conflating the two would be a permission bug.
@@ -415,10 +436,7 @@ async fn exposure_does_not_change_what_policy_approves() {
         .unwrap();
 
     let output = kernel
-        .invoke_tool(
-            &mut session,
-            &call("read_file", "{}"),
-        )
+        .invoke_tool(&mut session, &call("read_file", "{}"))
         .await
         .unwrap();
     assert_eq!(output.content.parts.len(), 1);
@@ -427,7 +445,10 @@ async fn exposure_does_not_change_what_policy_approves() {
 #[tokio::test]
 async fn a_widened_exposure_survives_being_loaded_back() {
     let (kernel, store) = kernel(20);
-    let mut session = kernel.open(&principal(), SessionId::new("s1"), spec(&[])).await.unwrap();
+    let mut session = kernel
+        .open(&principal(), SessionId::new("s1"), spec(&[]))
+        .await
+        .unwrap();
     kernel
         .configure(
             &mut session,
@@ -439,7 +460,10 @@ async fn a_widened_exposure_survives_being_loaded_back() {
         .await
         .unwrap();
     kernel
-        .invoke_tool(&mut session, &call("tool_search", r#"{"query":"inert tool 4"}"#))
+        .invoke_tool(
+            &mut session,
+            &call("tool_search", r#"{"query":"inert tool 4"}"#),
+        )
         .await
         .unwrap();
 
@@ -504,7 +528,10 @@ async fn the_pool_forgets_what_has_gone_quiet() {
         .unwrap();
 
     kernel
-        .invoke_tool(&mut session, &call("tool_search", r#"{"query":"inert tool 4"}"#))
+        .invoke_tool(
+            &mut session,
+            &call("tool_search", r#"{"query":"inert tool 4"}"#),
+        )
         .await
         .unwrap();
     assert!(session.discovered().contains_key("inert_04"));
@@ -529,7 +556,10 @@ async fn one_enormous_schema_does_not_evict_the_smaller_tools_behind_it() {
             // Sorts first among equals, so it is considered before the small one.
             name: "aaa_bulky".to_owned(),
             description: "A tool with an enormous schema.".to_owned(),
-            input_schema_json: format!(r#"{{"type":"object","description":"{}"}}"#, "x".repeat(4096)),
+            input_schema_json: format!(
+                r#"{{"type":"object","description":"{}"}}"#,
+                "x".repeat(4096)
+            ),
         },
     });
     let kernel = Kernel::builder()
@@ -569,7 +599,10 @@ async fn one_enormous_schema_does_not_evict_the_smaller_tools_behind_it() {
         .unwrap();
 
     kernel
-        .invoke_tool(&mut session, &call("tool_search", r#"{"query":"tool schema"}"#))
+        .invoke_tool(
+            &mut session,
+            &call("tool_search", r#"{"query":"tool schema"}"#),
+        )
         .await
         .unwrap();
     let names: Vec<String> = kernel
@@ -609,7 +642,10 @@ async fn the_event_names_what_reached_the_prompt_not_what_entered_the_pool() {
         .unwrap();
 
     kernel
-        .invoke_tool(&mut session, &call("tool_search", r#"{"query":"read a file"}"#))
+        .invoke_tool(
+            &mut session,
+            &call("tool_search", r#"{"query":"read a file"}"#),
+        )
         .await
         .unwrap();
 
@@ -624,5 +660,8 @@ async fn the_event_names_what_reached_the_prompt_not_what_entered_the_pool() {
         .filter(|event| event.kind.type_name() == "nucleos.v1.tools_exposed")
         .map(|_| "tools_exposed")
         .collect();
-    assert!(exposed.is_empty(), "the budget could not fit it: {exposed:?}");
+    assert!(
+        exposed.is_empty(),
+        "the budget could not fit it: {exposed:?}"
+    );
 }

@@ -84,12 +84,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Some((address, tls)) => {
             // Bound before it is served, so a port already in use is reported as an address rather than
             // as a handshake failure somewhere later.
-            let bound = std::net::TcpListener::bind(address)
-                .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> {
+            let bound = std::net::TcpListener::bind(address).map_err(
+                |error| -> Box<dyn std::error::Error + Send + Sync> {
                     Box::new(std::io::Error::other(format!(
                         "cannot listen on {address}: {error}"
                     )))
-                })?;
+                },
+            )?;
             tracing::info!(
                 event = "tls_listening",
                 address = %address,
@@ -304,8 +305,15 @@ mod tests {
             args(&["--print-paths".to_owned()]).unwrap().mode,
             Mode::Paths(_)
         ));
-        assert_eq!(args(&["--log".to_owned(), "debug".to_owned()]).unwrap().log, "debug");
-        assert_eq!(args(&[]).unwrap().log, "info", "the default is a level, not a guess");
+        assert_eq!(
+            args(&["--log".to_owned(), "debug".to_owned()]).unwrap().log,
+            "debug"
+        );
+        assert_eq!(
+            args(&[]).unwrap().log,
+            "info",
+            "the default is a level, not a guess"
+        );
     }
 
     #[test]

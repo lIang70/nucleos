@@ -81,7 +81,9 @@ pub async fn step(kernel: &Kernel, session: &mut Session) -> Result<Step> {
     // and the event that records the stop would be the caller's claim rather than the kernel's
     // decision. This loop only translates the refusal into its own vocabulary.
     if session.is_closed() {
-        return Ok(Step::Stopped(session.stop_reason().unwrap_or(StopReason::Completed)));
+        return Ok(Step::Stopped(
+            session.stop_reason().unwrap_or(StopReason::Completed),
+        ));
     }
 
     let outstanding = outstanding_calls(session);

@@ -51,10 +51,7 @@ impl Ruleset {
             Unmatched::Allow => Verdict::Allow,
             Unmatched::Deny => Verdict::Deny {
                 code: ErrorCode::Denied,
-                reason: format!(
-                    "no policy rule allows {}",
-                    describe(&request.subject)
-                ),
+                reason: format!("no policy rule allows {}", describe(&request.subject)),
             },
         }
     }
@@ -86,9 +83,10 @@ fn verdict(decision: Decision, rule: &Rule, request: &PolicyRequest<'_>) -> Verd
                 .unwrap_or_else(|| format!("{} is denied by policy", describe(&request.subject))),
         },
         Decision::Ask => Verdict::AskHuman {
-            question: rule.question.clone().unwrap_or_else(|| {
-                format!("{} needs approval", describe(&request.subject))
-            }),
+            question: rule
+                .question
+                .clone()
+                .unwrap_or_else(|| format!("{} needs approval", describe(&request.subject))),
             // Allow once and refuse, and no "always" option: remembering a decision for the whole
             // session is the host's call, not something a rule can promise on its behalf.
             options: vec![
@@ -125,9 +123,10 @@ fn matches(rule: &Rule, request: &PolicyRequest<'_>) -> bool {
             .tool
             .as_ref()
             .is_some_and(|pattern| glob(pattern, &call.name)),
-        Gated::Model { model, .. } => {
-            rule.model.as_ref().is_some_and(|pattern| glob(pattern, model))
-        }
+        Gated::Model { model, .. } => rule
+            .model
+            .as_ref()
+            .is_some_and(|pattern| glob(pattern, model)),
         // Configuration has its own rule field, so a tool rule cannot accidentally grant it.
         Gated::Config { scope, subject } => {
             let Some(pattern) = &rule.config else {
@@ -378,11 +377,14 @@ mod tests {
 
         let allowed = argv(&["/bin/ls", "-la"]);
         assert_eq!(
-            check(document.clone(), Gated::Exec {
-                argv: &allowed,
-                policy: &policy,
-                permissions: &permissions,
-            })
+            check(
+                document.clone(),
+                Gated::Exec {
+                    argv: &allowed,
+                    policy: &policy,
+                    permissions: &permissions,
+                }
+            )
             .await,
             Verdict::Allow,
             "the basename is what a rule names"
@@ -391,11 +393,14 @@ mod tests {
         // A different program that happens to be spelled the same way as an argument is not it.
         let other = argv(&["ls; rm", "-la"]);
         assert!(matches!(
-            check(document, Gated::Exec {
-                argv: &other,
-                policy: &policy,
-                permissions: &permissions,
-            })
+            check(
+                document,
+                Gated::Exec {
+                    argv: &other,
+                    policy: &policy,
+                    permissions: &permissions,
+                }
+            )
             .await,
             Verdict::Deny { .. }
         ));
@@ -416,20 +421,25 @@ mod tests {
         let permissions = SandboxPermissions::UseDefault;
         let argv = vec!["git".to_owned(), "push".to_owned()];
 
-        let verdict = check(document, Gated::Exec {
-            argv: &argv,
-            policy: &policy,
-            permissions: &permissions,
-        })
+        let verdict = check(
+            document,
+            Gated::Exec {
+                argv: &argv,
+                policy: &policy,
+                permissions: &permissions,
+            },
+        )
         .await;
         let Verdict::AskHuman { question, options } = verdict else {
             panic!("expected a question, got {verdict:?}");
         };
         assert_eq!(question, "Push to the remote?");
         // No "always allow": remembering is the host's decision, not a rule's promise.
-        assert!(options
-            .iter()
-            .all(|option| option.kind != PermissionKind::AllowAlways));
+        assert!(
+            options
+                .iter()
+                .all(|option| option.kind != PermissionKind::AllowAlways)
+        );
     }
 
     #[tokio::test]
@@ -443,18 +453,24 @@ mod tests {
             ..Document::default()
         };
         assert_eq!(
-            check(document.clone(), Gated::Model {
-                model: "gpt-4o-mini",
-                purpose: Purpose::Answer,
-            })
+            check(
+                document.clone(),
+                Gated::Model {
+                    model: "gpt-4o-mini",
+                    purpose: Purpose::Answer,
+                }
+            )
             .await,
             Verdict::Allow
         );
         assert!(matches!(
-            check(document, Gated::Model {
-                model: "claude",
-                purpose: Purpose::Answer,
-            })
+            check(
+                document,
+                Gated::Model {
+                    model: "claude",
+                    purpose: Purpose::Answer,
+                }
+            )
             .await,
             Verdict::Deny { .. }
         ));
@@ -498,8 +514,18 @@ mod tests {
         let document = Document::load(path).expect("the example policy loads");
 
         // And it is a policy, not decoration: something is allowed and something is refused.
-        assert!(document.rules.iter().any(|rule| rule.decision == Some(Decision::Allow)));
-        assert!(document.rules.iter().any(|rule| rule.decision == Some(Decision::Deny)));
+        assert!(
+            document
+                .rules
+                .iter()
+                .any(|rule| rule.decision == Some(Decision::Allow))
+        );
+        assert!(
+            document
+                .rules
+                .iter()
+                .any(|rule| rule.decision == Some(Decision::Deny))
+        );
     }
 
     #[test]
@@ -511,7 +537,10 @@ mod tests {
         assert!(glob("exact", "exact"));
 
         assert!(!glob("read_*", "write_file"));
-        assert!(!glob("read_*", "xread_file"), "an unanchored match would pass");
+        assert!(
+            !glob("read_*", "xread_file"),
+            "an unanchored match would pass"
+        );
         assert!(!glob("exact", "exactly"), "no implicit prefix matching");
         assert!(!glob("read_?", "read_a"), "? is not a wildcard here");
     }
@@ -548,9 +577,8 @@ mod config_tests {
 
     #[tokio::test]
     async fn a_config_rule_matches_by_subject_and_scope() {
-        let rules = document(
-            r#"{"rules":[{"decision":"allow","config":"models","scope":"system"}]}"#,
-        );
+        let rules =
+            document(r#"{"rules":[{"decision":"allow","config":"models","scope":"system"}]}"#);
         assert_eq!(
             check(rules.clone(), ConfigScope::System, "models").await,
             Verdict::Allow
@@ -596,12 +624,15 @@ mod config_tests {
     fn a_scope_without_a_config_subject_is_refused_at_load() {
         let parsed: Document =
             serde_json::from_str(r#"{"rules":[{"decision":"allow","scope":"system"}]}"#).unwrap();
-        let error = parsed.validate().expect_err("a scope on its own names nothing");
+        let error = parsed
+            .validate()
+            .expect_err("a scope on its own names nothing");
         assert!(error.reason().contains("scope"), "{error:?}");
 
-        let unknown: Document =
-            serde_json::from_str(r#"{"rules":[{"decision":"allow","config":"*","scope":"galaxy"}]}"#)
-                .unwrap();
+        let unknown: Document = serde_json::from_str(
+            r#"{"rules":[{"decision":"allow","config":"*","scope":"galaxy"}]}"#,
+        )
+        .unwrap();
         assert!(unknown.validate().is_err(), "only system and tenant exist");
     }
 

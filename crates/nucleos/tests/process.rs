@@ -7,13 +7,13 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use nucleos::adapter::{AllowAll, Store};
-use nucleos_sqlite::SqliteStore;
-use nucleos_testkit::{FakeModel, FixedClock};
 use nucleos::contract::{
     ErrorCode, Principal, ProcessSpec, ProcessState, ProcessStatus, Routing, SandboxPermissions,
     SandboxPolicy, SessionId, SessionKind,
 };
 use nucleos::kernel::{Kernel, SessionSpec};
+use nucleos_sqlite::SqliteStore;
+use nucleos_testkit::{FakeModel, FixedClock};
 use std::sync::Arc;
 
 /// The store's key for a test tenant. The tests all use one tenant, so the helper keeps them about
@@ -21,7 +21,6 @@ use std::sync::Arc;
 fn key(id: &SessionId) -> nucleos::adapter::SessionKey {
     nucleos::adapter::SessionKey::new("acme", id.clone())
 }
-
 
 fn principal() -> Principal {
     Principal {

@@ -76,7 +76,10 @@ fn principal() -> Principal {
 
 fn kernel() -> Kernel {
     Kernel::builder()
-        .model("primary", Arc::new(nucleos_testkit::FakeModel::text(["unused"])))
+        .model(
+            "primary",
+            Arc::new(nucleos_testkit::FakeModel::text(["unused"])),
+        )
         .tool(Arc::new(nucleos_testkit::FakeTool::new("echo", "hi")))
         .store(Arc::new(SqliteStore::in_memory().unwrap()) as Arc<dyn Store>)
         .policy(Arc::new(AllowAll))

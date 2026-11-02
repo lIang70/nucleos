@@ -7,13 +7,13 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use nucleos::adapter::{AllowAll, Store};
-use nucleos_sqlite::SqliteStore;
-use nucleos_testkit::{FakeModel, FixedClock};
 use nucleos::contract::{
     ConfigPatch, ErrorCode, EventKind, GenerateParams, Hints, Principal, Routing, ServiceTier,
     SessionId, StopReason, Verbosity,
 };
 use nucleos::kernel::{Kernel, SessionSpec};
+use nucleos_sqlite::SqliteStore;
+use nucleos_testkit::{FakeModel, FixedClock};
 use std::sync::Arc;
 
 /// The store's key for a test tenant. The tests all use one tenant, so the helper keeps them about
@@ -21,7 +21,6 @@ use std::sync::Arc;
 fn key(id: &SessionId) -> nucleos::adapter::SessionKey {
     nucleos::adapter::SessionKey::new("acme", id.clone())
 }
-
 
 fn principal() -> Principal {
     Principal {
@@ -78,7 +77,11 @@ async fn a_change_is_recorded_and_survives_a_reload() -> nucleos::Result<()> {
     assert_eq!(changed, vec!["system"]);
     // A replay has to know which system prompt was in force at this point; without the event the
     // log rebuilds a conversation that never happened.
-    assert!(kinds(&store, &id).await.contains(&"nucleos.v1.session_configured"));
+    assert!(
+        kinds(&store, &id)
+            .await
+            .contains(&"nucleos.v1.session_configured")
+    );
 
     let reloaded = kernel.load(&principal(), &id).await?;
     assert_eq!(

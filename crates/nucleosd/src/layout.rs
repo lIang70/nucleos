@@ -38,7 +38,11 @@ impl Layout {
     /// `root` and `socket` are the two flags: one decides the data, the other the address, and
     /// nothing else is configurable here because everything else is configuration — which lives in
     /// the store and arrives through the ABI.
-    pub fn resolve(root: Option<PathBuf>, socket: Option<PathBuf>, seal_key: Option<PathBuf>) -> Self {
+    pub fn resolve(
+        root: Option<PathBuf>,
+        socket: Option<PathBuf>,
+        seal_key: Option<PathBuf>,
+    ) -> Self {
         // Flags or the platform's convention. The environment is not consulted: a path that changes
         // because a shell exported something is a path nobody can predict from the unit file.
         Self {
@@ -179,7 +183,10 @@ mod tests {
     fn the_two_stores_are_named_inside_the_root() {
         let layout = Layout::resolve(Some(PathBuf::from("/srv/nucleos")), None, None);
         assert_eq!(layout.system_store(), Path::new("/srv/nucleos/system.db"));
-        assert_eq!(layout.session_store(), Path::new("/srv/nucleos/sessions.db"));
+        assert_eq!(
+            layout.session_store(),
+            Path::new("/srv/nucleos/sessions.db")
+        );
     }
 
     #[test]
@@ -207,7 +214,10 @@ mod tests {
     #[test]
     fn the_default_root_is_absolute_and_not_a_home_directory() {
         let root = default_root();
-        assert!(root.is_absolute(), "a relative default follows the working directory");
+        assert!(
+            root.is_absolute(),
+            "a relative default follows the working directory"
+        );
         assert!(!root.starts_with("/home"), "{root:?}");
         assert!(!root.starts_with("/Users"), "{root:?}");
     }

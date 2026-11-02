@@ -8,7 +8,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use nucleos::adapter::{AllowAll, Store, Tool, ToolCtx, ToolOutput};
-use nucleos::contract::{ConfigPatch, Exposure, Principal, Routing, SessionId, ToolSpec, ToolPolicy};
+use nucleos::contract::{
+    ConfigPatch, Exposure, Principal, Routing, SessionId, ToolPolicy, ToolSpec,
+};
 use nucleos::kernel::{Kernel, SessionSpec};
 use nucleos_sqlite::SqliteStore;
 use nucleos_testkit::{FakeModel, FixedClock};
@@ -129,7 +131,10 @@ async fn an_empty_tenant_ceiling_allows_nothing_and_clearing_it_restores() {
         .unwrap();
 
     kernel.set_tenant_tools("acme", Some(vec![])).unwrap();
-    assert!(tool_names(&kernel, &session).is_empty(), "an explicit empty list means nothing");
+    assert!(
+        tool_names(&kernel, &session).is_empty(),
+        "an explicit empty list means nothing"
+    );
 
     kernel.set_tenant_tools("acme", None).unwrap();
     assert_eq!(tool_names(&kernel, &session).len(), 2, "clearing restores");

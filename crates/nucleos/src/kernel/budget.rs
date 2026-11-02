@@ -29,7 +29,9 @@ impl Kernel {
                 session.id,
                 session
                     .stop_reason()
-                    .map_or("no reason recorded".to_owned(), |reason| format!("{reason:?}"))
+                    .map_or("no reason recorded".to_owned(), |reason| format!(
+                        "{reason:?}"
+                    ))
             )));
         }
         if let Some(reason) = session.exhausted(self.now()) {

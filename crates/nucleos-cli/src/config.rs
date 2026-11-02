@@ -51,7 +51,9 @@ impl ClientConfig {
         let text = match std::fs::read_to_string(path) {
             Ok(text) => text,
             // Absent is a state, not an error: a container may pass `--socket` and `--key-file`.
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self::default());
+            }
             Err(error) => {
                 return Err(Error::invalid(format!(
                     "cannot read {}: {error}",

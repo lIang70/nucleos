@@ -29,10 +29,7 @@ pub fn list(overrides: &Overrides) -> Result<String> {
     for model in list.models {
         out.push_str(&format!(
             "{:<12} {:<40} {} ({})\n",
-            model.name,
-            model.url,
-            model.model,
-            model.context_window
+            model.name, model.url, model.model, model.context_window
         ));
     }
     Ok(out.trim_end().to_owned())

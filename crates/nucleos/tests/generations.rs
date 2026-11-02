@@ -23,7 +23,6 @@ fn key(id: &SessionId) -> nucleos::adapter::SessionKey {
     nucleos::adapter::SessionKey::new("acme", id.clone())
 }
 
-
 fn principal() -> Principal {
     Principal {
         tenant: "acme".to_owned(),
@@ -158,7 +157,11 @@ async fn a_compatible_change_migrates_at_the_next_turn_and_is_recorded() {
     // The same tool, with one more optional property: a request the old schema accepted is still
     // accepted.
     let second = kernel
-        .publish(vec![tool("read_file", TAKE_PATH_AND_OFFSET, "from generation 2")])
+        .publish(vec![tool(
+            "read_file",
+            TAKE_PATH_AND_OFFSET,
+            "from generation 2",
+        )])
         .unwrap();
     assert_ne!(first, second);
 
@@ -202,7 +205,8 @@ async fn an_incompatible_change_leaves_the_session_where_it_is() {
 
     kernel.inference(&mut session, &[]).await.unwrap();
     assert_eq!(
-        session.generation(), first,
+        session.generation(),
+        first,
         "incompatible means pinned, not migrated"
     );
     assert!(
@@ -231,7 +235,9 @@ async fn a_tool_withdrawn_from_the_current_generation_still_answers_a_pinned_ses
         .await
         .unwrap();
 
-    kernel.publish(vec![tool("other", "{}", "not read_file")]).unwrap();
+    kernel
+        .publish(vec![tool("other", "{}", "not read_file")])
+        .unwrap();
 
     // Withdrawn from the newest set, still in the one this session is pinned to — which is the case
     // that makes pinning worth having: a tool source redeployed mid-session does not break a model
@@ -262,11 +268,7 @@ async fn a_session_that_never_migrates_keeps_working_until_it_ends() {
     // Three incompatible publishes in a row: the session stays on its own set the whole time.
     for round in 0..3 {
         kernel
-            .publish(vec![tool(
-                &format!("tool_{round}"),
-                "{}",
-                "somewhere else",
-            )])
+            .publish(vec![tool(&format!("tool_{round}"), "{}", "somewhere else")])
             .unwrap();
         kernel.inference(&mut session, &[]).await.unwrap();
     }
@@ -278,6 +280,9 @@ async fn a_session_that_never_migrates_keeps_working_until_it_ends() {
         .unwrap();
 
     // Closing works, and the stop reason is the ordinary one.
-    kernel.close(&mut session, StopReason::Completed).await.unwrap();
+    kernel
+        .close(&mut session, StopReason::Completed)
+        .await
+        .unwrap();
     assert!(session.is_closed());
 }

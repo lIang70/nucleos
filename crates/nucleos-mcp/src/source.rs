@@ -203,7 +203,9 @@ impl Hub {
             return Err(Error::unavailable(format!(
                 "source {:?} is down; next attempt in {}ms",
                 self.source.name,
-                retry_after.saturating_duration_since(tokio::time::Instant::now()).as_millis()
+                retry_after
+                    .saturating_duration_since(tokio::time::Instant::now())
+                    .as_millis()
             )));
         }
 
@@ -265,9 +267,7 @@ fn backoff(failures: u32) -> tokio::time::Instant {
     // `saturating` shifts would let a long outage overflow into an instant retry, which is the one
     // outcome backoff exists to prevent.
     let shift = failures.saturating_sub(1).min(16);
-    let delay = BACKOFF_BASE
-        .saturating_mul(1u32 << shift)
-        .min(BACKOFF_CAP);
+    let delay = BACKOFF_BASE.saturating_mul(1u32 << shift).min(BACKOFF_CAP);
     tokio::time::Instant::now() + delay
 }
 
@@ -279,7 +279,8 @@ fn backoff(failures: u32) -> tokio::time::Instant {
 fn is_fatal(error: &rmcp::service::ServiceError) -> bool {
     matches!(
         error,
-        rmcp::service::ServiceError::TransportSend(_) | rmcp::service::ServiceError::TransportClosed
+        rmcp::service::ServiceError::TransportSend(_)
+            | rmcp::service::ServiceError::TransportClosed
     )
 }
 

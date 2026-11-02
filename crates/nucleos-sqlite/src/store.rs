@@ -272,7 +272,11 @@ impl Store for SqliteStore {
                 .map_err(failed)?;
             let rows = statement
                 .query_map(
-                    params![tenant, session.as_str(), i64::try_from(seq).unwrap_or(i64::MAX)],
+                    params![
+                        tenant,
+                        session.as_str(),
+                        i64::try_from(seq).unwrap_or(i64::MAX)
+                    ],
                     |row| row.get::<_, String>(0),
                 )
                 .map_err(failed)?;

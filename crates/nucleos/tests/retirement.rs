@@ -44,7 +44,10 @@ fn kernel() -> Kernel {
         .store(Arc::new(SqliteStore::in_memory().unwrap()) as Arc<dyn Store>)
         .policy(Arc::new(AllowAll))
         .clock(Arc::new(FixedClock::at(0)))
-        .tool(tool("read_file", r#"{"type":"object","properties":{"path":{}}}"#))
+        .tool(tool(
+            "read_file",
+            r#"{"type":"object","properties":{"path":{}}}"#,
+        ))
         .routing(Routing {
             chain: vec!["primary".to_owned()],
             retries: 0,
@@ -105,7 +108,11 @@ async fn a_session_pinned_to_a_retired_generation_keeps_its_tools() {
     // the session's own set, not a number that resolves to the current set once the number is gone.
     let before = pinned.generation();
     assert!(kernel.inference(&mut pinned, &[]).await.is_ok());
-    assert_eq!(pinned.generation(), before, "no migration onto an incompatible set");
+    assert_eq!(
+        pinned.generation(),
+        before,
+        "no migration onto an incompatible set"
+    );
 
     // A session opened now is on generation 2 and sees the opposite.
     let fresh = kernel

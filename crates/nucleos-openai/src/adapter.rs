@@ -1,7 +1,7 @@
 //! The adapter: configuration, and the `Model` implementation over `wire` and `decode`.
 
-use async_trait::async_trait;
 use crate::decode::Decoder;
+use async_trait::async_trait;
 use futures_util::StreamExt;
 use nucleos::adapter::{Model, ModelDelta, ModelRequest, ModelStream};
 use nucleos::contract::Capability;

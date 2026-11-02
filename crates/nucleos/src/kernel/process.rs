@@ -13,8 +13,8 @@
 
 use super::{Kernel, Session, SessionSpec};
 use crate::contract::{
-    EventKind, ExecOutput, ExecStream, OutputChunk, ProcessSpec, ProcessState,
-    ProcessStatus, SandboxPolicy, SessionId,
+    EventKind, ExecOutput, ExecStream, OutputChunk, ProcessSpec, ProcessState, ProcessStatus,
+    SandboxPolicy, SessionId,
 };
 use crate::contract::{Principal, StopReason};
 use crate::error::{Error, Result};
@@ -603,12 +603,15 @@ impl Kernel {
             EventKind::ExecExited { output } => Some(output.clone()),
             _ => None,
         });
-        let Some(mut output) = summary.or_else(|| session.process.as_ref().and_then(|process| {
-            match &process.status {
-                crate::contract::ProcessStatus::Exited { output } => Some(output.clone()),
-                _ => None,
-            }
-        })) else {
+        let Some(mut output) = summary.or_else(|| {
+            session
+                .process
+                .as_ref()
+                .and_then(|process| match &process.status {
+                    crate::contract::ProcessStatus::Exited { output } => Some(output.clone()),
+                    _ => None,
+                })
+        }) else {
             // Running, pending, or lost without an exit: the log has no ending to report, and
             // inventing one — an exit code of zero, an empty stdout — is the failure this method
             // exists to avoid.

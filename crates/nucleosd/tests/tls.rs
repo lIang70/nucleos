@@ -40,16 +40,14 @@ fn certificate() -> (serve::Tls, rustls::pki_types::CertificateDer<'static>) {
     // certificate directory would have one test trust a certificate the other replaced.
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let directory = std::env::temp_dir().join(format!("nucleos-tls-{}-{unique}", std::process::id()));
+    let directory =
+        std::env::temp_dir().join(format!("nucleos-tls-{}-{unique}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
     let cert = directory.join("cert.pem");
     let key = directory.join("key.pem");
     std::fs::write(&cert, issued.cert.pem()).unwrap();
     std::fs::write(&key, issued.key_pair.serialize_pem()).unwrap();
-    (
-        serve::Tls { cert, key },
-        issued.cert.der().clone(),
-    )
+    (serve::Tls { cert, key }, issued.cert.der().clone())
 }
 
 fn client(trusting: rustls::pki_types::CertificateDer<'static>) -> tokio_rustls::TlsConnector {

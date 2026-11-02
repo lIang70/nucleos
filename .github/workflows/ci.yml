@@ -17,9 +17,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+      # Read from `rust-toolchain.toml` rather than named here: the file governs a developer's machine
+      # and this job alike, and a ruler chosen in two places disagrees eventually. It did — the
+      # `Format` job went red on a commit that added TLS, because the stable channel had moved and the
+      # new rustfmt reformatted thirty-odd files nobody had touched.
+      - name: Toolchain
+        run: |
+          channel=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal --component rustfmt --component clippy
+          rustup default "$channel"
+          rustc --version
       - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt --all --check

@@ -7,16 +7,17 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use nucleos::Result;
-use nucleos::adapter::{AllowAll, Clock, DenyAll, FinishReason, Gated, Model, ModelDelta, ModelRegistry, ModelRequest, Policy, PolicyRequest, Store, Tool, ToolChoice, ToolCtx, Verdict};
-use nucleos_sqlite::SqliteStore;
-use nucleos_testkit::{
-    EchoModel, FakeModel, FakeTool, FixedClock, tool_call_deltas,
+use nucleos::adapter::{
+    AllowAll, Clock, DenyAll, FinishReason, Gated, Model, ModelDelta, ModelRegistry, ModelRequest,
+    Policy, PolicyRequest, Store, Tool, ToolChoice, ToolCtx, Verdict,
 };
 use nucleos::contract::{
     Attempt, AttemptOutcome, AttemptPhase, AttemptTrigger, Content, ErrorCode, Event, EventKind,
     Ledger, Message, Part, PartKind, Principal, Role, Routing, SessionId, SessionState, Snapshot,
     StopReason, TextPart, Usage,
 };
+use nucleos_sqlite::SqliteStore;
+use nucleos_testkit::{EchoModel, FakeModel, FakeTool, FixedClock, tool_call_deltas};
 use std::sync::Arc;
 use tokio_stream::StreamExt;
 
@@ -25,7 +26,6 @@ use tokio_stream::StreamExt;
 fn key(id: &SessionId) -> nucleos::adapter::SessionKey {
     nucleos::adapter::SessionKey::new("acme", id.clone())
 }
-
 
 fn event(session: &SessionId, seq: u64) -> Event {
     Event {
@@ -338,7 +338,10 @@ async fn a_store_refuses_an_event_belonging_to_another_session() -> Result<()> {
     let mine = SessionId::new("s1");
     let theirs = SessionId::new("s2");
 
-    let error = store.append(&key(&mine), &[event(&theirs, 0)]).await.unwrap_err();
+    let error = store
+        .append(&key(&mine), &[event(&theirs, 0)])
+        .await
+        .unwrap_err();
     assert_eq!(error.code(), ErrorCode::Invalid);
     Ok(())
 }
@@ -399,9 +402,9 @@ async fn a_valid_snapshot_round_trips() -> Result<()> {
     store
         .write_snapshot(Snapshot {
             principal: Principal {
-            tenant: "acme".to_owned(),
-            subject: "alice".to_owned(),
-        },
+                tenant: "acme".to_owned(),
+                subject: "alice".to_owned(),
+            },
             session: session.clone(),
             seq: 0,
             generation: nucleos::Generation(7),
@@ -424,16 +427,18 @@ async fn a_valid_snapshot_round_trips() -> Result<()> {
             sandbox: Default::default(),
             hints: Default::default(),
             tool_policy: Default::default(),
-        discovered: Default::default(),
-        round: 0,
-        stop: None,
+            discovered: Default::default(),
+            round: 0,
+            stop: None,
             kind: Default::default(),
             process: None,
         })
         .await?;
 
     let Some(loaded) = store.snapshot(&key(&session)).await? else {
-        return Err(nucleos::Error::internal("the snapshot just written is missing"));
+        return Err(nucleos::Error::internal(
+            "the snapshot just written is missing",
+        ));
     };
     assert_eq!(loaded.seq, 0, "seq is the last event included");
     assert_eq!(loaded.generation, nucleos::Generation(7));

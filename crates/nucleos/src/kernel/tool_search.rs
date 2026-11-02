@@ -56,7 +56,6 @@ impl Search {
             summaries,
         }
     }
-
 }
 
 #[async_trait]

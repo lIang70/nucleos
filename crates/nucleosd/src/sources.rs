@@ -19,8 +19,8 @@
 
 use crate::admin::Admin;
 use crate::http::{ApiError, App};
-use axum::extract::{Path, State};
 use axum::Json;
+use axum::extract::{Path, State};
 use nucleos::adapter::{ConfigScope, Tool, Verdict};
 use nucleos::contract::Principal;
 use nucleos::error::{Error, Result};
@@ -129,14 +129,21 @@ impl SourceSet {
             args: entry.spec.args.clone(),
             tools: entry.tools.iter().map(|tool| tool.spec().name).collect(),
         };
-        self.entries.retain(|existing| existing.spec.name != spec.name);
+        self.entries
+            .retain(|existing| existing.spec.name != spec.name);
         self.entries.push(entry);
-        self.persist(system, by, &format!("add {}", spec.name)).await?;
+        self.persist(system, by, &format!("add {}", spec.name))
+            .await?;
         Ok(view)
     }
 
     /// Disconnect a source and forget it.
-    pub async fn remove(&mut self, system: &SystemStore, name: &str, by: &Principal) -> Result<bool> {
+    pub async fn remove(
+        &mut self,
+        system: &SystemStore,
+        name: &str,
+        by: &Principal,
+    ) -> Result<bool> {
         let before = self.entries.len();
         self.entries.retain(|entry| entry.spec.name != name);
         if self.entries.len() == before {
@@ -187,8 +194,8 @@ impl SourceSet {
 
 /// Start one server and take what it advertises.
 async fn connect(spec: &SourceSpec) -> Result<Connected> {
-    let mut source = nucleos_mcp::McpSource::new(&spec.name, &spec.command)
-        .with_args(spec.args.iter().cloned());
+    let mut source =
+        nucleos_mcp::McpSource::new(&spec.name, &spec.command).with_args(spec.args.iter().cloned());
     source.env = spec.env.clone();
     let tools: Vec<Arc<dyn Tool>> = source
         .connect()

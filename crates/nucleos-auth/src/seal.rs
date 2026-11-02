@@ -116,7 +116,10 @@ impl SealKey {
 
     fn read(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path).map_err(|error| {
-            Error::invalid(format!("cannot read the seal key {}: {error}", path.display()))
+            Error::invalid(format!(
+                "cannot read the seal key {}: {error}",
+                path.display()
+            ))
         })?;
         let bytes = decode_hex(text.trim()).map_err(|_| {
             Error::invalid(format!(
@@ -144,10 +147,12 @@ impl SealKey {
 
     /// Open a value this key sealed. Anything else is a refusal, not a guess.
     pub fn open(&self, sealed: &str) -> Result<String> {
-        let framed = decode_hex(sealed)
-            .map_err(|_| Error::invalid("a sealed value is not hex-encoded"))?;
+        let framed =
+            decode_hex(sealed).map_err(|_| Error::invalid("a sealed value is not hex-encoded"))?;
         if framed.len() <= 12 {
-            return Err(Error::invalid("a sealed value is too short to hold a nonce"));
+            return Err(Error::invalid(
+                "a sealed value is too short to hold a nonce",
+            ));
         }
         let (nonce, ciphertext) = framed.split_at(12);
         let plaintext = self

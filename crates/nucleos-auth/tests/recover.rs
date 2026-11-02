@@ -34,7 +34,10 @@ async fn a_recovered_key_is_one_the_daemon_would_accept() {
     let key = nucleos_auth::KeyPair::generate();
     let public = key.public("default", "admin");
     store
-        .set(ADMIN_KEYS_KEY, &serde_json::to_string(&vec![public.clone()]).unwrap())
+        .set(
+            ADMIN_KEYS_KEY,
+            &serde_json::to_string(&vec![public.clone()]).unwrap(),
+        )
         .await
         .unwrap();
 
@@ -44,9 +47,11 @@ async fn a_recovered_key_is_one_the_daemon_would_accept() {
         serde_json::from_str(&store.get(ADMIN_KEYS_KEY).unwrap().unwrap()).unwrap();
     let canonical = nucleos_auth::canonical("GET", "/v1/config", b"", 1_000, "nonce");
     let signature = key.sign(canonical.as_bytes());
-    assert!(stored_keys[0]
-        .verifies(canonical.as_bytes(), &signature)
-        .unwrap());
+    assert!(
+        stored_keys[0]
+            .verifies(canonical.as_bytes(), &signature)
+            .unwrap()
+    );
 
     let _ = std::fs::remove_file(&path);
 }
@@ -74,7 +79,10 @@ async fn recovery_does_not_revoke_the_keys_that_still_exist() {
 
     let existing = nucleos_auth::KeyPair::generate().public("default", "other");
     store
-        .set(ADMIN_KEYS_KEY, &serde_json::to_string(&vec![existing.clone()]).unwrap())
+        .set(
+            ADMIN_KEYS_KEY,
+            &serde_json::to_string(&vec![existing.clone()]).unwrap(),
+        )
         .await
         .unwrap();
 

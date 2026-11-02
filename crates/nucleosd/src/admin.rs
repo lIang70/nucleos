@@ -98,7 +98,10 @@ impl Verifier {
 
         // A nonce already seen is a replay, whatever else is true of it.
         {
-            let mut seen = self.seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut seen = self
+                .seen
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             seen.retain(|_, at| now.abs_diff(*at) <= WINDOW_MILLIS);
             if seen.contains_key(&signed.nonce) {
                 tracing::warn!(event = "admin_signature_replayed", key_id = %signed.key_id);
@@ -121,13 +124,7 @@ impl Verifier {
             return Err(Error::denied("this request is not authorised"));
         };
 
-        let text = canonical(
-            method,
-            path,
-            body,
-            signed.at_unix_millis,
-            &signed.nonce,
-        );
+        let text = canonical(method, path, body, signed.at_unix_millis, &signed.nonce);
         if !key.verifies(text.as_bytes(), &signed.signature)? {
             tracing::warn!(event = "admin_signature_invalid", key_id = %key.id);
             return Err(Error::denied("this request is not authorised"));
@@ -195,12 +192,7 @@ impl FromRequest<Arc<crate::http::App>> for Admin {
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|value| value.to_str().ok());
         let principal = verifier
-            .verify(
-                parts.method.as_str(),
-                parts.uri.path(),
-                &bytes,
-                header,
-            )
+            .verify(parts.method.as_str(), parts.uri.path(), &bytes, header)
             .await
             .map_err(|error| crate::http::ApiError::unauthorized(&error))?;
 
@@ -222,7 +214,10 @@ mod tests {
         let system = Arc::new(SystemStore::in_memory().unwrap());
         let public = key.public("acme", "alice");
         system
-            .set(ADMIN_KEYS_KEY, &serde_json::to_string(&vec![public]).unwrap())
+            .set(
+                ADMIN_KEYS_KEY,
+                &serde_json::to_string(&vec![public]).unwrap(),
+            )
             .await
             .unwrap();
         Verifier::new(system, Arc::new(FixedClock::at(1_000_000)))
@@ -252,7 +247,10 @@ mod tests {
     async fn an_unsigned_request_is_refused_with_the_scheme() {
         let key = nucleos_auth::KeyPair::generate();
         let verifier = verifier_with(&key).await;
-        let error = verifier.verify("GET", "/v1/config", b"", None).await.unwrap_err();
+        let error = verifier
+            .verify("GET", "/v1/config", b"", None)
+            .await
+            .unwrap_err();
         assert!(error.reason().contains("Nucleos-Admin"), "{error:?}");
     }
 

@@ -101,7 +101,9 @@ fn dying_fixture(marker: &str) -> McpSource {
     let mut source = McpSource::new("echo", "python3")
         .with_args(["-u", path.to_str().unwrap()])
         .with_timeout(Duration::from_secs(20));
-    source.env.insert("ECHO_DIE_ON".to_owned(), marker.to_owned());
+    source
+        .env
+        .insert("ECHO_DIE_ON".to_owned(), marker.to_owned());
     source
 }
 
@@ -119,11 +121,15 @@ async fn a_source_that_crashes_is_back_for_the_next_call() {
     let session = SessionId::new("s1");
 
     // It works, then the child exits without answering.
-    assert!(!tool
-        .invoke("{\"text\":\"first\"}", &ctx(&session, "call-1"))
-        .await
-        .is_error);
-    let crashed = tool.invoke("{\"text\":\"dying\"}", &ctx(&session, "call-2")).await;
+    assert!(
+        !tool
+            .invoke("{\"text\":\"first\"}", &ctx(&session, "call-1"))
+            .await
+            .is_error
+    );
+    let crashed = tool
+        .invoke("{\"text\":\"dying\"}", &ctx(&session, "call-2"))
+        .await;
     assert!(crashed.is_error, "a crash is a failure the model can read");
     assert!(
         crashed.content.text().contains("source was lost"),
@@ -133,7 +139,9 @@ async fn a_source_that_crashes_is_back_for_the_next_call() {
 
     // And the next call has a server again: this is the whole point. The failed call is *not*
     // retried — a tool call is not assumed idempotent — but the source is no longer a corpse.
-    let again = tool.invoke("{\"text\":\"after\"}", &ctx(&session, "call-3")).await;
+    let again = tool
+        .invoke("{\"text\":\"after\"}", &ctx(&session, "call-3"))
+        .await;
     assert!(!again.is_error, "{}", again.content.text());
     assert_eq!(again.content.text(), "echo: after");
 }
@@ -158,7 +166,9 @@ async fn a_source_that_comes_back_changed_is_refused_rather_than_adopted() {
             ),
         ])
         .with_timeout(Duration::from_secs(20));
-    source.env.insert("ECHO_DIE_ON".to_owned(), "dying".to_owned());
+    source
+        .env
+        .insert("ECHO_DIE_ON".to_owned(), "dying".to_owned());
     source
         .env
         .insert("ECHO_SPAWN_LOG".to_owned(), log.display().to_string());
@@ -169,7 +179,9 @@ async fn a_source_that_comes_back_changed_is_refused_rather_than_adopted() {
     let session = SessionId::new("s1");
 
     std::fs::write(&marker, "now there are two").unwrap();
-    let crashed = tool.invoke("{\"text\":\"dying\"}", &ctx(&session, "call-1")).await;
+    let crashed = tool
+        .invoke("{\"text\":\"dying\"}", &ctx(&session, "call-1"))
+        .await;
     assert!(crashed.is_error);
     assert!(
         crashed.content.text().contains("different tool set"),
@@ -202,7 +214,9 @@ async fn a_source_that_cannot_restart_is_not_spawned_once_per_call() {
             ),
         ])
         .with_timeout(Duration::from_secs(20));
-    source.env.insert("ECHO_DIE_ON".to_owned(), "dying".to_owned());
+    source
+        .env
+        .insert("ECHO_DIE_ON".to_owned(), "dying".to_owned());
     source
         .env
         .insert("ECHO_SPAWN_LOG".to_owned(), log.display().to_string());
@@ -212,7 +226,9 @@ async fn a_source_that_cannot_restart_is_not_spawned_once_per_call() {
     let session = SessionId::new("s1");
 
     std::fs::write(&marker, "no more").unwrap();
-    let crashed = tool.invoke("{\"text\":\"dying\"}", &ctx(&session, "call-1")).await;
+    let crashed = tool
+        .invoke("{\"text\":\"dying\"}", &ctx(&session, "call-1"))
+        .await;
     assert!(crashed.is_error);
 
     // The immediate follow-ups are inside the backoff window, and they say so instead of forking.

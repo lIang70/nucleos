@@ -7,13 +7,13 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use nucleos::adapter::{AllowAll, Store};
-use nucleos_sqlite::SqliteStore;
-use nucleos_testkit::{FakeModel, FixedClock};
 use nucleos::contract::Routing;
 use nucleos::contract::{
     AdditionalPermissions, Principal, SandboxPermissions, SandboxPolicy, SessionId, SessionState,
 };
 use nucleos::kernel::{Kernel, SessionSpec};
+use nucleos_sqlite::SqliteStore;
+use nucleos_testkit::{FakeModel, FixedClock};
 use std::sync::Arc;
 
 /// The store's key for a test tenant. The tests all use one tenant, so the helper keeps them about
@@ -21,7 +21,6 @@ use std::sync::Arc;
 fn key(id: &SessionId) -> nucleos::adapter::SessionKey {
     nucleos::adapter::SessionKey::new("acme", id.clone())
 }
-
 
 fn principal() -> Principal {
     Principal {
@@ -132,7 +131,8 @@ async fn the_policy_is_session_state_and_survives_a_checkpoint() -> nucleos::Res
 /// A temporary directory to use as a workspace, outside the system temp root that the profile does
 /// not allow.
 fn workspace(name: &str) -> std::path::PathBuf {
-    let directory = std::env::temp_dir().join(format!("nucleos-sandbox-{name}-{}", std::process::id()));
+    let directory =
+        std::env::temp_dir().join(format!("nucleos-sandbox-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&directory);
     std::fs::create_dir_all(&directory).unwrap();
     directory
@@ -214,7 +214,10 @@ async fn a_workspace_write_policy_writes_in_the_workspace_and_nowhere_else() {
     )
     .await
     .unwrap();
-    assert!(ok, "a write inside the workspace is the point of the policy");
+    assert!(
+        ok,
+        "a write inside the workspace is the point of the policy"
+    );
     assert_eq!(std::fs::read_to_string(&inside).unwrap(), "hi");
 
     // The same write one directory up: the profile has no rule for it, so the kernel refuses it.
@@ -329,7 +332,10 @@ async fn a_confining_policy_that_cannot_be_enforced_is_refused_not_ignored() {
     )
     .await
     .unwrap();
-    assert!(ok, "a read-only policy still runs a command that only reads");
+    assert!(
+        ok,
+        "a read-only policy still runs a command that only reads"
+    );
     let _ = std::fs::remove_dir_all(&directory);
 }
 
@@ -347,7 +353,6 @@ async fn a_confining_policy_is_refused_on_a_platform_without_a_mechanism() {
     .expect_err("no mechanism, no promise");
     assert_eq!(error.code(), nucleos::contract::ErrorCode::Unavailable);
 }
-
 
 // ---------------------------------------------------------------------------
 // Network
@@ -385,7 +390,10 @@ async fn a_policy_without_network_cannot_reach_a_local_port() {
     )
     .await
     .unwrap();
-    assert!(!denied, "no rule allows the connection, so it must not happen");
+    assert!(
+        !denied,
+        "no rule allows the connection, so it must not happen"
+    );
 
     // The same command with the network allowed, so the refusal above is the sandbox and not a
     // broken listener.
@@ -443,7 +451,10 @@ async fn one_command_may_ask_for_the_network_and_the_session_is_unchanged() {
     )
     .await
     .unwrap();
-    assert!(!refused, "a widening must not outlive the command that asked");
+    assert!(
+        !refused,
+        "a widening must not outlive the command that asked"
+    );
 
     let _ = std::fs::remove_dir_all(&directory);
 }
@@ -481,7 +492,9 @@ async fn the_log_says_which_mechanism_ran_the_command_and_with_what_profile() {
         .expect("the start is recorded");
 
     assert_eq!(started.0.as_deref(), Some("seatbelt"));
-    let profile = started.1.expect("seatbelt records the profile it was given");
+    let profile = started
+        .1
+        .expect("seatbelt records the profile it was given");
     // What a reader needs: that it was deny-by-default, and which root it was allowed to write.
     assert!(profile.contains("(deny default)"), "{profile}");
     assert!(profile.contains(&root), "{profile}");
@@ -540,13 +553,19 @@ fn the_order_is_by_what_a_process_may_touch() {
     };
 
     assert!(writable.narrows_to(&narrower), "fewer roots and no network");
-    assert!(writable.narrows_to(&SandboxPolicy::read_only()), "no writes at all");
+    assert!(
+        writable.narrows_to(&SandboxPolicy::read_only()),
+        "no writes at all"
+    );
     assert!(
         SandboxPolicy::DangerFullAccess.narrows_to(&writable),
         "anything is narrower than nothing"
     );
 
-    assert!(!narrower.narrows_to(&writable), "adding room back is widening");
+    assert!(
+        !narrower.narrows_to(&writable),
+        "adding room back is widening"
+    );
     assert!(
         !SandboxPolicy::read_only().narrows_to(&narrower),
         "a read-only session may not start writing"
@@ -774,11 +793,18 @@ async fn a_workspace_write_policy_is_enforced_by_bubblewrap() {
             network_access: false,
         },
         SandboxPermissions::UseDefault,
-        &["/bin/sh", "-c", &format!("printf hi > {}", inside.display())],
+        &[
+            "/bin/sh",
+            "-c",
+            &format!("printf hi > {}", inside.display()),
+        ],
     )
     .await
     .unwrap();
-    assert!(ok, "a write inside the workspace is the point of the policy");
+    assert!(
+        ok,
+        "a write inside the workspace is the point of the policy"
+    );
     assert_eq!(std::fs::read_to_string(&inside).unwrap(), "hi");
 
     let denied = run(
@@ -788,7 +814,11 @@ async fn a_workspace_write_policy_is_enforced_by_bubblewrap() {
             network_access: false,
         },
         SandboxPermissions::UseDefault,
-        &["/bin/sh", "-c", &format!("printf hi > {}", outside.display())],
+        &[
+            "/bin/sh",
+            "-c",
+            &format!("printf hi > {}", outside.display()),
+        ],
     )
     .await
     .unwrap();
@@ -811,7 +841,11 @@ async fn a_read_only_policy_refuses_every_write_on_linux_too() {
         Some(directory.to_str().unwrap()),
         SandboxPolicy::read_only(),
         SandboxPermissions::UseDefault,
-        &["/bin/sh", "-c", &format!("printf hi > {}", target.display())],
+        &[
+            "/bin/sh",
+            "-c",
+            &format!("printf hi > {}", target.display()),
+        ],
     )
     .await
     .unwrap();
@@ -849,7 +883,9 @@ async fn the_log_records_bubblewrap_as_the_mechanism() {
         })
         .expect("the start is recorded");
     assert_eq!(started.0.as_deref(), Some("bubblewrap"));
-    let command = started.1.expect("bwrap records the command line it was given");
+    let command = started
+        .1
+        .expect("bwrap records the command line it was given");
     assert!(command.contains("--unshare-all"), "{command}");
     assert!(command.contains("--ro-bind"), "{command}");
 

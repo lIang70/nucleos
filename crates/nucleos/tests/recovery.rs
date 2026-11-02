@@ -23,7 +23,6 @@ fn key(id: &SessionId) -> nucleos::adapter::SessionKey {
     nucleos::adapter::SessionKey::new("acme", id.clone())
 }
 
-
 fn principal() -> Principal {
     Principal {
         tenant: "acme".to_owned(),

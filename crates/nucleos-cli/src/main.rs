@@ -131,27 +131,34 @@ fn init(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
     println!("✓ recovery        stored, argon2id");
     // Said out loud because the default location is the one place the design says it should not be:
     // a backup of the data directory would carry the key that makes the backup useless.
-    println!(
-        "✓ seal key        {} (0600)",
-        options.seal_key.display()
-    );
+    println!("✓ seal key        {} (0600)", options.seal_key.display());
     println!();
     // The two stronger sources, with the commands filled in. `init` cannot choose one for the
     // operator: the systemd one needs `systemd-creds` and a unit edit, and the macOS one needs sudo and
     // a decision about ACLs. Printing the commands is the part a bootstrap command can do honestly.
-    println!("the file above protects the data-directory backup. To protect a whole-machine backup too:");
+    println!(
+        "the file above protects the data-directory backup. To protect a whole-machine backup too:"
+    );
     if cfg!(target_os = "macos") {
         println!(
             "  sudo security add-generic-password -s nucleos-seal -a seal \\\n      -w \"$(openssl rand -hex 32)\" /Library/Keychains/System.keychain"
         );
-        println!("  (then delete {}; the daemon prefers the keychain)", options.seal_key.display());
+        println!(
+            "  (then delete {}; the daemon prefers the keychain)",
+            options.seal_key.display()
+        );
     } else {
         println!(
             "  systemd-creds encrypt --name=seal.key {} /etc/nucleos/seal.key.enc",
             options.seal_key.display()
         );
-        println!("  # then in the unit: LoadCredentialEncrypted=seal.key:/etc/nucleos/seal.key.enc");
-        println!("  # and delete {} once the daemon reports source=credential", options.seal_key.display());
+        println!(
+            "  # then in the unit: LoadCredentialEncrypted=seal.key:/etc/nucleos/seal.key.enc"
+        );
+        println!(
+            "  # and delete {} once the daemon reports source=credential",
+            options.seal_key.display()
+        );
     }
     println!("✓ bootstrap policy deny by default; this administrator may add models and sources");
     println!("\nnext: start nucleosd, then `nucleos models add`");
@@ -244,7 +251,7 @@ fn models(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync
             }
             "--reasoning" => request.reasoning = true,
             other if other.starts_with('-') => {
-                return Err(Box::from(format!("unknown option {other:?}")))
+                return Err(Box::from(format!("unknown option {other:?}")));
             }
             other => positional = Some(other.to_owned()),
         }
@@ -254,9 +261,9 @@ fn models(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync
         "list" => nucleos_cli::models::list(&overrides)?,
         "add" => nucleos_cli::models::add(&overrides, &request)?,
         "remove" => {
-            let name = positional.ok_or_else(|| Box::<dyn std::error::Error + Send + Sync>::from(
-                "models remove needs a name",
-            ))?;
+            let name = positional.ok_or_else(|| {
+                Box::<dyn std::error::Error + Send + Sync>::from("models remove needs a name")
+            })?;
             nucleos_cli::models::remove(&overrides, &name)?
         }
         other => return Err(Box::from(format!("unknown models subcommand {other:?}"))),
@@ -289,7 +296,7 @@ fn tokens(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync
             "--tenant" => tenant = value("--tenant")?,
             "--subject" => subject = value("--subject")?,
             other if other.starts_with('-') => {
-                return Err(Box::from(format!("unknown option {other:?}")))
+                return Err(Box::from(format!("unknown option {other:?}")));
             }
             other => positional = Some(other.to_owned()),
         }
@@ -342,7 +349,7 @@ fn sources(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Syn
                 request.env.insert(key.to_owned(), value.to_owned());
             }
             other if other.starts_with('-') => {
-                return Err(Box::from(format!("unknown option {other:?}")))
+                return Err(Box::from(format!("unknown option {other:?}")));
             }
             other => positional = Some(other.to_owned()),
         }
@@ -471,11 +478,17 @@ fn seal(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
         next: next.clone(),
     }))?;
 
-    println!("✓ re-sealed        {} credential(s): {}", done.rotated, done.models.join(", "));
+    println!(
+        "✓ re-sealed        {} credential(s): {}",
+        done.rotated,
+        done.models.join(", ")
+    );
     println!("✓ new key          {}", done.key_path.display());
     println!("  previous source  {}", done.previous);
     println!();
-    println!("The daemon keeps its seal key from start-up, so restart it now — and delete or revoke the");
+    println!(
+        "The daemon keeps its seal key from start-up, so restart it now — and delete or revoke the"
+    );
     println!("previous key once it reports the new source.");
     Ok(())
 }

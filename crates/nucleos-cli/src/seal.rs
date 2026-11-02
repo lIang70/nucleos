@@ -98,7 +98,10 @@ pub async fn rotate(options: &Options) -> Result<Done> {
             .get(key)?
             .ok_or_else(|| Error::internal(format!("{model:?} vanished during rotation")))?;
         next.open(&stored).map_err(|error| {
-            Error::internal(format!("{model:?} does not open with the new key: {}", error.reason()))
+            Error::internal(format!(
+                "{model:?} does not open with the new key: {}",
+                error.reason()
+            ))
         })?;
     }
 
@@ -145,7 +148,8 @@ mod tests {
     use super::*;
 
     fn scratch(name: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!("nucleos-rotate-{name}-{}", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("nucleos-rotate-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&path);
         path
     }
@@ -157,7 +161,10 @@ mod tests {
         let system = SystemStore::open(root.join("system.db")).unwrap();
         for (name, secret) in models {
             system
-                .set(&format!("{SEALED_KEY_PREFIX}{name}"), &seal.seal(secret).unwrap())
+                .set(
+                    &format!("{SEALED_KEY_PREFIX}{name}"),
+                    &seal.seal(secret).unwrap(),
+                )
                 .await
                 .unwrap();
         }
@@ -184,7 +191,9 @@ mod tests {
         assert_eq!(done.models, ["cheap", "primary"]);
 
         // The new key opens both; the old one opens neither.
-        let after = SealKey::resolve(&new).unwrap().expect("the new key is on disk");
+        let after = SealKey::resolve(&new)
+            .unwrap()
+            .expect("the new key is on disk");
         let system = SystemStore::open(root.join("system.db")).unwrap();
         for name in ["primary", "cheap"] {
             let stored = system
@@ -192,7 +201,10 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert!(after.key.open(&stored).is_ok(), "{name}");
-            assert!(before.open(&stored).is_err(), "{name} must not open under the old key");
+            assert!(
+                before.open(&stored).is_err(),
+                "{name} must not open under the old key"
+            );
         }
 
         let _ = std::fs::remove_dir_all(&root);
@@ -228,7 +240,10 @@ mod tests {
             .get(&format!("{SEALED_KEY_PREFIX}primary"))
             .unwrap()
             .unwrap();
-        assert!(stranger.open(&stored).is_err(), "the wrong key opens nothing");
+        assert!(
+            stranger.open(&stored).is_err(),
+            "the wrong key opens nothing"
+        );
         let original = SealKey::resolve(&old).unwrap().expect("the original key");
         assert_eq!(original.key.open(&stored).unwrap(), "sk-one");
 
@@ -250,7 +265,10 @@ mod tests {
         })
         .await
         .unwrap_err();
-        assert!(error.reason().contains("outside the data directory"), "{error:?}");
+        assert!(
+            error.reason().contains("outside the data directory"),
+            "{error:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_file(&old);

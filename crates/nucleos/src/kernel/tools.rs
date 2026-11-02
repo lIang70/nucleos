@@ -184,14 +184,17 @@ impl Kernel {
         // id and removed when the call ends, so a finished call never heartbeats.
         let running: Arc<Mutex<BTreeMap<String, Running>>> = Arc::new(Mutex::new(BTreeMap::new()));
         for call in calls {
-            running.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(
-                call.id.clone(),
-                Running {
-                    started: Instant::now(),
-                    quiet_since: Instant::now(),
-                    reported: false,
-                },
-            );
+            running
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(
+                    call.id.clone(),
+                    Running {
+                        started: Instant::now(),
+                        quiet_since: Instant::now(),
+                        reported: false,
+                    },
+                );
         }
         let heartbeat = if self.heartbeat.is_zero() {
             None
@@ -217,60 +220,57 @@ impl Kernel {
             .map(|call| self.allowable(session, &call.name))
             .collect();
 
-        let futures = calls
-            .iter()
-            .zip(verdicts)
-            .zip(resolved)
-            .zip(permitted)
-            .map(|(((call, denial), tool), permitted)| {
+        let futures = calls.iter().zip(verdicts).zip(resolved).zip(permitted).map(
+            |(((call, denial), tool), permitted)| {
                 let progress_tx = progress_tx.clone();
                 let running = Arc::clone(&running);
-            let args = call.arguments_json.clone();
-            let call_id = call.id.clone();
-            let session_id = session_id.clone();
-            async move {
-                let sink = Sink {
-                    call_id: call_id.clone(),
-                    sender: progress_tx,
-                    running: Arc::clone(&running),
-                };
-                // Removed when this future ends, however it ends: a call that finished must not be
-                // reported as still running by the next tick.
-                let _running = RunningGuard {
-                    call_id: call_id.clone(),
-                    running: Arc::clone(&running),
-                };
-                let ctx = crate::adapter::ToolCtx {
-                    session: &session_id,
-                    call_id: &call_id,
-                    deadline_unix_millis: deadline,
-                    progress: &sink,
-                };
-                if !permitted {
-                    return ToolOutput::failed(format!(
-                        "{} is not available in this session's tool ceiling",
-                        call.name
-                    ));
-                }
-                match denial {
-                    None => match tool {
-                        // A model that produced broken JSON gets told so, and the turn
-                        // continues. Executing it would mean guessing at the arguments.
-                        Some(tool) => match serde_json::from_str::<serde_json::Value>(&args) {
-                            Ok(_) => tool.invoke(&args, &ctx).await,
-                            Err(error) => ToolOutput::failed(format!(
-                                "arguments were not valid JSON: {error}"
+                let args = call.arguments_json.clone();
+                let call_id = call.id.clone();
+                let session_id = session_id.clone();
+                async move {
+                    let sink = Sink {
+                        call_id: call_id.clone(),
+                        sender: progress_tx,
+                        running: Arc::clone(&running),
+                    };
+                    // Removed when this future ends, however it ends: a call that finished must not be
+                    // reported as still running by the next tick.
+                    let _running = RunningGuard {
+                        call_id: call_id.clone(),
+                        running: Arc::clone(&running),
+                    };
+                    let ctx = crate::adapter::ToolCtx {
+                        session: &session_id,
+                        call_id: &call_id,
+                        deadline_unix_millis: deadline,
+                        progress: &sink,
+                    };
+                    if !permitted {
+                        return ToolOutput::failed(format!(
+                            "{} is not available in this session's tool ceiling",
+                            call.name
+                        ));
+                    }
+                    match denial {
+                        None => match tool {
+                            // A model that produced broken JSON gets told so, and the turn
+                            // continues. Executing it would mean guessing at the arguments.
+                            Some(tool) => match serde_json::from_str::<serde_json::Value>(&args) {
+                                Ok(_) => tool.invoke(&args, &ctx).await,
+                                Err(error) => ToolOutput::failed(format!(
+                                    "arguments were not valid JSON: {error}"
+                                )),
+                            },
+                            None => ToolOutput::failed(format!(
+                                "no tool named {:?} in this session's tool generation",
+                                call.name
                             )),
                         },
-                        None => ToolOutput::failed(format!(
-                            "no tool named {:?} in this session's tool generation",
-                            call.name
-                        )),
-                    },
-                    Some(reason) => ToolOutput::failed(reason),
+                        Some(reason) => ToolOutput::failed(reason),
+                    }
                 }
-            }
-        });
+            },
+        );
         let outputs = futures_util::future::join_all(futures).await;
         // Closing the channel is what ends the writer: awaiting it afterwards means every progress
         // event a tool reported is in the log before the caller sees the results. The heartbeat is
@@ -667,7 +667,9 @@ async fn heartbeat_loop(
         let now = Instant::now();
 
         let silent: Vec<(String, u64)> = {
-            let mut running = running.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut running = running
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             running
                 .iter_mut()
                 .filter(|(_, call)| !call.reported && now.duration_since(call.quiet_since) >= every)

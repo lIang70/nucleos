@@ -23,8 +23,10 @@
 //! completed — the model's next turn does not see a fragment it never finished writing.
 
 use super::session::Session;
-use crate::contract::{Attempt, AttemptOutcome, AttemptPhase, AttemptTrigger, Event, EventKind, Role};
 use crate::contract::Message;
+use crate::contract::{
+    Attempt, AttemptOutcome, AttemptPhase, AttemptTrigger, Event, EventKind, Role,
+};
 
 /// What folding one event did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,9 +200,7 @@ pub(crate) fn partial(events: &[Event]) -> Option<crate::contract::PartialTurn> 
                 saw_anything = true;
             }
             EventKind::ToolCallStarted {
-                tool_call_id,
-                name,
-                ..
+                tool_call_id, name, ..
             } => {
                 call = Some(crate::contract::UnfinishedCall {
                     tool_call_id: tool_call_id.clone(),

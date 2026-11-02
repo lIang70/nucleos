@@ -22,9 +22,7 @@ fn principal() -> Principal {
 
 fn kernel(policy: Arc<dyn Policy>) -> Kernel {
     Kernel::builder()
-        .store(Arc::new(
-            nucleos_sqlite::SqliteStore::in_memory().unwrap(),
-        ))
+        .store(Arc::new(nucleos_sqlite::SqliteStore::in_memory().unwrap()))
         .policy(policy)
         .build()
         .unwrap()
@@ -74,12 +72,10 @@ async fn a_change_that_needs_a_human_is_refused_rather_than_waited_on() {
     // Configuration has no session to park, so an `ask` cannot become an answer later. Turning it
     // into a denial is the only honest translation: an unattended "ask" that expires into an
     // "allow" would be a gate that opens by itself.
-    let kernel = kernel(
-        rules(
-            r#"{"rules":[{"decision":"ask","config":"policy","scope":"system",
+    let kernel = kernel(rules(
+        r#"{"rules":[{"decision":"ask","config":"policy","scope":"system",
                 "question":"Replace the system policy?"}]}"#,
-        ) as Arc<dyn Policy>,
-    );
+    ) as Arc<dyn Policy>);
     let verdict = kernel
         .check_config(&principal(), ConfigScope::System, "policy")
         .await
@@ -97,14 +93,12 @@ async fn a_change_that_needs_a_human_is_refused_rather_than_waited_on() {
 #[tokio::test]
 async fn an_administrator_may_be_allowed_one_subject_and_not_another() {
     // The ordinary shape: models and sources are delegated, the policy is not.
-    let kernel = kernel(
-        rules(
-            r#"{"default":"deny","rules":[
+    let kernel = kernel(rules(
+        r#"{"default":"deny","rules":[
                 {"decision":"allow","config":"models","scope":"system"},
                 {"decision":"allow","config":"sources","scope":"system"}
             ]}"#,
-        ) as Arc<dyn Policy>,
-    );
+    ) as Arc<dyn Policy>);
 
     for allowed in ["models", "sources"] {
         assert_eq!(
@@ -163,10 +157,7 @@ struct Recording(Arc<std::sync::Mutex<Vec<String>>>);
 impl Policy for Recording {
     async fn check(&self, request: PolicyRequest<'_>) -> Verdict {
         if let nucleos::adapter::Gated::Config { scope, subject } = request.subject {
-            self.0
-                .lock()
-                .unwrap()
-                .push(format!("{scope}:{subject}"));
+            self.0.lock().unwrap().push(format!("{scope}:{subject}"));
         }
         Verdict::Allow
     }

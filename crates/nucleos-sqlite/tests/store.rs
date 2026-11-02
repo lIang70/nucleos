@@ -18,7 +18,6 @@ fn key(id: &SessionId) -> nucleos::adapter::SessionKey {
     nucleos::adapter::SessionKey::new("acme", id.clone())
 }
 
-
 fn event(session: &SessionId, seq: u64) -> Event {
     Event {
         seq,
@@ -44,14 +43,20 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 async fn append_refuses_a_gap_rather_than_renumbering() {
     let store = SqliteStore::in_memory().unwrap();
     let session = SessionId::new("s1");
-    store.append(&key(&session), &[event(&session, 0)]).await.unwrap();
+    store
+        .append(&key(&session), &[event(&session, 0)])
+        .await
+        .unwrap();
 
     // A silently renumbered event makes every later resume cursor wrong, so this is refused.
     let gap = store.append(&key(&session), &[event(&session, 5)]).await;
     assert!(gap.is_err(), "{gap:?}");
 
     // And the log is unchanged: a refused batch appends nothing at all.
-    assert_eq!(store.events_since(&key(&session), 0).await.unwrap().len(), 1);
+    assert_eq!(
+        store.events_since(&key(&session), 0).await.unwrap().len(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -60,7 +65,12 @@ async fn append_refuses_an_event_for_another_session() {
     let session = SessionId::new("s1");
     let other = SessionId::new("s2");
     // Events from one session written into another's log is a corruption no later read can undo.
-    assert!(store.append(&key(&session), &[event(&other, 0)]).await.is_err());
+    assert!(
+        store
+            .append(&key(&session), &[event(&other, 0)])
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -85,7 +95,10 @@ async fn events_since_is_inclusive() {
 async fn a_snapshot_may_not_claim_events_the_log_does_not_hold() {
     let store = SqliteStore::in_memory().unwrap();
     let session = SessionId::new("s1");
-    store.append(&key(&session), &[event(&session, 0)]).await.unwrap();
+    store
+        .append(&key(&session), &[event(&session, 0)])
+        .await
+        .unwrap();
 
     let mut snapshot = snapshot_for(&session);
     snapshot.seq = 7;
@@ -98,7 +111,10 @@ async fn a_listing_pages_by_cursor_and_filters_by_kind() {
     let store = SqliteStore::in_memory().unwrap();
     for name in ["s1", "s2", "s3"] {
         let session = SessionId::new(name);
-        store.append(&key(&session), &[event(&session, 0)]).await.unwrap();
+        store
+            .append(&key(&session), &[event(&session, 0)])
+            .await
+            .unwrap();
     }
     store
         .write_snapshot({
@@ -130,7 +146,11 @@ async fn a_listing_pages_by_cursor_and_filters_by_kind() {
         })
         .await
         .unwrap();
-    assert_eq!(second.sessions.len(), 1, "the cursor resumes after the page");
+    assert_eq!(
+        second.sessions.len(),
+        1,
+        "the cursor resumes after the page"
+    );
 
     // Only the checkpointed session has a kind yet, which is what the column is for.
     let processes = store
@@ -197,7 +217,10 @@ async fn a_session_survives_the_process_that_wrote_it() {
         .events_since(&key(session.id()), snapshot.seq + 1)
         .await
         .unwrap();
-    assert!(events.is_empty(), "the snapshot is the end of the log so far");
+    assert!(
+        events.is_empty(),
+        "the snapshot is the end of the log so far"
+    );
 
     let kernel = nucleos::Kernel::builder()
         .model("primary", Arc::new(FakeModel::text(["again"])))
@@ -287,7 +310,11 @@ async fn two_tenants_can_share_a_session_id() {
             })
             .await
             .unwrap();
-        assert_eq!(page.sessions.as_slice(), std::slice::from_ref(&session), "{tenant}");
+        assert_eq!(
+            page.sessions.as_slice(),
+            std::slice::from_ref(&session),
+            "{tenant}"
+        );
     }
 
     // A tenant that never wrote anything sees nothing, rather than everybody else's rows.
