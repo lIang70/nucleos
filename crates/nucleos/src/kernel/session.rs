@@ -22,6 +22,12 @@ pub struct Session {
     /// Who is asking. Carried for every policy gate, and never derived from a request field.
     pub(crate) principal: Principal,
     pub(crate) generation: Generation,
+    /// The tools this session's calls are answered from.
+    ///
+    /// Held, not looked up by number. A number in a map is a pin that only holds while the map keeps
+    /// the entry; an `Arc` is a pin that holds because somebody is holding it. Retirement is then
+    /// just "forget the number", and no session can ever reach for a set that has been freed.
+    pub(crate) toolset: super::generation::Pinned,
     pub(crate) state: SessionState,
     pub(crate) messages: Vec<Message>,
     pub(crate) usage: Usage,
@@ -226,6 +232,7 @@ impl Session {
         id: SessionId,
         principal: Principal,
         generation: Generation,
+        tools: Arc<super::generation::ToolSet>,
         budget: Budget,
         credit_tokens: u64,
         now_unix_millis: u64,
@@ -234,6 +241,7 @@ impl Session {
             id,
             principal,
             generation,
+            toolset: super::generation::Pinned::new(tools),
             state: SessionState::Open,
             messages: Vec::new(),
             usage: Usage::default(),
@@ -353,6 +361,7 @@ impl Session {
     pub(crate) fn from_snapshot(
         snapshot: Snapshot,
         principal: Principal,
+        tools: Arc<super::generation::ToolSet>,
         budget: Budget,
         now_unix_millis: u64,
     ) -> Self {
@@ -360,6 +369,7 @@ impl Session {
             id: snapshot.session,
             principal,
             generation: snapshot.generation,
+            toolset: super::generation::Pinned::new(tools),
             state: snapshot.state,
             messages: snapshot.messages,
             usage: snapshot.usage,
@@ -406,6 +416,7 @@ mod tests {
                 subject: "alice".to_owned(),
             },
             Generation(1),
+            std::sync::Arc::new(crate::kernel::generation::ToolSet::default()),
             Budget::default(),
             100,
             0,

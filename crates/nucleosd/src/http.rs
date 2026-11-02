@@ -19,7 +19,7 @@ use nucleos_sqlite::SqliteStore;
 use nucleos::kernel::{HitlVerdict, Kernel, SessionSpec, StateWrite};
 use nucleos::wire::api::{
     DescribeResponse, ErrorBody, InferenceRequest, InferenceResponse, ProcessInfo,
-    CancelResponse, ConfigKey, ConfigResponse, MetricsResponse, ProcessListResponse, SessionListResponse,
+    CancelResponse, ConfigKey, RetireResponse, ConfigResponse, MetricsResponse, ProcessListResponse, SessionListResponse,
     SessionSummary, ProcessStartRequest, ProcessStartResponse, ReloadResponse,
     SessionView, StartRequest,
     StartResponse, StateRequest, StdinRequest, ToolBatchRequest, ToolBatchResponse, VerdictRequest,
@@ -815,6 +815,17 @@ pub const ROUTES: &[Route] = &[
     Route {
         meta: openapi::Route {
             method: "post",
+            path: "/v1/tools/retire",
+            operation: "retireGenerations",
+            summary: "Forget every tool set but the current one. Running sessions are unaffected.",
+            request: None,
+            reply: openapi::Reply::Json("RetireResponse"),
+        },
+        build: || post(retire),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "post",
             path: "/v1/tools/reload",
             operation: "reloadTools",
             summary: "Reconnect the tool source and publish a new generation.",
@@ -1057,6 +1068,20 @@ async fn metrics(State(app): State<Arc<App>>) -> Json<MetricsResponse> {
 
 /// Reconnect the tool source and publish what it advertises now.
 ///
+/// Forget every generation but the current one.
+///
+/// Safe to call at any time and safe to ignore: a session pinned to a retired set holds it, so the
+/// entry can be dropped without the session noticing. The count that comes back is what makes the claim
+/// checkable — "nothing was running" and "everything was running" must not produce the same answer.
+async fn retire(State(app): State<Arc<App>>) -> Result<Json<RetireResponse>, ApiError> {
+    let kernel = app.kernel()?.clone();
+    let retired = kernel.retire().map_err(|error| ApiError::from_error(&error))?;
+    Ok(Json(RetireResponse {
+        current: kernel.generation().0,
+        retired: retired.into_iter().map(|generation| generation.0).collect(),
+    }))
+}
+
 /// This is the whole point of generations from the outside: a source is a process somebody else
 /// deploys, and reconnecting it must not be a restart. Sessions already running keep the set they
 /// are pinned to; sessions that start from now on get this one.

@@ -366,6 +366,19 @@ pub struct TokenListResponse {
     pub tokens: Vec<TokenView>,
 }
 
+/// What a retirement forgot.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct RetireResponse {
+    /// The generation everything points at afterwards.
+    pub current: u64,
+    /// The generations that were forgotten, oldest first.
+    ///
+    /// Empty is the honest answer when there was nothing to forget, and it is different from an error:
+    /// a kernel with one generation has nothing to retire and has done nothing wrong.
+    #[serde(default)]
+    pub retired: Vec<u64>,
+}
+
 /// What a cancel did.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct CancelResponse {

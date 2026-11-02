@@ -395,9 +395,7 @@ impl Kernel {
     /// Whether the ceiling allows a tool at all.
     #[must_use]
     pub(crate) fn allowable(&self, session: &session::Session, name: &str) -> bool {
-        let generations = self.generations();
-        let set = generations.set(session.generation);
-        set.contains_key(name)
+        session.toolset.contains_key(name)
             && (session.tools.is_empty() || session.tools.contains(&name.to_owned()))
             // The tenant's ceiling is a second filter, not instead of the session's: the session's is
             // the application's decision about one session, this one is the deployment's about a
@@ -466,7 +464,7 @@ impl Kernel {
     /// even if the tool has since been withdrawn.
     #[must_use]
     pub fn tool_in(&self, session: &session::Session, name: &str) -> Option<Arc<dyn Tool>> {
-        self.generations().set(session.generation).get(name).cloned()
+        session.toolset.get(name).cloned()
     }
 
     /// The declarations this session may use, in name order so a prompt is reproducible.
@@ -478,8 +476,7 @@ impl Kernel {
         // The door is shown only when something is behind it. A policy that shows every tool in
         // full leaves nothing to find, so spending a schema on the way to find it would be paying
         // for an empty room.
-        let generations = self.generations();
-        let set = generations.set(session.generation);
+        let set = &session.toolset;
         let needs_door = set
             .keys()
             .filter(|name| self.allowable(session, name))

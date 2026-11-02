@@ -16,10 +16,11 @@
 //! - **Migration is a turn boundary event, never a mid-turn swap.** `generation_migrated` records
 //!   it, because a replay has to know which set turn 42 ran under.
 //!
-//! Retirement is deliberately absent: a generation is kept for as long as this kernel runs. Keeping
-//! it is a small leak with a small cost; freeing it early would make a pinned session reach for a
-//! set that no longer exists, which is a much larger one. Refcounting it needs a durable answer to
-//! "which sessions are still alive", and the store can only answer that by reading every snapshot.
+//! **A generation is retired by forgetting its number, not by taking it away from anybody.** Sessions
+//! hold their set (see `Pinned`), so dropping an entry frees it exactly when the last session pinned to
+//! it ends: nobody can reach for a set that has been freed, because the set is only reachable through
+//! a session. That is why retirement needs no scan of the store and no durable answer to "which
+//! sessions are still alive" — the answer is the refcount, and it is already in the `Arc`.
 
 use super::tool_search;
 use crate::adapter::Tool;
@@ -30,6 +31,39 @@ use std::sync::Arc;
 
 /// One immutable set of tools.
 pub(crate) type ToolSet = BTreeMap<String, Arc<dyn Tool>>;
+
+/// A set a session holds.
+///
+/// A newtype for one reason: `Session` is `Debug`, and a `BTreeMap<String, Arc<dyn Tool>>` is not.
+/// The `Debug` here names the tools instead of the trait objects, which is also what a log wants.
+#[derive(Clone)]
+pub(crate) struct Pinned(Arc<ToolSet>);
+
+impl Pinned {
+    pub(crate) fn new(set: Arc<ToolSet>) -> Self {
+        Self(set)
+    }
+
+    pub(crate) fn arc(&self) -> Arc<ToolSet> {
+        Arc::clone(&self.0)
+    }
+}
+
+impl std::ops::Deref for Pinned {
+    type Target = ToolSet;
+    fn deref(&self) -> &ToolSet {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Pinned {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_list()
+            .entries(self.0.keys())
+            .finish()
+    }
+}
 
 /// Every set this kernel still has a session for, plus the current one.
 #[derive(Default)]
@@ -103,6 +137,32 @@ impl Generations {
         );
         self.sets.insert(generation.0, Arc::new(set));
         Ok(generation)
+    }
+
+    /// Forget every set but the current one.
+    ///
+    /// Safe because a set is only reachable through a session that holds it: a session pinned to a
+    /// retired generation keeps working, and can no longer be migrated *to* it — migration only goes to
+    /// current, and current is never retired. Returns the numbers that were forgotten, so the caller
+    /// can say what it did rather than that it did something.
+    pub(crate) fn retire(&mut self) -> Vec<Generation> {
+        let current = self.current;
+        let retired: Vec<Generation> = self
+            .sets
+            .keys()
+            .filter(|number| **number != current)
+            .map(|number| Generation(*number))
+            .collect();
+        for generation in &retired {
+            self.sets.remove(&generation.0);
+        }
+        retired
+    }
+
+    /// How many sets this kernel still knows about. What a retirement can be measured against.
+    #[must_use]
+    pub(crate) fn len(&self) -> usize {
+        self.sets.len()
     }
 }
 
@@ -189,13 +249,16 @@ fn schema_narrows(before: &str, after: &str) -> bool {
 pub(crate) async fn migrate(kernel: &super::Kernel, session: &mut super::session::Session) -> Result<bool> {
     // Everything that needs the registry is answered before the first await: a read guard held
     // across one makes the whole turn non-`Send`, and the handlers that drive it stop compiling.
-    let current = {
+    let resolved = {
         let generations = kernel.generations();
         let current = generations.current();
         if session.generation == current {
             return Ok(false);
         }
-        let (pinned, next) = (generations.set(session.generation), generations.current_set());
+        // The pinned side comes from the session itself, not from the map: a retired generation must
+        // still be able to answer "am I compatible with the new one", or a session pinned to it would
+        // silently be judged against itself.
+        let (pinned, next) = (session.toolset.arc(), generations.current_set());
         if !compatible(&pinned, &next) {
             // Incompatible: the session stays where it is until it ends. Moving it would answer a
             // call with a tool the model was never shown.
@@ -207,9 +270,10 @@ pub(crate) async fn migrate(kernel: &super::Kernel, session: &mut super::session
             );
             return Ok(false);
         }
-        current
+        (current, next)
     };
 
+    let (current, next) = resolved;
     let from = session.generation;
     tracing::info!(
         event = "generation_migrated",
@@ -218,6 +282,7 @@ pub(crate) async fn migrate(kernel: &super::Kernel, session: &mut super::session
         to = current.0,
     );
     session.generation = current;
+    session.toolset = Pinned::new(next);
     kernel
         .emit(session, EventKind::GenerationMigrated { from, to: current })
         .await?;

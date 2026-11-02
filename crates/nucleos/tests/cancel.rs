@@ -10,9 +10,7 @@ use async_trait::async_trait;
 use nucleos::adapter::{
     AllowAll, FinishReason, Model, ModelDelta, ModelRequest, ModelStream, Store,
 };
-use nucleos::contract::{
-    ErrorCode, EventKind, Principal, Routing, SessionId,
-};
+use nucleos::contract::{ErrorCode, EventKind, Principal, Routing, SessionId};
 use nucleos::kernel::{Kernel, SessionSpec};
 use nucleos_sqlite::SqliteStore;
 use nucleos_testkit::FixedClock;
@@ -44,7 +42,8 @@ impl Model for Slow {
             part_index: 0,
             text: "thinking".to_owned(),
         })];
-        let (sender, receiver) = tokio::sync::mpsc::channel::<nucleos::error::Result<ModelDelta>>(4);
+        let (sender, receiver) =
+            tokio::sync::mpsc::channel::<nucleos::error::Result<ModelDelta>>(4);
         tokio::spawn(async move {
             for delta in deltas {
                 let _ = sender.send(delta).await;
@@ -57,7 +56,9 @@ impl Model for Slow {
                 }))
                 .await;
         });
-        Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(receiver)))
+        Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(
+            receiver,
+        )))
     }
 }
 
@@ -157,9 +158,9 @@ async fn cancelling_stops_the_turn_and_leaves_the_session_open() {
     ));
 
     // And what the model had said before the cancel is still in the stream.
-    assert!(events
-        .iter()
-        .any(|event| matches!(&event.kind, EventKind::TextDelta { text, .. } if text == "thinking")));
+    assert!(events.iter().any(
+        |event| matches!(&event.kind, EventKind::TextDelta { text, .. } if text == "thinking")
+    ));
 }
 
 #[tokio::test]

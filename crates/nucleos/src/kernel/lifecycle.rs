@@ -29,10 +29,15 @@ impl Kernel {
         }
 
         let now = self.now();
+        let (generation, tools) = {
+            let generations = self.generations();
+            (generations.current(), generations.current_set())
+        };
         let mut session = session::Session::new(
             id,
             principal.clone(),
-            self.generation(),
+            generation,
+            tools,
             spec.budget.clone(),
             spec.credit_tokens,
             now,
@@ -105,9 +110,14 @@ impl Kernel {
         if snapshot.principal.subject != principal.subject {
             return Err(Error::not_found(format!("no session {id}")));
         }
+        // The set is resolved once, here: a snapshot naming a generation this process never published
+        // (a restore into a fresh daemon) falls back to the current one, and that fallback is what the
+        // session is now pinned to.
+        let tools = self.generations().set(snapshot.generation);
         let mut session = session::Session::from_snapshot(
             snapshot.clone(),
             principal.clone(),
+            tools,
             Default::default(),
             self.now(),
         );

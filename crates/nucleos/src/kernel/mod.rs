@@ -230,6 +230,30 @@ impl Kernel {
         generations.publish(tools)
     }
 
+    /// Forget every tool set but the current one.
+    ///
+    /// Sessions keep working: each holds the set its calls are answered from, so this frees what nobody
+    /// holds and nothing else. It is a request rather than something `publish` does on its own, because
+    /// an operator reloading sources should not have to wonder which generations survived — they ask,
+    /// and the answer says how many were forgotten.
+    ///
+    /// Never retires the current set: a session migrating at its next turn boundary has to have
+    /// somewhere to migrate to.
+    pub fn retire(&self) -> Result<Vec<Generation>> {
+        let mut generations = self.generations.write().map_err(|_| {
+            Error::internal("the tool registry is poisoned")
+        })?;
+        let retired = generations.retire();
+        let kept = generations.len();
+        drop(generations);
+        tracing::info!(
+            event = "generations_retired",
+            retired = retired.len(),
+            kept,
+        );
+        Ok(retired)
+    }
+
     /// The sets this kernel is holding, for a reader that wants to know.
     pub(crate) fn generations(&self) -> std::sync::RwLockReadGuard<'_, generation::Generations> {
         self.generations

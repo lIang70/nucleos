@@ -70,6 +70,8 @@ pub struct Abi {
     pub session_summary: api::SessionSummary,
     /// `GET /v1/sessions`.
     pub session_list_response: api::SessionListResponse,
+    /// `POST /v1/tools/retire`.
+    pub retire_response: api::RetireResponse,
     /// `GET /v1/sources`.
     pub source_list_response: api::SourceListResponse,
     /// `POST /v1/tokens`.

@@ -2500,6 +2500,31 @@
         ],
         "type": "object"
       },
+      "RetireResponse": {
+        "description": "What a retirement forgot.",
+        "properties": {
+          "current": {
+            "description": "The generation everything points at afterwards.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "retired": {
+            "default": [],
+            "description": "The generations that were forgotten, oldest first.\n\nEmpty is the honest answer when there was nothing to forget, and it is different from an error:\na kernel with one generation has nothing to retire and has done nothing wrong.",
+            "items": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "current"
+        ],
+        "type": "object"
+      },
       "Role": {
         "description": "Who produced a message.\n\nThe set is the smallest one every provider can express. A provider with a fifth role\nmaps it onto one of these in its adapter — the kernel does not learn it.",
         "oneOf": [
@@ -6574,6 +6599,84 @@
           }
         },
         "summary": "Reconnect the tool source and publish a new generation."
+      }
+    },
+    "/v1/tools/retire": {
+      "post": {
+        "operationId": "retireGenerations",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetireResponse"
+                }
+              }
+            },
+            "description": "The result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "Forget every tool set but the current one. Running sessions are unaffected."
       }
     }
   },
