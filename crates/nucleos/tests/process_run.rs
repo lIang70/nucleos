@@ -197,7 +197,7 @@ async fn a_confining_policy_is_enforced_or_refused_never_ignored() {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let error = spawned.err().expect("no mechanism on this platform");
+        let error = spawned.expect_err("no mechanism on this platform");
         assert_eq!(error.code(), nucleos::contract::ErrorCode::Unavailable);
         assert!(
             error.reason().contains("danger_full_access"),
