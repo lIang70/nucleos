@@ -150,6 +150,23 @@ impl Kernel {
         session: &mut session::Session,
         calls: &[crate::contract::ToolCall],
     ) -> Result<Vec<ToolOutput>> {
+        // Running a call resolves it. The parked entry is the kernel's record of "this is waiting for
+        // a human", and leaving it after the answer has two costs: the session reports a question
+        // forever, and a retried verdict — the client never saw the first response, so it sends the
+        // same one again — finds the entry, runs the tool a second time, and appends a second result.
+        // Tools are not idempotent, which is why the answer is consumed rather than checked.
+        //
+        // Removed *before* the call runs: if the process dies mid-execution the log says a call
+        // started and never finished, which is recoverable truth. An entry left behind would invite
+        // the retry that runs side effects twice.
+        let waiting = session.pending.len();
+        session
+            .pending
+            .retain(|pending| !calls.iter().any(|call| call.id == pending.call.id));
+        if session.pending.len() != waiting {
+            self.write_checkpoint(session).await?;
+        }
+
         let verdicts = vec![None; calls.len()];
         self.execute_calls(session, calls, verdicts).await
     }

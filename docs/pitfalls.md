@@ -1392,3 +1392,55 @@ faithfully would be wrong.
 lifecycles; a single version would refuse to open the session store because the configuration store had
 not caught up, or the reverse. The refusal names the fix — "upgrade nucleosd rather than downgrading
 the store" — because a parse error at the first `load` names nothing.
+
+## 91. A budget supplied per request is not a budget
+
+**Decision.** `Snapshot` carries the `Budget` a session was opened with, and the wall clock carries
+`spent_wall_millis` — the time the session has actually run, accumulated at each checkpoint.
+
+**The bug.** The checkpoint had `credit_tokens` but not `budget`, and `load` passed
+`Budget::default()` into the restored session. Over the ABI every request loads, so `max_steps`,
+`max_tokens`, `max_micros_usd` and `max_wall_millis` applied to the first turn and then forgot
+themselves. The comment on `credit_tokens` — "a budget that resets on reload is not a budget" —
+described the field next to the one that was missing.
+
+**Why the wall clock needed its own accounting.** Restoring the original start time would charge every
+idle gap between requests to a session whose budget is about how long it *runs*: a session parked on a
+human verdict would exhaust its wall budget while nobody was looking at it. Restoring `0` would make
+the limit unreachable over the ABI, which is where it was. Accumulating at the checkpoint, and
+restarting the clock at load, makes the number mean what it says and keeps the original intent.
+
+**The test that shows both.** Four seconds of running, a minute of nothing, then a turn: allowed. Two
+more seconds of running: refused. Either half alone would pass with a broken implementation.
+
+## 92. An ending must retire the evidence that something began
+
+**Decision.** `completes_a_unit` includes `TurnFailed` and `Failed`, and a turn that writes
+`turn_failed` checkpoints immediately.
+
+**The bug, and whose it was.** `turn_failed` was added so a failure that never became an attempt still
+says why. It was not added to `completes_a_unit`, and the turn did not checkpoint after writing it — so
+the very next `load` folded `turn_started, turn_failed`, saw the announcement as evidence of an
+abandoned turn, and appended `attempt_failed{reason: ABANDONED}`. Recovery invented a model, a trigger
+and a duration for a turn that had already said what happened: the "lie with a schema" §84 forbids,
+produced by the code that added `turn_failed`, on the path that runs after every failed turn.
+
+**The rule.** Every ending retires the beginning: `message_completed`, `attempt_failed`, `turn_failed`,
+`failed`, `state_changed`. A unit test asserts the set, because the failure mode is a missing member
+and the compiler cannot see a `matches!` that is merely incomplete.
+
+## 93. A parked call is consumed by running it
+
+**Decision.** `invoke_approved` removes the `PendingCall` whose id it is about to run, and checkpoints
+if it removed anything.
+
+**The bug.** `Session::pending` only ever grew. After an answer, the entry stayed, so the session
+reported "waiting on a human" for the rest of its life — and a retried verdict (the client never saw the
+first response, so it sends the same one again) found the entry and ran the tool a second time. Tools
+are not idempotent; the log then held two results for one call id.
+
+**Why removal comes before execution.** If the process dies mid-call, the log says a call started and
+never finished, and `partial` reports it — recoverable truth. An entry left behind would invite the
+retry that runs side effects twice, which is the failure this removes. Between "a crash leaves a
+visible half-call" and "a retry runs `rm` twice", the first is the one to choose.
+
