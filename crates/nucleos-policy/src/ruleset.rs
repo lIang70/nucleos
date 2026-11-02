@@ -151,7 +151,20 @@ fn matches(rule: &Rule, request: &PolicyRequest<'_>) -> bool {
             }
         }
         // A rule that names a program applies to commands only. `argv_prefix` narrows within it.
-        Gated::Exec { argv, .. } => {
+        Gated::Exec {
+            argv, permissions, ..
+        } => {
+            // An escalation is a second question, and a rule answers it only if it says so. Without
+            // this, any caller that could name an allowed program could also remove its own sandbox by
+            // sending `require_escalated` — the gate would match the program and never look at the
+            // second half of the request.
+            if matches!(
+                permissions,
+                nucleos::contract::SandboxPermissions::RequireEscalated
+            ) && rule.escalation != Some(true)
+            {
+                return false;
+            }
             let Some(program) = &rule.program else {
                 return false;
             };
@@ -404,6 +417,77 @@ mod tests {
             .await,
             Verdict::Deny { .. }
         ));
+    }
+
+    /// A rule that allows a program does not allow running it outside the sandbox.
+    ///
+    /// These are two questions, and the second one used to be answered by the first: the matcher looked
+    /// at the program and never at `permissions`, so a caller that could name an allowed program could
+    /// also remove its own confinement by setting `require_escalated` in the request.
+    #[tokio::test]
+    async fn an_escalation_is_its_own_decision() {
+        let policy = SandboxPolicy::default();
+        let argv = vec!["/bin/echo".to_owned(), "hi".to_owned()];
+        let allowed = Document {
+            rules: vec![Rule {
+                decision: Some(Decision::Allow),
+                program: Some("echo".to_owned()),
+                ..Rule::default()
+            }],
+            ..Document::default()
+        };
+        let opting_in = Document {
+            rules: vec![Rule {
+                decision: Some(Decision::Allow),
+                program: Some("echo".to_owned()),
+                escalation: Some(true),
+                ..Rule::default()
+            }],
+            ..Document::default()
+        };
+
+        let default = SandboxPermissions::UseDefault;
+        let escalated = SandboxPermissions::RequireEscalated;
+
+        // The rule covers the command ...
+        assert_eq!(
+            check(
+                allowed.clone(),
+                Gated::Exec {
+                    argv: &argv,
+                    policy: &policy,
+                    permissions: &default,
+                }
+            )
+            .await,
+            Verdict::Allow
+        );
+        // ... and not the escalation, because it never said so.
+        assert!(matches!(
+            check(
+                allowed,
+                Gated::Exec {
+                    argv: &argv,
+                    policy: &policy,
+                    permissions: &escalated,
+                }
+            )
+            .await,
+            Verdict::Deny { .. }
+        ));
+        // A rule that opts in answers both.
+        assert_eq!(
+            check(
+                opting_in,
+                Gated::Exec {
+                    argv: &argv,
+                    policy: &policy,
+                    permissions: &escalated,
+                }
+            )
+            .await,
+            Verdict::Allow
+        );
     }
 
     #[tokio::test]

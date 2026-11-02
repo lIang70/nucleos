@@ -67,6 +67,14 @@ pub struct Rule {
     /// Leading arguments that must match exactly, in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub argv_prefix: Vec<String>,
+    /// Whether this rule also covers a command that asks to run **outside** its sandbox.
+    ///
+    /// A separate field because it is a separate decision. `program: "git"` answers "may git run"; it
+    /// does not answer "may git run with the sandbox removed", and letting one answer both is how a
+    /// caller lifts its own confinement by setting a flag in the request. Default `false`: an
+    /// escalation needs a rule that says so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escalation: Option<bool>,
     /// Only this tenant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tenant: Option<String>,
