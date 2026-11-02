@@ -102,6 +102,11 @@ pub struct App {
     admins: Option<Arc<crate::admin::Verifier>>,
     /// The configuration database: what this daemon is, as opposed to what it is doing.
     system: Option<Arc<nucleos_sqlite::SystemStore>>,
+    /// The key that seals credentials stored in the system store, when the deployment has one.
+    ///
+    /// Absent means the daemon cannot store an API key at all — it will not keep one in the clear, and a
+    /// built-in default would be a constant dressed as encryption.
+    seal: Option<nucleos_auth::SealKey>,
     /// Where the data lives, reported by `GET /v1/config`.
     root: Option<std::path::PathBuf>,
 }
@@ -119,6 +124,7 @@ impl App {
             sources: tokio::sync::RwLock::new(crate::sources::SourceSet::default()),
             admins: None,
             system: None,
+            seal: None,
             root: None,
             metrics: crate::metrics::Metrics::started_now(),
         }
@@ -222,6 +228,9 @@ impl App {
             schema = system.schema_version()?,
         );
         let stored = crate::configure::stored_models(&system)?;
+        // Resolved before any adapter is built: a sealed key has to be openable at start-up, and a
+        // missing seal key with sealed rows in the store is a deployment that cannot reach its models.
+        let seal = nucleos_auth::SealKey::resolve(&layout.root.join(nucleos_auth::seal::KEY_FILE))?;
 
         // Sources are rows in the system store, written by `nucleos sources add`. What the daemon
         // connects here is what a previous run was told to run; a server that will not start is a
@@ -279,15 +288,30 @@ impl App {
             .policy(policy)
             .routing(routing);
         for model in &stored {
-            let adapter = crate::configure::adapter_for(&nucleos::wire::api::ModelRequest {
-                name: model.name.clone(),
-                url: model.url.clone(),
-                model: model.model.clone(),
-                key_file: model.key_file.clone(),
-                context_window: Some(model.context_window),
-                strict_tools: model.strict_tools,
-                reasoning: model.reasoning,
-            })?;
+            let api_key = match &seal {
+                Some(seal) => match system.get(&format!(
+                    "{}{}",
+                    crate::configure::SEALED_KEY_PREFIX,
+                    model.name
+                ))? {
+                    Some(sealed) => Some(seal.open(&sealed)?),
+                    None => None,
+                },
+                None => None,
+            };
+            let adapter = crate::configure::adapter_for(
+                &nucleos::wire::api::ModelRequest {
+                    name: model.name.clone(),
+                    url: model.url.clone(),
+                    model: model.model.clone(),
+                    key_file: model.key_file.clone(),
+                    context_window: Some(model.context_window),
+                    strict_tools: model.strict_tools,
+                    reasoning: model.reasoning,
+                    ..Default::default()
+                },
+                api_key,
+            )?;
             builder = builder.model(&model.name, Arc::new(adapter));
         }
         for tool in sources.tools() {
@@ -310,6 +334,7 @@ impl App {
             Arc::new(nucleos::adapter::SystemClock),
         )
         .with_sources(sources)
+        .with_seal(seal)
         .with_tools(discovered)
         .with_tokens(tokens);
         Ok(app)
@@ -330,6 +355,7 @@ impl App {
             tokens: None,
             admins: None,
             system: None,
+            seal: None,
             root: None,
             metrics: crate::metrics::Metrics::started_now(),
         }
@@ -351,6 +377,19 @@ impl App {
         self.system = Some(system);
         self.root = Some(root);
         self
+    }
+
+    /// Adopt the key that seals stored credentials.
+    #[must_use]
+    pub fn with_seal(mut self, seal: Option<nucleos_auth::SealKey>) -> Self {
+        self.seal = seal;
+        self
+    }
+
+    /// The sealing key, when the deployment has one.
+    #[must_use]
+    pub fn seal(&self) -> Option<&nucleos_auth::SealKey> {
+        self.seal.as_ref()
     }
 
     /// The signature verifier, when this deployment has keys to check against.

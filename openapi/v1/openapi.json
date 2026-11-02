@@ -1768,8 +1768,15 @@
               "null"
             ]
           },
+          "key": {
+            "description": "The API key itself, to be sealed into the store.\n\nSent once, in the request that adds the model. The daemon seals it with the deployment's seal key\nand never returns it; if no seal key is configured the request is refused rather than the key\nbeing stored in the clear.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "key_file": {
-            "description": "Where the API key is, if the endpoint wants one.\n\nA path and the only source: there is no environment fallback, because a credential with two\nsources has one that nobody rotates.",
+            "description": "Where the API key is, if the endpoint wants one and the deployment would rather not store it.\n\nA path, read at start-up. The alternative to `key`, not a fallback for it: a credential with two\nsources has one that nobody rotates.",
             "type": [
               "string",
               "null"
@@ -1814,6 +1821,11 @@
             "format": "uint32",
             "minimum": 0,
             "type": "integer"
+          },
+          "has_sealed_key": {
+            "default": false,
+            "description": "Whether a key is sealed in the store for this model.\n\nA boolean, not the value: the sealed bytes are the daemon's to use and nobody's to read back. A\ncaller that needs to know whether a key is configured gets this and nothing more.",
+            "type": "boolean"
           },
           "key_file": {
             "description": "Where its key is read from, if anywhere. A path, never the key.",

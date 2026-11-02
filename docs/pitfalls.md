@@ -1037,3 +1037,22 @@ from `tool_specs`, and calling it by name fails.
 call because one entry is forbidden would make per-tenant access incompatible with the routing that
 exists for every other reason.
 
+## 73. Encryption with the key beside it is decoration
+
+**Decision.** Sealed values live in the system store; the sealing key lives outside it, resolved from
+`$CREDENTIALS_DIRECTORY/seal.key` first and a configured path second. With no seal key, an API key cannot
+be stored at all.
+
+**Why the "outside" is the whole design.** The store is the thing that gets copied — backups, a restore
+on another machine, a support bundle. A key stored beside the ciphertext it opens makes all three cases
+identical to storing plaintext, with extra steps and a false sense of safety.
+
+**Why nothing instead of a default key.** A built-in key would be a constant dressed as encryption: it
+would make every deployment's ciphertext readable by anyone with the binary, and nobody would notice,
+because the feature appears to work.
+
+**Why the default location is still under the root.** It makes the *data directory* safe, which is the
+common backup. The whole-machine case is answered by the first source — `systemd-creds` seals to the TPM
+and never writes the key to disk — and `init` prints a line telling the operator to move the file when
+they care about the second case. Saying it out loud beats choosing for them.
+

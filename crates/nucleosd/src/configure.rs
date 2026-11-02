@@ -36,6 +36,13 @@ use std::sync::Arc;
 /// Where one tenant's policy lives. The prefix is what `with_prefix` scans.
 pub const TENANT_POLICY_PREFIX: &str = "config/policy/tenant/";
 
+/// Where one model's sealed API key lives, one row each.
+///
+/// Separate from the model definition, which is reported: a definition is configuration and a sealed
+/// key is a credential, and the endpoint that lists definitions must not be the endpoint that hands out
+/// credentials — not even encrypted ones.
+pub const SEALED_KEY_PREFIX: &str = "config/keys/model/";
+
 /// Where model definitions live in the system store.
 pub const MODELS_KEY: &str = "config/models";
 
@@ -106,9 +113,25 @@ pub async fn post_model(
 
     permit(&app, &admin, "models").await?;
 
-    // The key is a *path*, never a value: the system store is backed up and copied, and a backup that
-    // contains an API key is a credential dump. Sealed storage is designed and not built.
-    let adapter = adapter_for(&request).map_err(|error| ApiError::from_error(&error))?;
+    // The key is either sealed into the store or read from a file the operator protects. A plaintext key
+    // in the store would make every backup a credential dump, and there is no third option.
+    let sealed = match &request.key {
+        Some(key) => {
+            let seal = app.seal().ok_or_else(|| {
+                ApiError::from_error(&Error::unavailable(
+                    "no seal key is configured, so an API key cannot be stored: pass a key_file, or \
+                     create a seal key with `nucleos init`",
+                ))
+            })?;
+            Some(
+                seal.seal(key)
+                    .map_err(|error| ApiError::from_error(&error))?,
+            )
+        }
+        None => None,
+    };
+    let adapter =
+        adapter_for(&request, request.key.clone()).map_err(|error| ApiError::from_error(&error))?;
     kernel
         .add_model(&request.name, Arc::new(adapter))
         .map_err(|error| ApiError::from_error(&error))?;
@@ -121,9 +144,16 @@ pub async fn post_model(
         model: request.model.clone(),
         context_window: request.context_window.unwrap_or(128_000),
         key_file: request.key_file.clone(),
+        has_sealed_key: sealed.is_some(),
         strict_tools: request.strict_tools,
         reasoning: request.reasoning,
     });
+    if let Some(sealed) = sealed {
+        system(&app)?
+            .set(&format!("{SEALED_KEY_PREFIX}{}", request.name), &sealed)
+            .await
+            .map_err(|error| ApiError::from_error(&error))?;
+    }
     persist_models(&app, &models, &admin).await?;
     // The advertised list is derived, not frozen: a caller reads `describe` before it opens a
     // session, and a stale list is a caller told to go away for no reason.
@@ -175,13 +205,15 @@ pub fn stored_models(system: &SystemStore) -> Result<Vec<ModelView>> {
 
 /// Build the provider adapter for one definition.
 ///
-/// One function for both paths — a request and a restart — because two ways to build a model is two
-/// ways to disagree about which key a model uses.
-pub fn adapter_for(request: &ModelRequest) -> Result<nucleos_openai::OpenAi> {
-    // The key comes from the named file or not at all. A fallback to an environment variable would be
-    // a second source for a credential, and the second source is always the one nobody rotates.
-    let api_key = match &request.key_file {
-        Some(path) => Some(
+/// `api_key` is passed in rather than read here: at add time it came from the request and was sealed, at
+/// start-up it comes from the sealed row. One function, two callers, one way to disagree about which key
+/// a model uses.
+pub fn adapter_for(request: &ModelRequest, api_key: Option<String>) -> Result<nucleos_openai::OpenAi> {
+    let api_key = match (api_key, &request.key_file) {
+        (Some(key), _) => Some(key),
+        // A path is the alternative to sealing, not a fallback for it: a credential with two sources has
+        // one that nobody rotates.
+        (None, Some(path)) => Some(
             std::fs::read_to_string(path)
                 .map_err(|error| {
                     Error::invalid(format!("cannot read the key file {path}: {error}"))
@@ -189,7 +221,7 @@ pub fn adapter_for(request: &ModelRequest) -> Result<nucleos_openai::OpenAi> {
                 .trim()
                 .to_owned(),
         ),
-        None => None,
+        (None, None) => None,
     };
     nucleos_openai::OpenAi::new(nucleos_openai::Config {
         url: request.url.clone(),

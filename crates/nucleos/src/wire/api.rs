@@ -378,9 +378,16 @@ pub struct ModelRequest {
     pub url: String,
     /// The provider's model identifier.
     pub model: String,
-    /// Where the API key is, if the endpoint wants one.
+    /// The API key itself, to be sealed into the store.
     ///
-    /// A path and the only source: there is no environment fallback, because a credential with two
+    /// Sent once, in the request that adds the model. The daemon seals it with the deployment's seal key
+    /// and never returns it; if no seal key is configured the request is refused rather than the key
+    /// being stored in the clear.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// Where the API key is, if the endpoint wants one and the deployment would rather not store it.
+    ///
+    /// A path, read at start-up. The alternative to `key`, not a fallback for it: a credential with two
     /// sources has one that nobody rotates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_file: Option<String>,
@@ -413,6 +420,12 @@ pub struct ModelView {
     /// Where its key is read from, if anywhere. A path, never the key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_file: Option<String>,
+    /// Whether a key is sealed in the store for this model.
+    ///
+    /// A boolean, not the value: the sealed bytes are the daemon's to use and nobody's to read back. A
+    /// caller that needs to know whether a key is configured gets this and nothing more.
+    #[serde(default)]
+    pub has_sealed_key: bool,
     /// Whether the provider is held to a strict JSON Schema.
     #[serde(default)]
     pub strict_tools: bool,

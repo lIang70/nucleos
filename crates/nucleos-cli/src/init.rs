@@ -148,10 +148,20 @@ pub async fn run(options: &Options) -> Result<Done> {
     })?)
     .await?;
 
-    // 3. The policy it starts from.
+    // 3. The key that seals credentials in the store.
+    //
+    // Written under the root by default, which is the one place the design says it should not live: a
+    // backup of the data directory would carry it. The daemon prefers `$CREDENTIALS_DIRECTORY/seal.key`
+    // (systemd's TPM-sealed credential) when it is there, so a real deployment moves this file and
+    // nothing else changes.
+    let (_, seal_bytes) = nucleos_auth::SealKey::generate();
+    let seal_path = options.root.join(nucleos_auth::seal::KEY_FILE);
+    nucleos_auth::seal::write_key(&seal_path, &seal_bytes)?;
+
+    // 4. The policy it starts from.
     system.set(POLICY_KEY, BOOTSTRAP_POLICY).await?;
 
-    // 4. How a client finds the daemon, and which key signs for it.
+    // 5. How a client finds the daemon, and which key signs for it.
     if let Some(client_config) = &options.client_config {
         write_client_config(client_config, &options.socket, &public.id)?;
     }

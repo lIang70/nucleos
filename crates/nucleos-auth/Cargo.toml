@@ -12,6 +12,7 @@ categories = ["development-tools"]
 
 [dependencies]
 argon2 = { version = "0.5", features = ["std"] }
+chacha20poly1305 = "0.10"
 base64 = "0.22"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 sha2 = "0.10"

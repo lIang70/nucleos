@@ -31,7 +31,7 @@ usage: nucleos <command> [options]
   config               print what the daemon is running (signs the request)
   models list          the models this deployment has
   models add           add or replace one       (--name --url --model [--key-file] [--context]
-                                                 [--strict] [--reasoning])
+                                                 [--strict] [--reasoning] [--api-key-stdin])
   models remove <name> remove one
   tokens add           issue a tenant token  (--tenant --subject); printed once
   tokens list          the tokens this deployment has
@@ -120,6 +120,12 @@ fn init(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
     println!("✓ socket          {}", options.socket.display());
     println!("✓ admin key       {} ({})", done.key_id, done.key_store);
     println!("✓ recovery        stored, argon2id");
+    // Said out loud because the default location is the one place the design says it should not be:
+    // a backup of the data directory would carry the key that makes the backup useless.
+    println!(
+        "✓ seal key        {} (0600 — move it out of the data directory for a real deployment)",
+        options.root.join("seal.key").display()
+    );
     println!("✓ bootstrap policy deny by default; this administrator may add models and sources");
     println!("\nnext: start nucleosd, then `nucleos models add`");
     Ok(())
@@ -202,6 +208,13 @@ fn models(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync
             "--key" => request.key_file = Some(value("--key")?),
             "--context" => request.context_window = Some(value("--context")?.parse()?),
             "--strict" => request.strict_tools = true,
+            "--api-key-stdin" => {
+                // Never from argv: `ps -e` lists arguments, and a credential in a process table is a
+                // credential in a log somewhere.
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line)?;
+                request.key = Some(line.trim().to_owned());
+            }
             "--reasoning" => request.reasoning = true,
             other if other.starts_with('-') => {
                 return Err(Box::from(format!("unknown option {other:?}")))

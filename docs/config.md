@@ -288,10 +288,34 @@ The table is the design. Everything else in this section follows from it.
 | Administrator **public key** | the daemon | system store | nothing |
 | Recovery password | the administrator's head | **argon2id hash** in the system store | needs the store file as well, and local access |
 | Tenant token | that tenant's client | **hash** in the system store | that tenant only; revocable immediately |
-| Model API key | the daemon | file `0600`, or env | the provider bill; rotate the key |
+| Model API key | the daemon | **sealed** in the store (§6.0), or a `0600` file it reads | the provider bill; rotate the key |
 
 **The daemon holds nothing that can mint an administrative credential.** That property is worth more
 than the choice of token format, and it is the reason for the two decisions below.
+
+### 6.0 Sealed credentials, and where the sealing key comes from
+
+A model's API key has to be stored, and the store is copied — backed up, restored on another machine,
+attached to a support ticket. So the key that opens the store's sealed values lives **outside** it, and
+the property is one sentence:
+
+> A copy of the data directory, on its own, contains no usable credential.
+
+`nucleos models add --api-key-stdin` seals the key with ChaCha20-Poly1305 before it reaches the store;
+the endpoint reports `has_sealed_key: true` and never the value, and a request that carries a key when no
+seal key is configured is **refused** rather than stored in the clear.
+
+The sealing key itself is resolved in this order, each source strictly better than the next:
+
+| Source | Property |
+| --- | --- |
+| `$CREDENTIALS_DIRECTORY/seal.key` | `systemd-creds`: sealed to the machine's TPM, materialised in memory at start-up, never on disk |
+| the configured path (default `<root>/seal.key`) | a `0600` file — the default, and the one that travels with a whole-machine backup |
+| nothing | no sealing: a key can only be a `key_file` path, and the daemon says so |
+
+`nucleos init` writes the file and says, in its output, that a real deployment moves it. The default is
+the honest one: it makes the data-directory backup safe, which is the common case, and leaves the
+whole-machine case to the credential source that answers it.
 
 ### 6.1 Why not a generated secret and JWTs
 

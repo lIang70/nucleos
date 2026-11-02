@@ -1079,6 +1079,13 @@ const GOVERNED_BY: &str = r#"{
 
 /// A deployment that enforces the policy it stores, with one administrator enrolled.
 async fn governable() -> (Arc<App>, nucleos_auth::KeyPair, String) {
+    governable_with(None).await
+}
+
+/// The same fixture, with a seal key when a test needs one.
+async fn governable_with(
+    seal: Option<nucleos_auth::SealKey>,
+) -> (Arc<App>, nucleos_auth::KeyPair, String) {
     let system = Arc::new(nucleos_sqlite::SystemStore::in_memory().unwrap());
     let key = nucleos_auth::KeyPair::generate();
     let public = key.public("acme", "admin");
@@ -1119,7 +1126,8 @@ async fn governable() -> (Arc<App>, nucleos_auth::KeyPair, String) {
             system,
             std::path::PathBuf::from("/var/lib/nucleos"),
             Arc::new(nucleos::adapter::SystemClock),
-        ),
+        )
+        .with_seal(seal),
     );
     let id = public.id.clone();
     (app, key, id)
@@ -1475,4 +1483,45 @@ async fn an_empty_limit_is_not_the_same_as_no_limit() {
         cleared.get("tools").is_none() || cleared["tools"].is_null(),
         "{cleared}"
     );
+}
+
+#[tokio::test]
+async fn an_api_key_is_sealed_and_never_stored_in_the_clear() {
+    let (seal, _bytes) = nucleos_auth::SealKey::generate();
+    let (app, key, key_id) = governable_with(Some(seal.clone())).await;
+
+    let script = r#"{"name":"primary","url":"https://example.invalid/v1/responses","model":"m","key":"sk-a-real-key"}"#;
+    let (status, view) = signed(&app, &key, &key_id, "POST", "/v1/models", script).await;
+    assert_eq!(status, StatusCode::OK, "{view}");
+    // The response says a key is configured and never what it is.
+    assert_eq!(view["has_sealed_key"], true);
+    assert!(!view.to_string().contains("sk-a-real-key"), "{view}");
+
+    // The store holds a sealed value, not the key.
+    let stored = app
+        .system()
+        .unwrap()
+        .get(&format!("{}{}", nucleosd::configure::SEALED_KEY_PREFIX, "primary"))
+        .unwrap()
+        .expect("a sealed row was written");
+    assert!(!stored.contains("sk-a-real-key"), "{stored}");
+    assert!(seal.open(&stored).unwrap() == "sk-a-real-key");
+}
+
+#[tokio::test]
+async fn an_api_key_without_a_seal_key_is_refused_rather_than_stored_in_the_clear() {
+    let (app, key, key_id) = governable().await;
+    let (status, error) = signed(
+        &app,
+        &key,
+        &key_id,
+        "POST",
+        "/v1/models",
+        r#"{"name":"primary","url":"https://example.invalid/v1/responses","model":"m","key":"sk"}"#,
+    )
+    .await;
+
+    // The alternative — storing it anyway — would make every backup of the store a credential dump.
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{error}");
+    assert!(error["reason"].as_str().unwrap().contains("seal key"), "{error}");
 }
