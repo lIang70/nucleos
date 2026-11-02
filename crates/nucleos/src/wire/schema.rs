@@ -64,6 +64,8 @@ pub struct Abi {
     pub source_request: api::SourceRequest,
     /// One source, as reported.
     pub source_view: api::SourceView,
+    /// `POST /v1/sessions/{id}/cancel`.
+    pub cancel_response: api::CancelResponse,
     /// `GET /v1/sessions`.
     pub session_summary: api::SessionSummary,
     /// `GET /v1/sessions`.

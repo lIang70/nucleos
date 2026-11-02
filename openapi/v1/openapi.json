@@ -241,6 +241,17 @@
         },
         "type": "object"
       },
+      "CancelResponse": {
+        "description": "What a cancel did.",
+        "properties": {
+          "cancelled": {
+            "default": false,
+            "description": "Whether a turn was running and has been signalled.\n\n`false` is not an error: a caller racing the end of a turn is a normal race, and a `404` would\ntell it the session is gone.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
       "ConfigKey": {
         "description": "One enrolled administrator key, without the key material.",
         "properties": {
@@ -626,6 +637,11 @@
           {
             "const": "timeout",
             "description": "A deadline passed.",
+            "type": "string"
+          },
+          {
+            "const": "cancelled",
+            "description": "The caller cancelled it.\n\nDistinct from `Timeout` because nothing went wrong: an operator or an application decided to\nstop, and the difference matters when reading a log the next morning.",
             "type": "string"
           },
           {
@@ -4933,6 +4949,84 @@
           }
         },
         "summary": "Where a session is, what it has spent, and what it waits on."
+      }
+    },
+    "/v1/sessions/{id}/cancel": {
+      "post": {
+        "operationId": "cancelTurn",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelResponse"
+                }
+              }
+            },
+            "description": "The result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "Stop the turn this session is running. The session stays open."
       }
     },
     "/v1/sessions/{id}/close": {

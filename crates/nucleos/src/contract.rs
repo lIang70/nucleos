@@ -787,6 +787,11 @@ pub enum ErrorCode {
     Budget,
     /// A deadline passed.
     Timeout,
+    /// The caller cancelled it.
+    ///
+    /// Distinct from `Timeout` because nothing went wrong: an operator or an application decided to
+    /// stop, and the difference matters when reading a log the next morning.
+    Cancelled,
     /// A dependency was not reachable.
     Unavailable,
     /// A bug.

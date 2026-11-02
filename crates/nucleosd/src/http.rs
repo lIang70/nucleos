@@ -19,7 +19,7 @@ use nucleos_sqlite::SqliteStore;
 use nucleos::kernel::{HitlVerdict, Kernel, SessionSpec, StateWrite};
 use nucleos::wire::api::{
     DescribeResponse, ErrorBody, InferenceRequest, InferenceResponse, ProcessInfo,
-    ConfigKey, ConfigResponse, MetricsResponse, ProcessListResponse, SessionListResponse,
+    CancelResponse, ConfigKey, ConfigResponse, MetricsResponse, ProcessListResponse, SessionListResponse,
     SessionSummary, ProcessStartRequest, ProcessStartResponse, ReloadResponse,
     SessionView, StartRequest,
     StartResponse, StateRequest, StdinRequest, ToolBatchRequest, ToolBatchResponse, VerdictRequest,
@@ -558,6 +558,17 @@ pub const ROUTES: &[Route] = &[
             reply: openapi::Reply::Json("ProcessStartResponse"),
         },
         build: || post(start_process),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "post",
+            path: "/v1/sessions/{id}/cancel",
+            operation: "cancelTurn",
+            summary: "Stop the turn this session is running. The session stays open.",
+            request: None,
+            reply: openapi::Reply::Json("CancelResponse"),
+        },
+        build: || post(cancel_turn),
     },
     Route {
         meta: openapi::Route {
@@ -1307,6 +1318,23 @@ struct ProcessesQuery {
 /// The store could always answer this — `Session::` listings were only exposed for processes, so an
 /// application that opened agent sessions had no way to enumerate what it had created. A listing is a
 /// page of summaries, not of conversations: a hundred sessions must not load a hundred histories.
+/// Cancel the turn a session is running.
+///
+/// Not a close: the session stays open, what the attempt produced stays in the log, and the spend that
+/// was reported stays debited. `cancelled: false` is not an error — a caller racing the end of a turn is
+/// a normal race, and answering `404` would tell it the session is gone.
+async fn cancel_turn(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    Path(id): Path<String>,
+) -> Result<Json<CancelResponse>, ApiError> {
+    let kernel = app.kernel()?.clone();
+    let session = load(&kernel, &caller, &id).await?;
+    let cancelled = kernel.cancel(session.id());
+    tracing::info!(event = "turn_cancelled", session = %id, cancelled);
+    Ok(Json(CancelResponse { cancelled }))
+}
+
 async fn list_sessions(
     State(app): State<Arc<App>>,
     caller: Caller,
@@ -1618,6 +1646,9 @@ impl ApiError {
             // body says which budget it was.
             ErrorCode::Budget => StatusCode::TOO_MANY_REQUESTS,
             ErrorCode::Timeout => StatusCode::GATEWAY_TIMEOUT,
+            // 409 Conflict, not 500: the turn was aborted by the caller's own decision, and the
+            // session is still usable. Nothing went wrong, and the code should not suggest it did.
+            ErrorCode::Cancelled => StatusCode::CONFLICT,
             ErrorCode::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             ErrorCode::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         };

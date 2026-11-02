@@ -1091,3 +1091,33 @@ with a key the store no longer uses. A restart is a boundary the operator can se
 from writing one it can. The read-back is three lines and it is the difference between a rotation report
 that means something and one that means "no error was raised".
 
+## 76. Cancelling is not closing, and the signal must be armed before it is read
+
+**Decision.** `POST /v1/sessions/{id}/cancel` stops the running turn and leaves the session open. The
+signal is a flag plus a notification, and the waiter registers its interest *before* it checks the flag.
+
+**Why not close.** Closing is the heaviest thing a session can do: the conversation is finished, the
+caller must open another. Doing that to stop one call loses work to avoid spending it. The turn ends, the
+session survives, and the caller decides next.
+
+**Why the ordering.** `notified()` first, then `load()`:
+
+```text
+let waiting = notified();   // register
+if flag { return; }         // then check
+waiting.await
+```
+
+The other order loses a cancellation that lands in the gap between the load and the await. A turn that
+ignores a cancel is worse than one that cannot be cancelled: the caller believes it stopped, and the bill
+says otherwise. This is the same class of bug as a lost wakeup, and it is invisible in testing because it
+only shows up under the timing the test does not have.
+
+**Why `cancelled: false` is not an error.** A caller that cancels a turn which has just finished is
+racing, not making a mistake. Both `404` and `500` would be false statements about the session.
+
+**What cancelling does not do.** It does not retry the turn (a cancellation is a decision, and repeating
+it undoes the decision), does not delete the deltas already streamed, and does not refund the spend that
+was reported before it landed. The attempt is logged as `cancelled` rather than as a failure of the
+provider, because the difference is what the next morning's reader needs.
+

@@ -209,6 +209,22 @@ misspelled filter is how a caller concludes the feature is broken. Another subje
 absent rather than refused — a listing that names what the caller may not open is a directory of other
 people's work.
 
+### 4.0.1 Cancelling a turn
+
+`POST /v1/sessions/{id}/cancel` → `{"cancelled": true|false}`
+
+Stops the turn the session is running *now*. A budget bounds a turn and a deadline bounds a session;
+neither ends one on request. Cancelling stops a call and leaves the session **open** — closing it would
+throw away the conversation to stop one call.
+
+- `cancelled: false` is not an error. A caller racing the end of a turn is a normal race; `404` would say
+  the session is gone and `500` would say something broke.
+- What the attempt had already produced stays in the event log. The attempt is recorded as
+  `attempt_failed` with code `cancelled`, which is how the next reader knows nothing went wrong —
+  somebody decided. The spend already reported stays debited.
+- It does not close, does not retry, and does not remove the partial answer from the log.
+- A session that is not running a turn, or not yours, answers the same way: `404`.
+
 ## 4.1 The ceiling and the exposure
 
 A session has two tool sets. `config.tools` is the **ceiling**: what the session may ever use,

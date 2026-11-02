@@ -10,6 +10,7 @@
 
 pub(crate) mod bm25;
 pub(crate) mod budget;
+pub(crate) mod cancel;
 pub(crate) mod generation;
 pub(crate) mod config;
 pub(crate) mod inference;
@@ -120,6 +121,11 @@ pub struct Kernel {
     models: Arc<RwLock<ModelRegistry>>,
     /// Every tool set a live session may be pinned to, plus the current one.
     generations: std::sync::RwLock<generation::Generations>,
+    /// Turns that are running right now, so a cancel can reach the one it names.
+    ///
+    /// Keyed by session because a session runs one turn at a time: two concurrent inferences on one
+    /// session would interleave in its message list, which the kernel has never allowed.
+    turns: RwLock<std::collections::BTreeMap<SessionId, Arc<cancel::Cancel>>>,
     /// Per-tenant ceilings: what a tenant may use, whatever its sessions ask for.
     ///
     /// A second filter beside the session's own, not instead of it — the session's ceiling is the
@@ -340,6 +346,7 @@ impl Builder {
         Ok(Kernel {
             models: Arc::new(RwLock::new(self.models)),
             generations: std::sync::RwLock::new(generation::Generations::first(self.tools)?),
+            turns: RwLock::new(std::collections::BTreeMap::new()),
             tenant_tools: std::sync::RwLock::new(std::collections::BTreeMap::new()),
             tenant_models: std::sync::RwLock::new(std::collections::BTreeMap::new()),
             store: self
@@ -378,6 +385,42 @@ impl Kernel {
             .map_err(|_| Error::internal("the policy lock is poisoned"))?;
         *current = policy;
         Ok(())
+    }
+
+    /// Cancel the turn a session is running. `true` if one was.
+    ///
+    /// The turn returns `Cancelled`, the session stays open, and what the attempt had produced stays in
+    /// the log — cancelling stops a call, it does not undo a conversation.
+    pub fn cancel(&self, session: &SessionId) -> bool {
+        let turns = self
+            .turns
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match turns.get(session) {
+            Some(cancel) => {
+                cancel.cancel();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Register a turn so a cancel can find it.
+    pub(crate) fn begin_turn(&self, session: &SessionId) -> Arc<cancel::Cancel> {
+        let cancel = Arc::new(cancel::Cancel::new());
+        self.turns
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(session.clone(), Arc::clone(&cancel));
+        cancel
+    }
+
+    /// Forget a turn once it has ended, however it ended.
+    pub(crate) fn end_turn(&self, session: &SessionId) {
+        self.turns
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(session);
     }
 
     /// Restrict what one tenant may use. `None` clears the limit; `Some(vec![])` allows nothing.

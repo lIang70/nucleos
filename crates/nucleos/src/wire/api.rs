@@ -366,6 +366,17 @@ pub struct TokenListResponse {
     pub tokens: Vec<TokenView>,
 }
 
+/// What a cancel did.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct CancelResponse {
+    /// Whether a turn was running and has been signalled.
+    ///
+    /// `false` is not an error: a caller racing the end of a turn is a normal race, and a `404` would
+    /// tell it the session is gone.
+    #[serde(default)]
+    pub cancelled: bool,
+}
+
 /// One session, as a listing reports it.
 ///
 /// A summary rather than a [`SessionView`]: a page of a hundred sessions must not load a hundred

@@ -1660,3 +1660,43 @@ async fn a_listing_pages_by_cursor() {
         .collect();
     assert_eq!(ids, ["a3"], "the cursor resumes after the page");
 }
+
+#[tokio::test]
+async fn cancelling_a_turn_that_is_not_running_is_not_an_error() {
+    let (app, _, _) = governable().await;
+    request(&app, "POST", "/v1/sessions", "", r#"{"session":"s1"}"#).await;
+
+    // A caller racing the end of a turn is a normal race. `404` would tell it the session is gone, and
+    // `500` would tell it something broke — neither happened.
+    let response = router(Arc::clone(&app))
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/sessions/s1/cancel")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["cancelled"], false);
+}
+
+#[tokio::test]
+async fn cancelling_another_subjects_session_is_not_found() {
+    let (app, _, _) = governable().await;
+    let response = router(Arc::clone(&app))
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/sessions/nope/cancel")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // The same answer as an id that never existed: a refusal that says "this exists but is not yours"
+    // is a directory of other people's sessions.
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}

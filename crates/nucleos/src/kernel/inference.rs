@@ -34,7 +34,51 @@ impl Kernel {
         self.begin_round(session);
         let routing = session.routing.clone();
         let targets = self.permit_route(&session.principal, self.resolve_route(&routing)?)?;
-        let call = self.call_model(session, messages, &targets).await?;
+
+        // The turn is registered so a cancel can find it, and the call races the signal. Dropping the
+        // call's future is what stops it: the adapter's stream owns the HTTP response, and dropping it
+        // closes the connection rather than leaving a request running that nobody reads.
+        let cancel = self.begin_turn(&session.id);
+        let outcome = tokio::select! {
+            result = self.call_model(session, messages, &targets) => result,
+            () = cancel.cancelled() => Err(Error::new(
+                crate::contract::ErrorCode::Cancelled,
+                "the turn was cancelled by the caller",
+            )),
+        };
+        self.end_turn(&session.id);
+
+        let call = match outcome {
+            Ok(call) => call,
+            Err(error) if error.code() == crate::contract::ErrorCode::Cancelled => {
+                // Recorded as a failed attempt, not as a bug: the session stays open, the spend that
+                // was already reported stays debited, and the deltas are in the log where a caller can
+                // read what the model had said before it was stopped. It is *not* retried — a cancelled
+                // turn is a decision, and repeating it would undo the decision.
+                self.emit(
+                    session,
+                    EventKind::AttemptFailed {
+                        attempt: crate::contract::Attempt {
+                            index: u32::try_from(session.steps).unwrap_or(u32::MAX),
+                            model: routing.chain.first().cloned().unwrap_or_default(),
+                            phase: crate::contract::AttemptPhase::Execute,
+                            trigger: crate::contract::AttemptTrigger::Selection,
+                            outcome: crate::contract::AttemptOutcome::Failed {
+                                code: crate::contract::ErrorCode::Cancelled,
+                                reason: "cancelled by the caller while running".to_owned(),
+                            },
+                            usage: crate::contract::Usage::default(),
+                            duration_millis: 0,
+                            degraded: Vec::new(),
+                        },
+                    },
+                )
+                .await?;
+                self.write_checkpoint(session).await?;
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
         session.steps = session.steps.saturating_add(1);
         let step_index = u32::try_from(session.steps).unwrap_or(u32::MAX);
         self.emit(
