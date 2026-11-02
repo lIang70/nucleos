@@ -451,6 +451,10 @@ log's sequence. Three decisions make that safe rather than a second protocol:
   on a broadcast channel. A follower that falls behind catches up from the store by sequence number;
   dropping a notification loses nothing, which is why `emit` ignores the send error — nobody listening
   is the normal case.
+- **Every turn ends in the log.** `message_completed`, `attempt_failed` or `turn_failed` — one of the
+  three, always. The last one exists because the first two assume something happened: a policy refusal or
+  a prompt that cannot fit would otherwise leave a `turn_started` and nothing else, which reads exactly
+  like a turn that is still running.
 - **The stream starts at `turn_started`, not at the connection.** That event is written only after the
   budget is spent, the route resolved and the policy satisfied, so a failure before it still answers
   with a status code. After it, the log is the record and the client learns the outcome from frames.

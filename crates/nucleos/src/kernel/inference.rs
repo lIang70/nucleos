@@ -50,6 +50,10 @@ impl Kernel {
         )
         .await?;
 
+        // What the log held when the turn was announced. Anything written after this point explains
+        // the outcome; nothing written after it means the turn failed without a trace.
+        let announced_at = session.next_seq();
+
         // The turn is registered so a cancel can find it, and the call races the signal. Dropping the
         // call's future is what stops it: the adapter's stream owns the HTTP response, and dropping it
         // closes the connection rather than leaving a request running that nobody reads.
@@ -92,7 +96,23 @@ impl Kernel {
                 self.write_checkpoint(session).await?;
                 return Err(error);
             }
-            Err(error) => return Err(error),
+            Err(error) => {
+                // Nothing about this turn is in the log beyond the announcement. Written here rather
+                // than wherever the failure happened, because the places that can fail are many and
+                // the rule is one: a turn that produced no record must not look like a turn that is
+                // still running. A stream watching it would otherwise simply stop.
+                if session.next_seq() == announced_at {
+                    self.emit(
+                        session,
+                        EventKind::TurnFailed {
+                            code: error.code(),
+                            reason: error.reason().to_owned(),
+                        },
+                    )
+                    .await?;
+                }
+                return Err(error);
+            }
         };
         session.steps = session.steps.saturating_add(1);
         let step_index = u32::try_from(session.steps).unwrap_or(u32::MAX);

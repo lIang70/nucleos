@@ -658,52 +658,6 @@
       },
       "Event": {
         "description": "An append-only record of something that happened.\n\n`seq` is dense and gap-free, which is what makes it usable as a resume cursor without\na separate acknowledgement protocol. `schema_version` is written alongside the event so\na reader can upcast instead of guessing.",
-        "properties": {
-          "at_unix_millis": {
-            "description": "Unix milliseconds, from the injected clock so replay is deterministic.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "kind": {
-            "$ref": "#/components/schemas/EventKind",
-            "description": "What happened."
-          },
-          "meta": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "description": "Opaque extension, same rule as [`Part::meta`].",
-            "type": "object"
-          },
-          "schema_version": {
-            "description": "The schema this event was written with.",
-            "format": "uint32",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "seq": {
-            "description": "Monotonic within a session, starting at 0.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "session": {
-            "$ref": "#/components/schemas/SessionId",
-            "description": "The session this belongs to."
-          }
-        },
-        "required": [
-          "seq",
-          "session",
-          "at_unix_millis",
-          "schema_version",
-          "kind"
-        ],
-        "type": "object"
-      },
-      "EventKind": {
-        "description": "The payload of an [`Event`].\n\nEvents carry the content model rather than copies of its fields — [`ToolCall`] here is\nthe same type a [`ToolCallPart`] holds — so a live stream and a stored history cannot\ndisagree about the shape of an answer.",
         "oneOf": [
           {
             "description": "A session state transition, with the reason when it is terminal.",
@@ -1124,6 +1078,29 @@
             "type": "object"
           },
           {
+            "description": "The turn ended without producing a message and without a failed attempt to point at.\n\nNot every failure is an attempt's: a policy that refuses the model model-level, a prompt that\ncannot fit, a store that refused the write on the way in. Without this event those turns leave\nthe log with a `turn_started` and nothing else — a state indistinguishable from a turn that is\nstill running, which is precisely what a caller cannot act on.",
+            "properties": {
+              "code": {
+                "$ref": "#/components/schemas/ErrorCode",
+                "description": "Why, in the kernel's own vocabulary."
+              },
+              "kind": {
+                "const": "turn_failed",
+                "type": "string"
+              },
+              "reason": {
+                "description": "What it said.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "code",
+              "reason"
+            ],
+            "type": "object"
+          },
+          {
             "description": "The assembled message a model call produced.\n\nDeltas are a rendering protocol; this is the record. Some content can only be\nassembled — a reasoning signature arrives as its own delta — and a client that joins\nlate should render without replaying every fragment.",
             "properties": {
               "kind": {
@@ -1291,7 +1268,45 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "properties": {
+          "at_unix_millis": {
+            "description": "Unix milliseconds, from the injected clock so replay is deterministic.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "meta": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Opaque extension, same rule as [`Part::meta`].",
+            "type": "object"
+          },
+          "schema_version": {
+            "description": "The schema this event was written with.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "seq": {
+            "description": "Monotonic within a session, starting at 0.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionId",
+            "description": "The session this belongs to."
+          }
+        },
+        "required": [
+          "seq",
+          "session",
+          "at_unix_millis",
+          "schema_version"
+        ],
+        "type": "object"
       },
       "ExecOutput": {
         "description": "How one command ended.",

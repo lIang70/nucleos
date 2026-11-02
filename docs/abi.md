@@ -227,6 +227,9 @@ event: nucleos.v1.text_delta
 data: {"seq":43,…,"kind":"text_delta","part_index":0,"text":"Hel"}
 ```
 
+The `kind` is **flattened into the event**, the same way a part's kind is flattened into a part, so the
+tag appears once and the SSE event name and the JSON tag are the same fact at the same level.
+
 | Rule | Why |
 |---|---|
 | `id` is the log's sequence, the same cursor `GET /events` uses | a client that reconnects resumes with `Last-Event-ID` on either endpoint, and never has to re-run a turn it already paid for |
@@ -234,12 +237,15 @@ data: {"seq":43,…,"kind":"text_delta","part_index":0,"text":"Hel"}
 | the last frame is `message_completed`, carrying the assembled message | a client that ignores every earlier frame ends up with exactly what the non-streaming call returns |
 | deltas carry `part_index` / `index` | without them a stream cannot represent text → tool call → more text, or which call an argument fragment belongs to |
 | the turn is announced by `turn_started` before the first model call | a client can tell "no answer yet" from "never started", and a stream that stops silently is distinguishable from one that stalled |
+| a turn that produces no message ends with `turn_failed` | a policy that refuses the model, or a prompt that cannot fit, would otherwise leave the stream ending after the announcement with no reason at all |
 
 **Where a stream begins is decided by the log.** A turn that fails before `turn_started` (no credit,
 unknown model, policy refusal) answers with an **HTTP status code and a JSON error**, not a `200` and an
 error frame — even though the kernel may already have recorded *why* (`budget_exhausted`), because that
 record belongs to the session, not to a stream this request never opened. After `turn_started`, failures
-arrive in the stream: `attempt_failed` for a failed attempt, `message_completed` for success.
+arrive in the stream: `attempt_failed` for a failed attempt, `turn_failed` for a failure that never got as
+far as an attempt, and `message_completed` for success. Exactly one of those three ends a turn, so the
+stream always says how it ended.
 
 **Hanging up cancels the turn.** The turn runs in its own task so the record is still written: the log
 gets `attempt_failed` with code `cancelled`, the session stays **open**, and the spend already reported

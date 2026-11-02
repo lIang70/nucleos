@@ -486,6 +486,12 @@ pub struct Event {
     /// The schema this event was written with.
     pub schema_version: u32,
     /// What happened.
+    ///
+    /// Flattened, like [`Part::kind`]: without it the wire says `{"kind":{"kind":"text_delta",…}}`,
+    /// which is the tag twice and a shape nobody writes by hand. It also makes the SSE event name and
+    /// the JSON tag the same field at the same level, so a client that reads only `data` and one that
+    /// reads only the event name cannot end up with different ideas of what the frame is.
+    #[serde(flatten)]
     pub kind: EventKind,
     /// Opaque extension, same rule as [`Part::meta`].
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -654,6 +660,18 @@ pub enum EventKind {
         /// The generation this turn runs under.
         generation: u64,
     },
+    /// The turn ended without producing a message and without a failed attempt to point at.
+    ///
+    /// Not every failure is an attempt's: a policy that refuses the model model-level, a prompt that
+    /// cannot fit, a store that refused the write on the way in. Without this event those turns leave
+    /// the log with a `turn_started` and nothing else — a state indistinguishable from a turn that is
+    /// still running, which is precisely what a caller cannot act on.
+    TurnFailed {
+        /// Why, in the kernel's own vocabulary.
+        code: crate::contract::ErrorCode,
+        /// What it said.
+        reason: String,
+    },
     /// The assembled message a model call produced.
     ///
     /// Deltas are a rendering protocol; this is the record. Some content can only be
@@ -751,6 +769,7 @@ impl EventKind {
             Self::Failed { .. } => "nucleos.v1.failed",
             Self::GenerationMigrated { .. } => "nucleos.v1.generation_migrated",
             Self::TurnStarted { .. } => "nucleos.v1.turn_started",
+            Self::TurnFailed { .. } => "nucleos.v1.turn_failed",
             Self::MessageCompleted { .. } => "nucleos.v1.message_completed",
             Self::Progress { .. } => "nucleos.v1.progress",
         }

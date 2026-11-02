@@ -135,6 +135,48 @@ async fn an_event_arrives_before_the_turn_that_wrote_it_has_finished() {
 }
 
 #[tokio::test]
+async fn a_turn_that_fails_inside_the_call_leaves_a_reason() {
+    // The rule: a turn that produced no record must not look like one that is still running. A policy
+    // refusal inside the call is the case that used to leave `turn_started` and nothing else — a
+    // stream watching it would just stop, which is the ambiguity streaming exists to remove.
+    let release = Arc::new(tokio::sync::Notify::new());
+    let kernel = Arc::new(
+        Kernel::builder()
+            .model("primary", Arc::new(Gated { release }))
+            .store(Arc::new(SqliteStore::in_memory().unwrap()) as Arc<dyn Store>)
+            .policy(Arc::new(nucleos::adapter::DenyAll))
+            .clock(Arc::new(FixedClock::at(0)))
+            .routing(Routing {
+                chain: vec!["primary".to_owned()],
+                retries: 0,
+            })
+            .build()
+            .unwrap(),
+    );
+    let mut session = kernel
+        .open(&principal(), SessionId::new("s1"), spec())
+        .await
+        .unwrap();
+
+    let error = kernel.inference(&mut session, &[]).await.unwrap_err();
+    assert_eq!(error.code(), ErrorCode::Denied);
+
+    let events = kernel
+        .events(&principal(), &SessionId::new("s1"), 0)
+        .await
+        .unwrap();
+    let kinds: Vec<&str> = events.iter().map(|event| event.kind.type_name()).collect();
+    assert_eq!(
+        kinds.last(),
+        Some(&"nucleos.v1.turn_failed"),
+        "the log ends with why: {kinds:?}"
+    );
+    // And not as a failed attempt: no attempt ran, so inventing one would be a worse lie than
+    // silence.
+    assert!(!kinds.contains(&"nucleos.v1.attempt_failed"), "{kinds:?}");
+}
+
+#[tokio::test]
 async fn a_follower_that_attaches_late_is_told_to_read_the_store() {
     // Documented behaviour rather than a promise of completeness: the notification is the fast path,
     // the log is the record. A follower that missed events catches up from a sequence number.

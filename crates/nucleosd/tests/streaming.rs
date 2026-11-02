@@ -121,7 +121,7 @@ async fn a_turn_streams_its_events_and_ends_on_the_completed_message() {
     for (event, frame) in events.iter().zip(&frames) {
         assert_eq!(event["seq"].to_string(), frame.id.clone().unwrap());
         assert_eq!(
-            event["kind"]["kind"]
+            event["kind"]
                 .as_str()
                 .map(|kind| format!("nucleos.v1.{kind}")),
             frame.event,
@@ -131,12 +131,8 @@ async fn a_turn_streams_its_events_and_ends_on_the_completed_message() {
 
     // What the terminal frame says is what the non-streaming call would have returned.
     let terminal = events.last().unwrap();
-    assert_eq!(terminal["kind"]["kind"], "message_completed");
-    assert_eq!(
-        terminal["kind"]["message"]["role"], "assistant",
-        "{}",
-        terminal
-    );
+    assert_eq!(terminal["kind"], "message_completed");
+    assert_eq!(terminal["message"]["role"], "assistant", "{}", terminal);
 }
 
 #[tokio::test]
@@ -396,6 +392,79 @@ async fn a_client_that_hangs_up_cancels_the_turn_and_the_record_says_so() {
         .unwrap();
     let view = body_json(session).await;
     assert_eq!(view["state"], "open", "{view}");
+}
+
+#[tokio::test]
+async fn a_turn_that_fails_inside_the_call_ends_with_the_reason() {
+    // The policy refuses the model, so the turn begins (budget spent, route resolved) and then dies
+    // inside the call. Before `turn_failed` existed the stream simply ended here: a client could not
+    // tell a refusal from a connection that had dropped mid-answer.
+    let kernel = Kernel::builder()
+        .model(
+            "primary",
+            Arc::new(nucleos_testkit::FakeModel::text(["never"])),
+        )
+        .store(Arc::new(nucleos_sqlite::SqliteStore::in_memory().unwrap()) as Arc<dyn Store>)
+        .policy(Arc::new(nucleos::adapter::DenyAll))
+        .routing(Routing {
+            chain: vec!["primary".to_owned()],
+            retries: 0,
+        })
+        .build()
+        .unwrap();
+    let app = Arc::new(App::new(
+        Arc::new(kernel),
+        Principal::default(),
+        vec!["primary".to_owned()],
+    ));
+    router(Arc::clone(&app))
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/sessions")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"session":"s1","credit_tokens":1000000}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let response = router(Arc::clone(&app))
+        .oneshot(ask(
+            r#"{"messages":[{"role":"user","content":{"parts":[{"kind":"text","text":"hi"}]}}]}"#,
+        ))
+        .await
+        .unwrap();
+
+    // The policy is consulted per model call, not per route, so the turn begins and then dies inside
+    // it. Before `turn_failed` existed this stream simply stopped after `turn_started` — a client
+    // could not tell a refusal from a connection that dropped mid-answer.
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = String::from_utf8(
+        axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    let frames = frames(&body);
+    let kinds: Vec<&str> = frames
+        .iter()
+        .map(|frame| frame.event.as_deref().unwrap_or(""))
+        .collect();
+    assert_eq!(
+        kinds,
+        vec!["nucleos.v1.turn_started", "nucleos.v1.turn_failed"],
+        "{kinds:?}"
+    );
+    let terminal: serde_json::Value = serde_json::from_str(&frames[1].data).unwrap();
+    assert_eq!(terminal["code"], "denied", "{terminal}");
+    assert!(
+        terminal["reason"]
+            .as_str()
+            .is_some_and(|reason| !reason.is_empty()),
+        "the frame says why: {terminal}"
+    );
 }
 
 async fn body_json(response: axum::response::Response) -> serde_json::Value {

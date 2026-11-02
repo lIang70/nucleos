@@ -1222,3 +1222,45 @@ convenience, the record is the truth.
 branch: the same request answers `200` + SSE in one run and `200` + JSON in the next — a flaky test that
 would be dismissed as a flaky test, and a real client that gets the wrong content type one time in two.
 
+## 83. A tagged enum inside a struct is nested unless the field says otherwise
+
+**Decision.** `Event.kind` carries `#[serde(flatten)]`, like `Part::kind` already did.
+
+**The shape it was shipping.** `{"kind":{"kind":"text_delta","part_index":0,"text":"Hel"}}` — the tag
+twice, and every frame one level deeper than the documentation claimed. It survived because nothing read
+it by hand: the tests asserted the nested path *after* writing it, and the docs were written from the
+intent rather than from an example.
+
+**How it was found.** By reading a live frame from a real daemon instead of from a test fixture — the
+curl output did not look like the document, which is the check that tests written from the same
+assumption cannot make.
+
+**No compatibility path, deliberately.** A tolerant reader was written and then removed: nothing has
+been released, so there is no old format to be tolerant of. A compat layer for a shape that never
+shipped is code that will outlive its reason and be impossible to delete later, because by then nobody
+will know whether something depends on it.
+
+**Why it matters for streaming.** The SSE `event:` name and the JSON `kind` are supposed to be one fact
+twice. Nested, they are two facts at two addresses, and a client that reads only `data` has to know about
+the nesting the docs never described.
+
+## 84. A turn that fails must fail in writing
+
+**Decision.** `inference` records `turn_failed` when it returns an error and nothing was written after
+`turn_started`. `message_completed`, `attempt_failed` and `turn_failed` are the three ways a turn ends,
+and one of them always happens.
+
+**The failure this fixes.** A policy refusal inside `call_model` returned `Err` straight out, emitting
+nothing. The log then held `turn_started` and stopped — the same shape as a turn that is still running.
+Found by streaming a real daemon whose policy denied the model: the client got one frame and then a
+closed connection, with no way to tell a refusal from a dropped network.
+
+**Why not a synthesized `attempt_failed`.** It would be a lie with a schema: no attempt ran, so inventing
+one puts a model and a duration and a trigger in the record that never existed. `turn_failed` says what
+is true — the turn ended, and here is why — which is also what a client needs.
+
+**The rule is written where the many failures are not.** The check lives in `inference`, comparing the
+sequence number against the one taken when the turn was announced, rather than in each of the places that
+can fail. A rule enforced at every site is a rule with as many chances to be forgotten as there are
+sites.
+

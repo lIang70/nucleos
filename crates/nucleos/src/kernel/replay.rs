@@ -146,6 +146,7 @@ pub(crate) fn fold(session: &mut Session, event: &Event) -> Applied {
             session.stop = Some(*reason);
             Applied::State
         }
+        EventKind::TurnFailed { .. } => Applied::Narrative,
         EventKind::Failed { .. } => {
             session.stop = Some(crate::contract::StopReason::Failed);
             Applied::State
