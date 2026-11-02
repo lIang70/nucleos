@@ -628,3 +628,93 @@ async fn a_process_with_no_recorded_exit_says_so_instead_of_inventing_one() -> n
     assert!(error.reason().contains("no recorded exit"), "{error:?}");
     Ok(())
 }
+
+/// A child that never reads its stdin must still be killable.
+///
+/// `write_stdin` and `signal` both hold the supervisor's map. When the child stops reading, the pipe
+/// fills, the supervisor blocks writing to it, and the control channel behind it fills too — so a
+/// writer waits. If it waits *holding the map lock*, `signal` queues behind it and nothing on the node
+/// can be killed at exactly the moment killing is what you want.
+#[tokio::test]
+async fn a_child_that_does_not_read_stdin_can_still_be_killed() -> nucleos::Result<()> {
+    let (kernel, _) = kernel();
+    let kernel = Arc::new(kernel);
+    let session = Arc::new(
+        kernel
+            .spawn(
+                &principal(),
+                SessionId::new("stuck"),
+                spec(&["sh", "-c", "sleep 30"], SandboxPolicy::DangerFullAccess),
+            )
+            .await?,
+    );
+
+    // Far more than a pipe (64 KiB) and a channel (64 entries): the writer is meant to block.
+    let writer = {
+        let kernel = Arc::clone(&kernel);
+        let session = Arc::clone(&session);
+        tokio::spawn(async move {
+            let chunk = "x".repeat(1024);
+            for _ in 0..400 {
+                if kernel.write_stdin(&session, &chunk).await.is_err() {
+                    return;
+                }
+            }
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let started = Instant::now();
+    tokio::time::timeout(Duration::from_secs(2), kernel.signal(&session))
+        .await
+        .expect("the kill path must not queue behind a blocked writer")
+        .expect("the signal reaches the supervisor");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "signal took {:?}",
+        started.elapsed()
+    );
+
+    kernel.wait(&session).await?;
+    writer.abort();
+    Ok(())
+}
+
+/// A `wait` in flight must not hide the process from everything else.
+///
+/// The entry used to be removed *before* awaiting the exit, so a client that disconnected mid-wait left
+/// a live child that `signal`, `stdin` and `state` all reported as gone.
+#[tokio::test]
+async fn a_wait_in_flight_does_not_hide_the_process() -> nucleos::Result<()> {
+    let (kernel, _) = kernel();
+    let kernel = Arc::new(kernel);
+    let session = kernel
+        .spawn(
+            &principal(),
+            SessionId::new("waited"),
+            spec(&["sh", "-c", "sleep 1"], SandboxPolicy::DangerFullAccess),
+        )
+        .await?;
+    let id = session.id().clone();
+
+    // The session is moved into the waiter, which is what a request holding it looks like; the test
+    // keeps only the id, because that is all an operator has.
+    let waiter = {
+        let kernel = Arc::clone(&kernel);
+        tokio::spawn(async move { kernel.wait(&session).await })
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Still running, still addressable.
+    let page = kernel
+        .processes("acme", &nucleos::contract::ProcessQuery::default())
+        .await?;
+    assert!(
+        page.processes.iter().any(|info| info.0 == id),
+        "a process being waited on is still a process: {:?}",
+        page.processes
+    );
+
+    waiter.await.unwrap()?;
+    Ok(())
+}

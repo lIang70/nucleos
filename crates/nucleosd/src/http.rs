@@ -1349,28 +1349,52 @@ async fn inference(
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         // Behind, not broken. Everything between `last + 1` and now is in the store,
                         // which is the record; the broadcast was only ever the fast path.
-                        let Ok(events) =
-                            pump_kernel.events(&pump_principal, &pump_session, last + 1).await
-                        else {
+                        if !catch_up(
+                            &pump_kernel,
+                            &pump_principal,
+                            &pump_session,
+                            &mut last,
+                            &sender,
+                        )
+                        .await
+                        {
                             return;
-                        };
-                        for event in events {
-                            last = event.seq;
-                            if sender.send(Ok(sse_frame(&event))).await.is_err() {
-                                return;
-                            }
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                 },
                 outcome = &mut turn => {
                     // The turn is over. Whatever it wrote is already in the broadcast queue, so drain
-                    // it before closing — otherwise the last frames race the terminal one.
-                    while let Ok(live) = live.try_recv() {
-                        if live.key == key
-                            && sender.send(Ok(sse_frame(&live.event))).await.is_err()
-                        {
-                            return;
+                    // it before closing — otherwise the last frames race the terminal one, and the
+                    // terminal one is the whole promise this endpoint makes.
+                    //
+                    // `Lagged` here is not the end of the drain: a client more than a channel deep
+                    // behind would otherwise lose exactly the frame it was waiting for. The store has
+                    // it, and the store is the record.
+                    loop {
+                        match live.try_recv() {
+                            Ok(live) if live.key == key => {
+                                if sender.send(Ok(sse_frame(&live.event))).await.is_err() {
+                                    return;
+                                }
+                            }
+                            Ok(_) => {}
+                            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+                            Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+                            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
+                                let mut drained = last;
+                                if !catch_up(
+                                    &pump_kernel,
+                                    &pump_principal,
+                                    &pump_session,
+                                    &mut drained,
+                                    &sender,
+                                )
+                                .await
+                                {
+                                    return;
+                                }
+                            }
                         }
                     }
                     match outcome {
@@ -1443,6 +1467,32 @@ impl Drop for CancelOnDrop {
             );
         }
     }
+}
+
+/// Send everything the store holds from `last + 1`, and move `last` along.
+///
+/// The broadcast is the fast path and the store is the record: this is what a follower calls when it
+/// has fallen behind, in the stream and in the terminal drain alike. `false` means the client is gone.
+async fn catch_up(
+    kernel: &Arc<Kernel>,
+    principal: &Principal,
+    session: &SessionId,
+    last: &mut u64,
+    sender: &tokio::sync::mpsc::Sender<Result<SseEvent, Infallible>>,
+) -> bool {
+    let Ok(events) = kernel
+        .events(principal, session, last.saturating_add(1))
+        .await
+    else {
+        return false;
+    };
+    for event in events {
+        *last = event.seq;
+        if sender.send(Ok(sse_frame(&event))).await.is_err() {
+            return false;
+        }
+    }
+    true
 }
 
 /// Whether the caller asked for the turn as it happens.

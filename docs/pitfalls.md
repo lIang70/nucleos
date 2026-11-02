@@ -1444,3 +1444,37 @@ never finished, and `partial` reports it — recoverable truth. An entry left be
 retry that runs side effects twice, which is the failure this removes. Between "a crash leaves a
 visible half-call" and "a retry runs `rm` twice", the first is the one to choose.
 
+## 94. A kill is not a message in a queue
+
+**Decision.** The kill path is a `tokio::sync::watch`, not `Control::Kill` in the supervisor's mailbox;
+the map lock is released before any send; `wait` takes the exit handle instead of removing the entry;
+and the post-exit pipe drain is bounded.
+
+**The failure, in three layers.** The audit found the first one — `write_stdin` and `signal` held the
+supervisor's map across `send`, and `send` waits when the channel is full — but fixing only that made
+the test fail with the *same* timeout, which is how the other two were found:
+
+1. **The lock.** A full channel plus a held mutex meant `signal` queued behind a writer, so nothing on
+   the node could be killed.
+2. **The queue.** Even with the lock released, a kill still queued behind four hundred stdin chunks —
+   a kill at the back of a queue is a kill that arrives after the reason for it. A watch send never
+   queues.
+3. **The blocking write.** `write_all` on a pipe the child is not reading waits forever, and while the
+   supervisor waited it was not selecting at all, so nothing could observe the kill.
+
+**The trap in the fix.** `watch::changed()` *consumes* the change. The first version raced the write
+against the kill and then ignored it (`_ = kill.changed() => {}`), so the outer branch waited for a
+change that had already been seen and the child ran to completion. Both places now act on it, and the
+test measures the wait end-to-end (5 ms) rather than asserting that `signal` returned.
+
+**Two orphans removed alongside.** `wait` removed the process entry before awaiting the exit, so a
+client that disconnected mid-wait left a live child that `signal`, `stdin` and `state` all reported as
+gone; the entry now survives until the exit is reaped. And the post-exit pipe drain was unbounded, so a
+grandchild that inherited stdout (`sh -c 'sleep 100 &'`) turned "the process exited" into a request
+that never returned — a two-second bound is enough for everything inside the output budget.
+
+**The SSE half of the same idea.** The terminal drain in the streaming handler stopped on `Lagged`,
+which is precisely the case where the client is behind and about to miss the frame that ends the turn.
+The catch-up path the main loop already used is now a function both call, because "the store is the
+record" has to be true in the drain too or the terminal-frame promise is only true when nobody is slow.
+

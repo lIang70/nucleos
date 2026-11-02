@@ -23,7 +23,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
-use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::sync::{Mutex, mpsc, oneshot, watch};
 
 /// How much of one stream is kept before the rest is dropped.
 ///
@@ -34,9 +34,10 @@ const OUTPUT_BUDGET_BYTES: usize = 64 * 1024;
 /// What the supervisor can tell a running process to do.
 enum Control {
     /// Write to its stdin.
+    ///
+    /// The only thing that queues. A kill is a `watch` signal beside this, because a kill that waits
+    /// behind a stalled write is not a kill.
     Stdin(String),
-    /// End it.
-    Kill,
 }
 
 /// What a process wrote, kept so that `wait` can answer with it.
@@ -54,9 +55,17 @@ struct Captured {
 /// One running process: a mailbox, and the exit it will eventually report.
 struct Running {
     control: mpsc::Sender<Control>,
+    /// A kill is a state change, not a message.
+    ///
+    /// It used to be `Control::Kill` in the same bounded queue as stdin writes, so a child that
+    /// stopped reading its input filled the queue and the kill sat behind four hundred stalled
+    /// chunks — unkillable exactly when killing is what you want. A `watch` send never blocks and
+    /// never queues; the value only says "stop".
+    kill: watch::Sender<bool>,
     /// The pid, kept so a listing can report it without touching the child.
     pid: Option<u32>,
-    exited: oneshot::Receiver<ExecOutput>,
+    /// Taken by the first `wait`; `None` afterwards, so two waits cannot both consume one exit.
+    exited: Option<oneshot::Receiver<ExecOutput>>,
 }
 
 /// The processes this kernel is supervising.
@@ -181,11 +190,13 @@ impl Supervisor {
         }
 
         let (control_tx, control_rx) = mpsc::channel(64);
+        let (kill_tx, kill_rx) = watch::channel(false);
         tokio::spawn(supervise(
             child,
             log.clone(),
             Arc::clone(&captured),
             control_rx,
+            kill_rx,
             drained_rx,
             exited_tx,
         ));
@@ -194,8 +205,9 @@ impl Supervisor {
             session.as_str().to_owned(),
             Running {
                 control: control_tx,
+                kill: kill_tx,
                 pid,
-                exited: exited_rx,
+                exited: Some(exited_rx),
             },
         );
 
@@ -219,12 +231,19 @@ impl Supervisor {
 
     /// Write to a process's stdin.
     pub(crate) async fn write_stdin(&self, session: &SessionId, chunk: &str) -> Result<()> {
-        let processes = self.processes.lock().await;
-        let running = processes
-            .get(session.as_str())
-            .ok_or_else(|| Error::not_found(format!("no process for session {session}")))?;
-        running
-            .control
+        // The sender is cloned out and the map released before the send. `send` waits when the
+        // channel is full, and the channel fills exactly when the child is not reading its stdin — at
+        // which point the map lock must not be held, or `signal` blocks behind the writer and nothing
+        // on this node can be killed.
+        let control = {
+            let processes = self.processes.lock().await;
+            processes
+                .get(session.as_str())
+                .ok_or_else(|| Error::not_found(format!("no process for session {session}")))?
+                .control
+                .clone()
+        };
+        control
             .send(Control::Stdin(chunk.to_owned()))
             .await
             .map_err(|_| Error::unavailable("the process has already ended"))
@@ -232,28 +251,43 @@ impl Supervisor {
 
     /// Ask a process to end.
     pub(crate) async fn signal(&self, session: &SessionId) -> Result<()> {
-        let processes = self.processes.lock().await;
-        let running = processes
-            .get(session.as_str())
-            .ok_or_else(|| Error::not_found(format!("no process for session {session}")))?;
-        running
-            .control
-            .send(Control::Kill)
-            .await
+        // A kill is a state change, not a queued message: a child that stopped reading its input
+        // fills the stdin queue, and a kill behind it is a kill that never arrives. `send` on a
+        // watch cannot block, so this returns whether or not the supervisor is stuck.
+        let kill = {
+            let processes = self.processes.lock().await;
+            processes
+                .get(session.as_str())
+                .ok_or_else(|| Error::not_found(format!("no process for session {session}")))?
+                .kill
+                .clone()
+        };
+        kill.send(true)
             .map_err(|_| Error::unavailable("the process has already ended"))
     }
 
     /// Wait for a process to end, and say how it ended.
     pub(crate) async fn wait(&self, session: &SessionId) -> Result<ExecOutput> {
-        let mut processes = self.processes.lock().await;
-        let running = processes
-            .remove(session.as_str())
-            .ok_or_else(|| Error::not_found(format!("no process for session {session}")))?;
-        drop(processes);
-        running
-            .exited
+        // The exit handle is taken, not the entry. Removing the entry first made a client that
+        // disconnected mid-`wait` orphan a live process: `signal`, `stdin` and `state` all answered
+        // "no process" while the child kept running.
+        let exited = {
+            let mut processes = self.processes.lock().await;
+            processes
+                .get_mut(session.as_str())
+                .ok_or_else(|| Error::not_found(format!("no process for session {session}")))?
+                .exited
+                .take()
+                .ok_or_else(|| {
+                    Error::unavailable(format!("session {session} is already being waited on"))
+                })?
+        };
+        let output = exited
             .await
-            .map_err(|_| Error::internal("the process ended without reporting an exit"))
+            .map_err(|_| Error::internal("the process ended without reporting an exit"))?;
+        // Reaped, so the entry has nothing left to report; a second `wait` finds the log instead.
+        self.processes.lock().await.remove(session.as_str());
+        Ok(output)
     }
 
     /// The processes this supervisor is holding, in session order.
@@ -299,6 +333,7 @@ async fn supervise(
     log: super::writer::EventWriter,
     captured: Arc<Mutex<Captured>>,
     mut control: mpsc::Receiver<Control>,
+    mut kill: watch::Receiver<bool>,
     mut drained: mpsc::Receiver<()>,
     exited: oneshot::Sender<ExecOutput>,
 ) {
@@ -319,23 +354,51 @@ async fn supervise(
                         })
                         .await;
                     if let Some(stdin) = stdin.as_mut() {
-                        let _ = stdin.write_all(chunk.as_bytes()).await;
-                        let _ = stdin.flush().await;
+                        // The write races the kill. `write_all` waits for a pipe that a child which
+                        // is not reading will never drain, and while it waits this loop is not
+                        // selecting — so a kill sent during it would be observed only after the
+                        // child exited on its own, which is the bug this test caught.
+                        tokio::select! {
+                            _ = stdin.write_all(chunk.as_bytes()) => {
+                                let _ = stdin.flush().await;
+                            }
+                            // A change is *consumed* by `changed()`: interrupting the write without
+                            // acting on it would leave the outer branch waiting for a change that has
+                            // already been seen, and the child would run to completion unkilled.
+                            _ = kill.changed() => {
+                                if *kill.borrow() {
+                                    let _ = child.start_kill();
+                                }
+                            }
+                        }
                     }
-                }
-                Some(Control::Kill) => {
-                    let _ = child.start_kill();
                 }
                 None => {}
             },
+            changed = kill.changed() => {
+                // `Err` means the sender is gone, which is the supervisor being torn down; the child
+                // dies with it (`kill_on_drop`).
+                if changed.is_ok() && *kill.borrow() {
+                    let _ = child.start_kill();
+                }
+                let _ = changed;
+            }
             reaped = child.wait() => break reaped,
         }
     };
 
     // A process that has exited has not necessarily been *read*. Wait for both pipes to reach EOF,
     // or `wait` answers with an exit code and half the output.
+    //
+    // Bounded, though. A grandchild that inherited stdout (`sh -c 'sleep 100 &'`) keeps the pipe open
+    // long after the child is gone, and an unbounded wait turns "the process exited" into a request
+    // that never returns. Everything within the output budget has been read by then; the rest is
+    // being discarded anyway.
     drop(control);
-    while drained.recv().await.is_some() {}
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while drained.recv().await.is_some() {}
+    })
+    .await;
 
     let captured = captured.lock().await;
     let output = ExecOutput {
