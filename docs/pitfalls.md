@@ -1121,3 +1121,56 @@ it undoes the decision), does not delete the deltas already streamed, and does n
 was reported before it landed. The attempt is logged as `cancelled` rather than as a failure of the
 provider, because the difference is what the next morning's reader needs.
 
+## 77. A pin is a reference, not a number
+
+**Decision.** A session holds its tool set (`Session::toolset`, an `Arc<ToolSet>`) instead of looking it
+up by generation number. `POST /v1/tools/retire` forgets every number but the current one.
+
+**Why the number was wrong.** Retirement was skipped for a long time with a written justification: freeing
+a set requires a durable answer to "which sessions still reference it", and the store can only give that
+by reading every snapshot. That reasoning was correct *about a map keyed by number*. The number is a pin
+that only holds while the map keeps the entry, so the map cannot drop anything until it knows nobody will
+ask. An `Arc` is a pin that holds because somebody is holding it — the refcount is the answer, so no scan
+is needed and no query can be forgotten.
+
+**The trap this avoids.** If `migrate` resolved the pinned side by number, then retiring a generation
+would make that number resolve to the *current* set, `compatible(set, set)` would be true, and an
+incompatible session would silently jump onto the new set — the exact failure pinning exists to prevent,
+introduced by the cleanup intended to save memory. Compatibility is therefore computed against
+`session.toolset`, which is the set the model actually saw.
+
+**And the current generation is never retired**, because it is the target of every migration. A
+retirement that takes away the only place a session can move to turns a memory saving into a stuck
+session.
+
+## 78. Two crypto providers in one process is a daemon that dies on its first caller
+
+**Decision.** `serve_tls` installs `aws-lc-rs` as the process default before building the TLS config, and
+`nucleosd` names `rustls` as a direct dependency so the choice is in the build graph rather than in
+feature unification.
+
+**The failure.** rustls refuses to pick a default when more than one provider is compiled in, and panics
+at the first handshake. In this workspace both are: `ring` arrives through the HTTP client that talks to
+models (`reqwest` → `hyper-rustls`), `aws-lc-rs` through the TLS server (`axum-server`). The daemon would
+start, log `tls_listening`, and die on the first caller — a start-up that looks like success, which is the
+worst shape a TLS failure can take.
+
+**Found by the test that did not exist yet.** The integration test failed with rustls' message about
+`CryptoProvider`, which read like a test-configuration problem. It was not: the test links the same crates
+the daemon does. The fix belongs in the product.
+
+**Same class, one line down.** A `std::net::TcpListener` is blocking, and registering one with the tokio
+reactor is a panic rather than an error. `serve_tls` calls `set_nonblocking(true)` so the flag is set
+where it is needed rather than in every caller.
+
+## 79. A transport without its certificate is a refusal, not a warning
+
+**Decision.** `--tcp` requires `--tls-cert` and `--tls-key`, and the certificate pair requires `--tcp`.
+Either combination that leaves one half out is a start-up error that names the reason.
+
+**Why not a warning.** A daemon listening on plaintext TCP with a log line saying so is a daemon that
+leaks bearer tokens and administrative signatures to the network, and nothing in the system notices: the
+requests succeed. A warning is a message somebody has to read at the moment they are least likely to. The
+same applies in the other direction — a certificate nobody serves is a deployment whose operator believes
+it is encrypted, and that belief is the thing that will not be true.
+

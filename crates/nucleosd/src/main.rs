@@ -15,7 +15,7 @@
 //! `Send`. Everything else returns an explicit `UNIMPLEMENTED` with the reason, because a
 //! method that pretends to work is worse than one that says what it is waiting for.
 
-use nucleosd::{App, Layout, router, telemetry};
+use nucleosd::{App, Layout, router, serve, telemetry};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -66,9 +66,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         abi = nucleosd::http::ABI_VERSION,
     );
 
-    let served = axum::serve(listener, router(Arc::new(app)))
-        .with_graceful_shutdown(shutdown())
-        .await;
+    // One signal, two listeners: whichever is configured stops at the same moment, or a restart would
+    // leave one of them accepting connections into a kernel that is closing.
+    let (stop, watching) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        shutdown().await;
+        let _ = stop.send(true);
+    });
+
+    let app = Arc::new(app);
+    let served = match &parsed.tls {
+        None => {
+            axum::serve(listener, router(Arc::clone(&app)))
+                .with_graceful_shutdown(drain(watching))
+                .await
+        }
+        Some((address, tls)) => {
+            // Bound before it is served, so a port already in use is reported as an address rather than
+            // as a handshake failure somewhere later.
+            let bound = std::net::TcpListener::bind(address)
+                .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> {
+                    Box::new(std::io::Error::other(format!(
+                        "cannot listen on {address}: {error}"
+                    )))
+                })?;
+            tracing::info!(
+                event = "tls_listening",
+                address = %address,
+                cert = %tls.cert.display(),
+            );
+            // Both, not either: a deployment adds the TCP listener so a remote caller stops needing a
+            // socket, and the local one keeps working. `try_join` because a listener that failed to
+            // start must not leave the other one serving into a half-started daemon.
+            let unix = async {
+                axum::serve(listener, router(Arc::clone(&app)))
+                    .with_graceful_shutdown(drain(watching.clone()))
+                    .await
+            };
+            let tcp = serve::serve_tls(
+                bound,
+                tls.clone(),
+                router(Arc::clone(&app)),
+                drain(watching.clone()),
+            );
+            tokio::try_join!(unix, tcp).map(|_| ())
+        }
+    };
     // A stale socket is a start-up failure next time, with an error that names nothing. Removing it
     // on the way out is the difference between a restart and an incident.
     let _ = std::fs::remove_file(&socket);
@@ -76,6 +119,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     served.map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { Box::new(error) })?;
 
     Ok(())
+}
+
+/// Resolve when the shared stop flag is set.
+///
+/// A `watch` rather than a `Notify`: two listeners have to observe the same signal, and a notification
+/// waits for whoever is looking at the moment it fires.
+async fn drain(mut watching: tokio::sync::watch::Receiver<bool>) {
+    while !*watching.borrow() {
+        if watching.changed().await.is_err() {
+            return;
+        }
+    }
 }
 
 /// Wait for a signal that means "stop", so the socket is removed and the stop is recorded.
@@ -109,6 +164,8 @@ struct Flags {
     /// The `tracing` filter directive. A flag, because a daemon whose verbosity comes from the
     /// environment logs differently on the machine you are debugging.
     log: String,
+    /// The TCP address and its material, when the daemon listens on one.
+    tls: Option<(std::net::SocketAddr, serve::Tls)>,
 }
 
 /// What to do.
@@ -127,6 +184,7 @@ enum Mode {
 /// than on a command line.
 fn args(args: &[String]) -> Result<Flags, Box<dyn std::error::Error + Send + Sync>> {
     let (mut root, mut socket, mut seal_key, mut print) = (None, None, None, false);
+    let (mut tcp, mut cert, mut key) = (None, None, None);
     let mut log = "info".to_owned();
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
@@ -151,11 +209,27 @@ fn args(args: &[String]) -> Result<Flags, Box<dyn std::error::Error + Send + Syn
                     Box::<dyn std::error::Error + Send + Sync>::from("--seal-key needs a path")
                 })?));
             }
+            "--tcp" => {
+                tcp = Some(rest.next().cloned().ok_or_else(|| {
+                    Box::<dyn std::error::Error + Send + Sync>::from("--tcp needs an address")
+                })?);
+            }
+            "--tls-cert" => {
+                cert = Some(PathBuf::from(rest.next().cloned().ok_or_else(|| {
+                    Box::<dyn std::error::Error + Send + Sync>::from("--tls-cert needs a path")
+                })?));
+            }
+            "--tls-key" => {
+                key = Some(PathBuf::from(rest.next().cloned().ok_or_else(|| {
+                    Box::<dyn std::error::Error + Send + Sync>::from("--tls-key needs a path")
+                })?));
+            }
             "--print-paths" => print = true,
             other if other.starts_with('-') => {
                 return Err(Box::from(format!(
                     "unknown flag {other}; this daemon takes --root <dir>, --socket <path>, \
-                     --seal-key <path>, --log <level>, --print-paths"
+                     --seal-key <path>, --tcp <addr> --tls-cert <path> --tls-key <path>, \
+                     --log <level>, --print-paths"
                 )));
             }
             other => {
@@ -166,6 +240,33 @@ fn args(args: &[String]) -> Result<Flags, Box<dyn std::error::Error + Send + Syn
         }
     }
 
+    // All three or none. A TCP listener with no certificate is a bearer token in the clear and a
+    // signature handed to whoever is listening; a certificate with no listener is a deployment that
+    // believes it is encrypted. Both are refused at start-up, before anything is bound, because a
+    // warning in a log is not a gate.
+    let tls = match (tcp, cert, key) {
+        (None, None, None) => None,
+        (Some(addr), Some(cert), Some(key)) => Some((
+            addr.parse::<std::net::SocketAddr>().map_err(|error| {
+                Box::<dyn std::error::Error + Send + Sync>::from(format!(
+                    "--tcp {addr:?} is not an address: {error}"
+                ))
+            })?,
+            serve::Tls { cert, key },
+        )),
+        (Some(_), _, _) => {
+            return Err(Box::from(
+                "--tcp needs --tls-cert and --tls-key: a bearer token over plaintext TCP is a secret \
+                 sent in the clear, and this daemon will not do that",
+            ));
+        }
+        _ => {
+            return Err(Box::from(
+                "--tls-cert and --tls-key are set but --tcp is not: nothing would serve them",
+            ));
+        }
+    };
+
     let layout = Layout::resolve(root, socket, seal_key);
     Ok(Flags {
         mode: if print {
@@ -174,6 +275,7 @@ fn args(args: &[String]) -> Result<Flags, Box<dyn std::error::Error + Send + Syn
             Mode::Run(layout)
         },
         log,
+        tls,
     })
 }
 

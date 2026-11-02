@@ -8,6 +8,7 @@ pub mod auth;
 pub mod configure;
 pub mod http;
 pub mod layout;
+pub mod serve;
 pub mod metrics;
 pub mod sources;
 pub mod telemetry;

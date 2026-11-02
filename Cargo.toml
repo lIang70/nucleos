@@ -35,6 +35,7 @@ schemars = "1"
 async-trait = "0.1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 axum = "0.8"
+axum-server = { version = "0.8", features = ["tls-rustls"] }
 tower = { version = "0.5", features = ["util"] }
 tokio-stream = { version = "0.1", features = ["sync", "net"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "process", "io-util", "signal"] }

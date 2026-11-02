@@ -209,6 +209,19 @@ misspelled filter is how a caller concludes the feature is broken. Another subje
 absent rather than refused — a listing that names what the caller may not open is a directory of other
 people's work.
 
+### 4.0.0 Retiring generations
+
+`POST /v1/tools/retire` → `{"current": 3, "retired": [1, 2]}`
+
+Forgets every tool set but the current one. Safe at any time, and safe to ignore: a session pinned to a
+retired set **holds** it, so dropping the number frees what nobody holds and nothing else.
+
+- `retired: []` is the honest answer when there was nothing to forget — a kernel with one generation has
+  nothing to retire and has done nothing wrong.
+- The current generation is never retired: it is the target of every migration.
+- A session on a retired generation keeps answering calls from its own set, and its compatibility check
+  still compares against that set rather than against a number that no longer resolves.
+
 ### 4.0.1 Cancelling a turn
 
 `POST /v1/sessions/{id}/cancel` → `{"cancelled": true|false}`

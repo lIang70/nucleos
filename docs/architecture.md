@@ -399,9 +399,10 @@ The daemon connects, calls `tools/list`, and snapshots the resulting specs into 
 **generation**. A generation is an immutable set of tool sources:
 
 ```text
-Start               → session pinned to the current generation G
+Start                → session pinned to the current generation G
 Register(new source) → build G+1, latest := G+1
-G.refcount == 0      → retire, close connections
+Session ends         → the set it held is freed with it
+POST /v1/tools/retire → forget every number but the current one
 ```
 
 Because the set is immutable, compatibility is a pure function of two generations:
@@ -423,10 +424,20 @@ a call is answered by the set that built the prompt. `inference` is the turn bou
 changed. Compatible sessions move and record `generation_migrated`; incompatible ones stay pinned for
 the rest of their lives, and keeping working, because the set they reference is still held.
 
-**What is not built.** Retirement. Every generation this kernel published stays in memory, because
-freeing one requires a durable answer to "which sessions still reference it", and the store can only
-give that by reading every snapshot. It is a small leak on purpose, and the alternative — freeing a
-set a pinned session might reach for — is a correctness bug.
+**Retirement is refcounting, and the refcount is the session.** A session holds the set its calls are
+answered from (`Session::toolset`, an `Arc`), so `POST /v1/tools/retire` drops every number but the
+current one and frees exactly what nobody holds. Three consequences, all of them the point:
+
+- A session pinned to a retired generation keeps working. It never looked the set up by number, so
+  there is no number to be missing.
+- Retirement cannot make a session reach for something freed, which is why it needs no scan of the
+  store and no durable answer to "which sessions are alive" — the answer is already in the `Arc`.
+- Compatibility is decided against the *pinned* set, taken from the session, not against a number that
+  would resolve to the current set once that number is gone. Without this, retiring a generation would
+  silently migrate an incompatible session onto the new one — the exact failure pinning exists to make
+  impossible.
+
+The current generation is never retired: it is the target of every migration.
 
 **Reload is over the ABI.** `POST /v1/tools/reload` reconnects the configured source, publishes what
 it advertises now, and answers with the new generation plus what was added and removed. `GET
@@ -752,6 +763,7 @@ Three claims, and the daemon only makes the ones it can keep:
 | Claim                             | How                                                              |
 | --------------------------------- | ---------------------------------------------------------------- |
 | only the local user can connect   | the socket lives in a `0700` directory and is `0600`             |
+| a remote caller is encrypted      | TLS on TCP, and no plaintext mode exists (`--tcp` without a certificate refuses to start) |
 | a request carries a credential    | a hashed token in the system store, checked on **every** route including `describe` |
 | every session belongs to somebody | one principal from `NUCLEOS_PRINCIPAL`, for now                  |
 
@@ -779,6 +791,25 @@ Two properties the implementation had to learn:
 No environment variable configures any of it. `NUCLEOS_TOKEN`, `NUCLEOS_TOKENS`, `NUCLEOS_TENANT` and
 `NUCLEOS_SUBJECT` are gone; the store is the only source, and `nucleos tokens list` is the only way to
 see who may call.
+
+**Transports: one socket, or one socket and TLS.** `--tcp <addr> --tls-cert <path> --tls-key <path>`
+adds a second listener; the unix socket keeps working, because a deployment adds TCP so a remote caller
+stops needing one, not so the local one breaks. All three flags or none: a TCP listener without a
+certificate is a bearer token in the clear and a signature handed to whoever is listening, and a
+certificate nobody serves is a deployment that believes it is encrypted. Both are start-up refusals,
+not warnings — a warning in a log is not a gate.
+
+Two things that had to be stated rather than discovered:
+
+- **The crypto provider is chosen by the daemon.** `ring` is compiled in by the HTTP client that talks
+  to models, `aws-lc-rs` by the TLS server; rustls refuses to guess between them, so a daemon that left
+  it to feature unification would start, log that it is listening, and die on the first caller.
+- **A `std::net::TcpListener` must be non-blocking before it reaches the reactor**, or registering it
+  is a panic. `serve_tls` sets it, so no caller has to remember.
+
+TLS material is read once at start-up and reloading it means a restart, for the same reason the seal
+key does (`pitfalls` 12): a transport that changes under a live connection is a connection nobody can
+reason about.
 
 **Tenant isolation is in the schema.** The store's key is `(tenant, session)`, not the id alone:
 session identifiers are chosen by callers, and two tenants each choosing `s1` is ordinary rather than
@@ -931,5 +962,5 @@ policy, per-tenant limits, configuration as signed requests, signed administrati
 sealed credentials, and the process ABI. None of those were on the roadmap, and every one of them came
 from a failure the earlier stages exposed.
 
-Still open, and tracked rather than promised: generation retirement (§8), forwarding MCP progress
-(`pitfalls` 56), quotas, and any transport other than the unix socket.
+Still open, and tracked rather than promised: forwarding MCP progress (`pitfalls` 56), quotas, and any
+transport other than the unix socket and TLS over TCP.
