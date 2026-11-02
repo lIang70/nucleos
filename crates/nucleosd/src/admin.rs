@@ -96,7 +96,7 @@ impl Verifier {
             )));
         }
 
-        // A nonce already seen is a replay, whatever else is true of it.
+        // A nonce already seen is a replay, whatever else is true of it — so the check comes first.
         {
             let mut seen = self
                 .seen
@@ -107,13 +107,6 @@ impl Verifier {
                 tracing::warn!(event = "admin_signature_replayed", key_id = %signed.key_id);
                 return Err(Error::denied("this request has already been made"));
             }
-            if seen.len() >= NONCE_CAP {
-                // Oldest first: they are the closest to expiring anyway.
-                if let Some(oldest) = seen.keys().next().cloned() {
-                    seen.remove(&oldest);
-                }
-            }
-            seen.insert(signed.nonce.clone(), signed.at_unix_millis);
         }
 
         // Read the keys on every request rather than caching them: revocation has to be immediate, and
@@ -128,6 +121,30 @@ impl Verifier {
         if !key.verifies(text.as_bytes(), &signed.signature)? {
             tracing::warn!(event = "admin_signature_invalid", key_id = %key.id);
             return Err(Error::denied("this request is not authorised"));
+        }
+
+        // Recorded only now, after the signature verified. Recording before meant an unauthenticated
+        // caller could fill this cache by sending well-formed headers with garbage signatures, and a
+        // full cache evicts — so the same caller could push out a captured request's nonce while that
+        // request was still inside the window, and then replay it. A nonce is consumed by a request
+        // that authenticated, and by nothing else.
+        {
+            let mut seen = self
+                .seen
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if seen.len() >= NONCE_CAP {
+                // The oldest by the time it was signed — not `keys().next()`, which is the
+                // lexicographically smallest nonce and has nothing to do with age.
+                let oldest = seen
+                    .iter()
+                    .min_by_key(|(_, at)| **at)
+                    .map(|(nonce, _)| nonce.clone());
+                if let Some(oldest) = oldest {
+                    seen.remove(&oldest);
+                }
+            }
+            seen.insert(signed.nonce.clone(), signed.at_unix_millis);
         }
 
         let principal = key.principal();
@@ -290,6 +307,49 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.reason().contains("already been made"), "{error:?}");
+    }
+
+    /// A signature that does not verify must not spend the nonce it names.
+    ///
+    /// The cache used to be filled *before* verification, so anyone could add entries by sending
+    /// well-formed headers with garbage signatures. Two consequences, both of them the cache's own
+    /// purpose turned against it: a caller could push out a captured request's nonce while that request
+    /// was still inside the window, and an honest client whose attempt failed for an unrelated reason
+    /// would find its nonce consumed.
+    #[tokio::test]
+    async fn a_signature_that_does_not_verify_records_no_nonce() {
+        let key = nucleos_auth::KeyPair::generate();
+        let verifier = verifier_with(&key).await;
+        let key_id = key.public("acme", "alice").id.clone();
+        let forged = format!("Nucleos-Admin {key_id}:1000000:not-a-real-one:AAAA");
+
+        verifier
+            .verify("GET", "/v1/config", b"", Some(&forged))
+            .await
+            .expect_err("a signature that verifies nothing is refused");
+        assert!(
+            verifier
+                .seen
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_empty(),
+            "an unverified signature must not enter the replay cache"
+        );
+
+        // And a signature that *does* verify still records its nonce, or replay protection is gone.
+        let header = key.sign_request(&key_id, "GET", "/v1/config", b"", 1_000_000);
+        verifier
+            .verify("GET", "/v1/config", b"", Some(&header))
+            .await
+            .unwrap();
+        assert_eq!(
+            verifier
+                .seen
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
