@@ -310,12 +310,17 @@ The sealing key itself is resolved in this order, each source strictly better th
 | Source | Property |
 | --- | --- |
 | `$CREDENTIALS_DIRECTORY/seal.key` | `systemd-creds`: sealed to the machine's TPM, materialised in memory at start-up, never on disk |
-| the configured path (default `<root>/seal.key`) | a `0600` file — the default, and the one that travels with a whole-machine backup |
+| the configured path (`--seal-key`, default `/etc/nucleos/seal.key`) | a `0600` file in the config tree, outside the directory that gets copied |
 | nothing | no sealing: a key can only be a `key_file` path, and the daemon says so |
 
-`nucleos init` writes the file and says, in its output, that a real deployment moves it. The default is
-the honest one: it makes the data-directory backup safe, which is the common case, and leaves the
-whole-machine case to the credential source that answers it.
+`nucleos init` writes the file at `/etc/nucleos/seal.key` by default — **outside** the root, because the
+root is the directory that gets copied. `init` refuses a path inside it, and `nucleosd` takes
+`--seal-key` for a deployment that keeps it elsewhere.
+
+An earlier version defaulted to `<root>/seal.key` because it made `init --root …` work without a second
+flag. That default made the sentence at the top of this section false: a copy of the data directory would
+have carried the key that opens everything in it. The flag is the friction the property costs, and the
+test that would have caught it now exists.
 
 ### 6.1 Why not a generated secret and JWTs
 

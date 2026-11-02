@@ -230,7 +230,7 @@ impl App {
         let stored = crate::configure::stored_models(&system)?;
         // Resolved before any adapter is built: a sealed key has to be openable at start-up, and a
         // missing seal key with sealed rows in the store is a deployment that cannot reach its models.
-        let seal = nucleos_auth::SealKey::resolve(&layout.root.join(nucleos_auth::seal::KEY_FILE))?;
+        let seal = nucleos_auth::SealKey::resolve(&layout.seal_key)?;
 
         // Sources are rows in the system store, written by `nucleos sources add`. What the daemon
         // connects here is what a previous run was told to run; a server that will not start is a
@@ -1520,7 +1520,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("nucleos-nopolicy-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        let layout = crate::layout::Layout::resolve(Some(root.clone()), None);
+        let layout = crate::layout::Layout::resolve(Some(root.clone()), None, Some(root.with_extension("seal.key")));
 
         // A store that exists and is empty: `init` has not run.
         SystemStore::open(layout.system_store()).unwrap();

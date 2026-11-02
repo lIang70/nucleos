@@ -1056,3 +1056,18 @@ common backup. The whole-machine case is answered by the first source — `syste
 and never writes the key to disk — and `init` prints a line telling the operator to move the file when
 they care about the second case. Saying it out loud beats choosing for them.
 
+## 74. A default that makes the claim false is not a default
+
+**Decision.** The seal key defaults to `/etc/nucleos/seal.key`, `init` refuses a path inside the data
+directory, and `nucleosd --seal-key` exists for deployments that keep it elsewhere.
+
+**Why it was wrong the first time.** The default was `<root>/seal.key`, chosen because it made
+`init --root …` work without a second flag and the daemon find the file without a second parameter. The
+paragraph above the table in the same document says a copy of the data directory contains no usable
+credential — and with the key sitting inside that directory, the copy contains the one that opens
+everything. A week of documentation discipline, undone to save one flag.
+
+**The general shape.** When a design property and a convenience collide, the convenience is the thing
+that gets a flag, not the property. The test that now guards it asks the only question worth asking: is
+the key's path inside the root's path?
+

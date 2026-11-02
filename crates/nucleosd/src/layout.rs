@@ -24,6 +24,12 @@ pub struct Layout {
     pub root: PathBuf,
     /// Where the socket is created.
     pub socket: PathBuf,
+    /// Where the key that seals stored credentials lives.
+    ///
+    /// **Not** inside the root: the root is the directory that gets backed up, and a key stored beside
+    /// the ciphertext it opens makes the sealing decorative. `init` refuses a path inside the root for
+    /// the same reason.
+    pub seal_key: PathBuf,
 }
 
 impl Layout {
@@ -32,12 +38,13 @@ impl Layout {
     /// `root` and `socket` are the two flags: one decides the data, the other the address, and
     /// nothing else is configurable here because everything else is configuration — which lives in
     /// the store and arrives through the ABI.
-    pub fn resolve(root: Option<PathBuf>, socket: Option<PathBuf>) -> Self {
+    pub fn resolve(root: Option<PathBuf>, socket: Option<PathBuf>, seal_key: Option<PathBuf>) -> Self {
         // Flags or the platform's convention. The environment is not consulted: a path that changes
         // because a shell exported something is a path nobody can predict from the unit file.
         Self {
             root: root.unwrap_or_else(default_root),
             socket: socket.unwrap_or_else(default_socket),
+            seal_key: seal_key.unwrap_or_else(default_seal_key),
         }
     }
 
@@ -75,6 +82,7 @@ impl Layout {
             ("system store", self.system_store()),
             ("session store", self.session_store()),
             ("socket", self.socket.clone()),
+            ("seal key", self.seal_key.clone()),
         ] {
             let state = match std::fs::metadata(&path) {
                 Ok(meta) => {
@@ -99,6 +107,11 @@ fn default_root() -> PathBuf {
     } else {
         PathBuf::from("/var/lib/nucleos")
     }
+}
+
+/// The config tree, not the data tree: see [`Layout::seal_key`].
+fn default_seal_key() -> PathBuf {
+    PathBuf::from("/etc/nucleos/seal.key")
 }
 
 /// A socket in a directory only its owner can enter.
@@ -164,7 +177,7 @@ mod tests {
 
     #[test]
     fn the_two_stores_are_named_inside_the_root() {
-        let layout = Layout::resolve(Some(PathBuf::from("/srv/nucleos")), None);
+        let layout = Layout::resolve(Some(PathBuf::from("/srv/nucleos")), None, None);
         assert_eq!(layout.system_store(), Path::new("/srv/nucleos/system.db"));
         assert_eq!(layout.session_store(), Path::new("/srv/nucleos/sessions.db"));
     }
@@ -174,7 +187,9 @@ mod tests {
         let layout = Layout::resolve(
             Some(PathBuf::from("/srv/a")),
             Some(PathBuf::from("/run/a/nucleosd.sock")),
+            Some(PathBuf::from("/etc/a/seal.key")),
         );
+        assert_eq!(layout.seal_key, Path::new("/etc/a/seal.key"));
         assert_eq!(layout.root, Path::new("/srv/a"));
         assert_eq!(layout.socket, Path::new("/run/a/nucleosd.sock"));
     }
@@ -203,7 +218,11 @@ mod tests {
         let root = std::env::temp_dir().join(format!("nucleos-layout-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
 
-        let layout = Layout::resolve(Some(root.clone()), Some(root.join("run/nucleosd.sock")));
+        let layout = Layout::resolve(
+            Some(root.clone()),
+            Some(root.join("run/nucleosd.sock")),
+            Some(root.with_extension("seal.key")),
+        );
         layout.create().unwrap();
 
         for path in [&root, &root.join("run")] {
@@ -215,9 +234,31 @@ mod tests {
 
     #[test]
     fn describe_says_missing_for_what_does_not_exist_yet() {
-        let layout = Layout::resolve(Some(PathBuf::from("/nonexistent/nucleos")), None);
+        let layout = Layout::resolve(Some(PathBuf::from("/nonexistent/nucleos")), None, None);
         let text = layout.describe();
         assert!(text.contains("missing"), "{text}");
         assert!(text.contains("sessions.db"), "{text}");
+    }
+}
+
+#[cfg(test)]
+mod seal_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    #[test]
+    fn the_seal_key_is_not_inside_the_data_directory_by_default() {
+        // The property the sealing exists for: a backup of the root must not carry the key that opens
+        // what is in it.
+        for root in ["/var/lib/nucleos", "/srv/x"] {
+            let layout = Layout::resolve(Some(PathBuf::from(root)), None, None);
+            assert!(
+                !layout.seal_key.starts_with(&layout.root),
+                "{} is inside {}",
+                layout.seal_key.display(),
+                layout.root.display()
+            );
+        }
     }
 }

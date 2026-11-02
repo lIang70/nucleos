@@ -50,6 +50,8 @@ init options:
   --subject <name>     the first administrator's subject     (default: admin)
   --password-stdin     read the recovery password from stdin instead of prompting
   --key-out <path>     write the private key to a file instead of the keychain
+  --seal-key <path>    where the sealing key goes       (default: /etc/nucleos/seal.key;
+                                                        must be outside --root)
   --no-client-config   do not write the socket discovery file
   --force              replace an existing deployment
 
@@ -64,6 +66,7 @@ system's keychain, or to the file named by --key-out for a machine without a log
 fn init(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (mut root, mut socket, mut tenant, mut subject) = (None, None, None, None);
     let (mut password_stdin, mut key_out, mut client_config) = (false, None, true);
+    let mut seal_key = None;
     let mut force = false;
 
     let mut rest = args.iter();
@@ -79,6 +82,7 @@ fn init(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
             "--tenant" => tenant = Some(value("--tenant")?),
             "--subject" => subject = Some(value("--subject")?),
             "--key-out" => key_out = Some(PathBuf::from(value("--key-out")?)),
+            "--seal-key" => seal_key = Some(PathBuf::from(value("--seal-key")?)),
             "--password-stdin" => password_stdin = true,
             "--no-client-config" => client_config = false,
             "--force" => force = true,
@@ -103,6 +107,9 @@ fn init(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
     let mut options = Options::new(layout.0, layout.1, password);
     options.key_out = key_out;
     options.force = force;
+    if let Some(seal_key) = seal_key {
+        options.seal_key = seal_key;
+    }
     if let Some(tenant) = tenant {
         options.tenant = tenant;
     }

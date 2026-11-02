@@ -126,7 +126,7 @@ enum Mode {
 /// socket is. Everything else is derived or is configuration, which arrives later over the ABI rather
 /// than on a command line.
 fn args(args: &[String]) -> Result<Flags, Box<dyn std::error::Error + Send + Sync>> {
-    let (mut root, mut socket, mut print) = (None, None, false);
+    let (mut root, mut socket, mut seal_key, mut print) = (None, None, None, false);
     let mut log = "info".to_owned();
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
@@ -146,11 +146,16 @@ fn args(args: &[String]) -> Result<Flags, Box<dyn std::error::Error + Send + Syn
                     Box::<dyn std::error::Error + Send + Sync>::from("--log needs a level")
                 })?;
             }
+            "--seal-key" => {
+                seal_key = Some(PathBuf::from(rest.next().cloned().ok_or_else(|| {
+                    Box::<dyn std::error::Error + Send + Sync>::from("--seal-key needs a path")
+                })?));
+            }
             "--print-paths" => print = true,
             other if other.starts_with('-') => {
                 return Err(Box::from(format!(
                     "unknown flag {other}; this daemon takes --root <dir>, --socket <path>, \
-                     --log <level>, --print-paths"
+                     --seal-key <path>, --log <level>, --print-paths"
                 )));
             }
             other => {
@@ -161,7 +166,7 @@ fn args(args: &[String]) -> Result<Flags, Box<dyn std::error::Error + Send + Syn
         }
     }
 
-    let layout = Layout::resolve(root, socket);
+    let layout = Layout::resolve(root, socket, seal_key);
     Ok(Flags {
         mode: if print {
             Mode::Paths(layout)

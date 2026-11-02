@@ -63,6 +63,8 @@ pub struct Options {
     pub tenant: String,
     /// Their name within it.
     pub subject: String,
+    /// Where the sealing key goes. **Never inside the root**, by default at `/etc/nucleos/seal.key`.
+    pub seal_key: PathBuf,
     /// Where the client's discovery file goes. Absent means nowhere, which is right for a container.
     pub client_config: Option<PathBuf>,
     /// Cheaper hashing, for tests. Never for a real deployment.
@@ -76,6 +78,7 @@ impl Options {
     #[must_use]
     pub fn new(root: PathBuf, socket: PathBuf, password: String) -> Self {
         Self {
+            seal_key: default_seal_key(),
             root,
             socket,
             password,
@@ -150,13 +153,18 @@ pub async fn run(options: &Options) -> Result<Done> {
 
     // 3. The key that seals credentials in the store.
     //
-    // Written under the root by default, which is the one place the design says it should not live: a
-    // backup of the data directory would carry it. The daemon prefers `$CREDENTIALS_DIRECTORY/seal.key`
-    // (systemd's TPM-sealed credential) when it is there, so a real deployment moves this file and
-    // nothing else changes.
+    // Refused inside the root: a key stored beside the ciphertext it opens makes the sealing decorative,
+    // and the root is exactly the directory people back up. A deployment that cannot write to
+    // `/etc/nucleos` passes `--seal-key`, and a test passes a temp path.
+    if options.seal_key.starts_with(&options.root) {
+        return Err(Error::invalid(format!(
+            "the seal key must live outside the data directory: {} is inside {}",
+            options.seal_key.display(),
+            options.root.display()
+        )));
+    }
     let (_, seal_bytes) = nucleos_auth::SealKey::generate();
-    let seal_path = options.root.join(nucleos_auth::seal::KEY_FILE);
-    nucleos_auth::seal::write_key(&seal_path, &seal_bytes)?;
+    nucleos_auth::seal::write_key(&options.seal_key, &seal_bytes)?;
 
     // 4. The policy it starts from.
     system.set(POLICY_KEY, BOOTSTRAP_POLICY).await?;
@@ -197,6 +205,11 @@ fn write_client_config(path: &Path, socket: &Path, key_id: &str) -> Result<()> {
     .map_err(|error| Error::invalid(format!("cannot write {}: {error}", path.display())))
 }
 
+/// The config tree, matching `nucleosd`'s default: not the data directory, which is what gets copied.
+fn default_seal_key() -> PathBuf {
+    PathBuf::from("/etc/nucleos/seal.key")
+}
+
 /// `~/.config/nucleos/socket` on Linux, `~/Library/Application Support/nucleos/socket` on macOS.
 #[must_use]
 pub fn default_client_config() -> Option<PathBuf> {
@@ -222,6 +235,8 @@ mod tests {
         );
         options.cost = Cost::TESTING;
         options.key_out = Some(root.join("admin.key"));
+        // Outside the root, which is the rule: a key beside the ciphertext it opens seals nothing.
+        options.seal_key = root.with_extension("seal.key");
         options.client_config = Some(root.join("client/socket"));
         options
     }
@@ -229,6 +244,7 @@ mod tests {
     fn scratch(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!("nucleos-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&path);
+        let _ = std::fs::remove_file(path.with_extension("seal.key"));
         path
     }
 
@@ -322,5 +338,19 @@ mod tests {
         );
         assert_eq!(document.rules[0].config.as_deref(), Some("*"));
         assert_eq!(document.rules[0].subject.as_deref(), Some("admin"));
+    }
+
+    #[tokio::test]
+    async fn a_seal_key_inside_the_data_directory_is_refused() {
+        // The default location is the one place it must not be, so a deployment that points it there
+        // gets an error rather than a seal that protects nothing.
+        let root = scratch("init-seal-inside");
+        let mut options = options(&root);
+        options.seal_key = root.join("seal.key");
+        let error = run(&options)
+            .await
+            .expect_err("a key beside the ciphertext seals nothing");
+        assert!(error.reason().contains("outside the data directory"), "{error:?}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
