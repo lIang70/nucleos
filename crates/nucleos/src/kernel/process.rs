@@ -85,6 +85,8 @@ pub(crate) struct Launch<'a> {
     pub workspace: Option<&'a String>,
     pub sandbox: &'a SandboxPolicy,
     pub seq: &'a Arc<AtomicU64>,
+    /// The session's append lock: the supervisor is a second writer to the same log.
+    pub append_lock: Arc<tokio::sync::Mutex<()>>,
     pub clock: Arc<dyn crate::adapter::Clock>,
 }
 
@@ -99,6 +101,7 @@ impl Supervisor {
             workspace,
             sandbox,
             seq,
+            append_lock,
             clock,
         } = launch;
         if spec.argv.is_empty() {
@@ -152,6 +155,7 @@ impl Supervisor {
             // The same counter the kernel's handle uses, not a copy of its value: this task and the
             // caller both append to one log, and a copy is a second truth about where the log ends.
             Arc::clone(seq),
+            append_lock,
             clock,
         );
         let captured = Arc::new(Mutex::new(Captured::default()));
@@ -555,6 +559,7 @@ impl Kernel {
                 workspace: session.workspace.as_ref(),
                 sandbox: &session.sandbox,
                 seq: &session.seq,
+                append_lock: session.append_lock(),
                 tenant: &session.principal.tenant,
                 clock: Arc::clone(&self.clock),
             })

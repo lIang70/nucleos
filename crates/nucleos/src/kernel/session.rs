@@ -44,6 +44,13 @@ pub struct Session {
     /// the same events disagree the moment one of them writes — which is a sequence gap the store
     /// refuses, on a call that did nothing wrong.
     pub(crate) seq: Arc<std::sync::atomic::AtomicU64>,
+    /// Makes "take the next sequence number" and "write that event" one step.
+    ///
+    /// The counter alone is not enough. Two tasks reading a process's output — stdout and stderr —
+    /// both reserve a number and then await the store; if the second reservation reaches the store
+    /// first, the store sees a gap and refuses it, and that chunk of output is gone. The counter
+    /// guarantees the numbers are unique; this guarantees they arrive in order.
+    pub(crate) append_lock: Arc<tokio::sync::Mutex<()>>,
     /// Calls waiting on a human. A batch can have several.
     pub(crate) pending: Vec<PendingCall>,
     /// The application's own state, opaque to the kernel.
@@ -222,6 +229,12 @@ impl Session {
         &self.ledger
     }
 
+    /// The lock every writer to this session's log holds while it takes a number and appends.
+    #[must_use]
+    pub(crate) fn append_lock(&self) -> Arc<tokio::sync::Mutex<()>> {
+        Arc::clone(&self.append_lock)
+    }
+
     /// The next event sequence number.
     #[must_use]
     pub fn next_seq(&self) -> u64 {
@@ -251,6 +264,7 @@ impl Session {
             budget,
             started_unix_millis: now_unix_millis,
             seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            append_lock: Arc::new(tokio::sync::Mutex::new(())),
             pending: Vec::new(),
             data: std::collections::BTreeMap::new(),
             workspace: None,
@@ -385,6 +399,7 @@ impl Session {
             seq: Arc::new(std::sync::atomic::AtomicU64::new(
                 snapshot.seq.saturating_add(1),
             )),
+            append_lock: Arc::new(tokio::sync::Mutex::new(())),
             pending: snapshot.pending,
             data: snapshot.data,
             routing: snapshot.routing,

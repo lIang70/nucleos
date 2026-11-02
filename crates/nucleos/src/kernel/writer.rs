@@ -22,6 +22,8 @@ pub(crate) struct EventWriter {
     pub(crate) store: Arc<dyn crate::adapter::Store>,
     pub(crate) session: SessionKey,
     pub(crate) seq: Arc<AtomicU64>,
+    /// Shared with the session: taking a number and writing it is one step, not two.
+    lock: Arc<tokio::sync::Mutex<()>>,
     clock: Arc<dyn Clock>,
 }
 
@@ -30,17 +32,23 @@ impl EventWriter {
         store: Arc<dyn crate::adapter::Store>,
         session: SessionKey,
         seq: Arc<AtomicU64>,
+        lock: Arc<tokio::sync::Mutex<()>>,
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
             store,
             session,
             seq,
+            lock,
             clock,
         }
     }
 
     pub(crate) async fn append(&self, kind: EventKind) -> Result<()> {
+        // Reservation and write, atomically with respect to every other writer of this log — the
+        // kernel's `emit` included. Without it, stdout and stderr take numbers that reach the store
+        // out of order, and the store refuses the second as a gap: the output is silently lost.
+        let _appending = self.lock.lock().await;
         let seq = self.seq.fetch_add(1, Ordering::SeqCst);
         let event = Event {
             seq,

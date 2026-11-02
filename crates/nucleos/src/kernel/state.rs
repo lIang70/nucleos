@@ -38,6 +38,9 @@ impl Kernel {
     /// Append an event to the session's log.
     ///
     pub(crate) async fn emit(&self, session: &mut session::Session, kind: EventKind) -> Result<()> {
+        // Held across the append, so this reservation cannot be overtaken by a process supervisor
+        // writing to the same log. Two writers, one order.
+        let _appending = session.append_lock.lock().await;
         let event = Event {
             seq: session.seq.load(std::sync::atomic::Ordering::SeqCst),
             session: session.id.clone(),

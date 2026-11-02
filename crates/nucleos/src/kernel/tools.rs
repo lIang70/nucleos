@@ -172,6 +172,7 @@ impl Kernel {
             Arc::clone(&self.store),
             session.key(),
             Arc::clone(&session.seq),
+            session.append_lock(),
             Arc::clone(&self.clock),
         );
         let progress_writer = tokio::spawn(async move {

@@ -1293,3 +1293,32 @@ questions, and only the first is the kernel's: it refuses a missing program, not
 unprivileged namespaces. A test that tried to cover the second failed in CI, where bubblewrap is present
 and namespaces are not allowed.
 
+## 86. A shared counter is not a shared order
+
+**Decision.** Every writer to a session's log holds the session's `append_lock` while it takes a
+sequence number **and** appends the event. `Kernel::emit`, the process supervisor's reader tasks, and
+the progress writer all take the same lock.
+
+**The bug.** The counter was already shared — `Session.seq` is one `Arc<AtomicU64>`, cloned into every
+task — and the documentation said so in capitals: *the same counter, not a copy, because two counters
+disagree*. That is true and it is not enough. Reserving a number and writing it were two steps:
+
+```text
+stdout: seq = fetch_add(1) → 5
+stderr: seq = fetch_add(1) → 6
+stderr: store.append(6)        ← arrives first
+stdout: store.append(5)        ← the store has 6, refuses 5 as a gap
+```
+
+The store is right to refuse: a silently renumbered event makes every later resume cursor wrong. The
+reader then breaks on the error and that chunk of output is gone.
+
+**Why it survived.** It needs two writers and a scheduler that lets the second one overtake: stdout and
+stderr are that pair, and on a fast local machine stdout almost always wins. CI lost the stderr of a
+`printf` and the test that found it was asserting that both streams arrive — an assertion about the log,
+which is where the loss was visible.
+
+**The shape of the fix, and why there.** A lock around two lines, held by every writer, rather than a
+retry in the store or a queue per stream. The invariant is "one log, one order"; the cheapest place to
+enforce it is where the order is decided.
+
