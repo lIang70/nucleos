@@ -37,6 +37,8 @@ pub struct Session {
     pub(crate) credit_tokens: u64,
     pub(crate) budget: Budget,
     pub(crate) started_unix_millis: u64,
+    /// Wall-clock time already charged to the budget, across previous requests.
+    pub(crate) spent_wall_millis: u64,
     /// The counter and the lock for this session's log.
     ///
     /// Not the handle's own: the kernel keeps one per `(tenant, session)` and hands the same `Arc` to
@@ -263,6 +265,7 @@ impl Session {
             credit_tokens: init.credit_tokens,
             budget: init.budget,
             started_unix_millis: init.now_unix_millis,
+            spent_wall_millis: 0,
             log: init.log,
             pending: Vec::new(),
             data: std::collections::BTreeMap::new(),
@@ -327,7 +330,8 @@ impl Session {
             return Some(StopReason::Cost);
         }
         if let Some(max) = self.budget.max_wall_millis
-            && now_unix_millis.saturating_sub(self.started_unix_millis) >= max
+            && self.spent_wall_millis + now_unix_millis.saturating_sub(self.started_unix_millis)
+                >= max
         {
             return Some(StopReason::Wall);
         }
@@ -338,7 +342,7 @@ impl Session {
     ///
     /// `None` before anything has been recorded: a snapshot that includes no event would claim
     /// a `seq` the log does not have.
-    pub(crate) fn snapshot(&self) -> Option<Snapshot> {
+    pub(crate) fn snapshot(&self, now_unix_millis: u64) -> Option<Snapshot> {
         if self.log.next() == 0 {
             return None;
         }
@@ -352,6 +356,11 @@ impl Session {
             usage: self.usage.clone(),
             inference_calls: self.steps,
             credit_tokens: self.credit_tokens,
+            budget: self.budget.clone(),
+            // Charged to the clock now, because the moment this is written is the moment the session
+            // stops running: the time after it belongs to the next request, not to this one.
+            spent_wall_millis: self.spent_wall_millis
+                + now_unix_millis.saturating_sub(self.started_unix_millis),
             pending: self.pending.clone(),
             routing: self.routing.clone(),
             system: self.system.clone(),
@@ -391,10 +400,12 @@ impl Session {
             credit_tokens: snapshot.credit_tokens,
             ledger: Ledger::default(),
             budget,
-            // A resumed session's wall clock starts now: the time a paused session spent
-            // waiting for a human is not the model's latency, and charging it would make every
-            // wall-clock budget meaningless the first time somebody thought about it.
+            // The clock restarts here and what it had already spent is restored beside it. The
+            // alternative — one start time and a subtraction — would charge every idle gap between
+            // requests to a session whose budget is about how long it runs, and a session parked on a
+            // human verdict would exhaust its wall budget while nobody was looking at it.
             started_unix_millis: now_unix_millis,
+            spent_wall_millis: snapshot.spent_wall_millis,
             // The counter belongs to the log, not to this handle: `load` may be handing out a second
             // handle for a session a supervisor is still writing to, and the head it resolves to is
             // already at the right number.
@@ -451,6 +462,6 @@ mod tests {
     #[test]
     fn a_checkpoint_before_any_event_is_not_written() {
         // A snapshot that includes no event would claim a seq the log does not have.
-        assert!(session().snapshot().is_none());
+        assert!(session().snapshot(0).is_none());
     }
 }

@@ -241,6 +241,12 @@ pub(crate) fn completes_a_unit(kind: &EventKind) -> bool {
         EventKind::MessageCompleted { .. }
             | EventKind::ToolFinished { .. }
             | EventKind::AttemptFailed { .. }
+            // A turn that ended by writing down why is a finished turn, not an abandoned one. Without
+            // this, recovery reads `turn_started` as evidence, finds `turn_failed` beneath it, and
+            // appends an abandoned attempt — inventing a model and a duration for a turn that already
+            // said what happened.
+            | EventKind::TurnFailed { .. }
+            | EventKind::Failed { .. }
             | EventKind::StateChanged { .. }
     )
 }
@@ -248,3 +254,56 @@ pub(crate) fn completes_a_unit(kind: &EventKind) -> bool {
 /// The reason recorded for a turn the runtime did not survive.
 pub(crate) const ABANDONED: &str = "the runtime stopped mid-turn; the spend is kept, the partial \
                                      output stays in the stream, and the message is not completed";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::contract::ErrorCode;
+
+    /// The pairing that makes recovery idempotent: an announcement is evidence, its ending retires it.
+    #[test]
+    fn every_ending_retires_the_evidence_a_turn_began() {
+        assert!(!completes_a_unit(&EventKind::TurnStarted {
+            model: "primary".to_owned(),
+            generation: 1,
+        }));
+        for ending in [
+            EventKind::MessageCompleted {
+                message: crate::contract::Message {
+                    role: crate::contract::Role::Assistant,
+                    content: crate::contract::Content::default(),
+                },
+                step_index: 0,
+            },
+            EventKind::AttemptFailed {
+                attempt: crate::contract::Attempt {
+                    index: 0,
+                    model: "primary".to_owned(),
+                    phase: crate::contract::AttemptPhase::Execute,
+                    trigger: crate::contract::AttemptTrigger::Selection,
+                    outcome: crate::contract::AttemptOutcome::Failed {
+                        code: ErrorCode::Unavailable,
+                        reason: "down".to_owned(),
+                    },
+                    usage: crate::contract::Usage::default(),
+                    duration_millis: 0,
+                    degraded: Vec::new(),
+                },
+            },
+            EventKind::TurnFailed {
+                code: ErrorCode::Denied,
+                reason: "no".to_owned(),
+            },
+            EventKind::Failed {
+                code: ErrorCode::Internal,
+                reason: "it broke".to_owned(),
+            },
+        ] {
+            assert!(
+                completes_a_unit(&ending),
+                "{} must end a turn, or recovery invents an abandoned one",
+                ending.type_name()
+            );
+        }
+    }
+}

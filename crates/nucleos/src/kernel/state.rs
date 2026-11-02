@@ -80,7 +80,7 @@ impl Kernel {
         self.write_checkpoint(session).await
     }
     pub(crate) async fn write_checkpoint(&self, session: &session::Session) -> Result<()> {
-        match session.snapshot() {
+        match session.snapshot(self.now()) {
             Some(snapshot) => self.store.write_snapshot(snapshot).await,
             None => Ok(()),
         }

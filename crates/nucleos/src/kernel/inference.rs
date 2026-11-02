@@ -110,6 +110,10 @@ impl Kernel {
                         },
                     )
                     .await?;
+                    // Checkpointed, so the next `load` does not have to infer this turn's ending from
+                    // a tail it was not written into: the record is the answer, and reading it twice
+                    // must not cost a second conclusion.
+                    self.write_checkpoint(session).await?;
                 }
                 return Err(error);
             }

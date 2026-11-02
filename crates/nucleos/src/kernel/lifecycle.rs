@@ -131,7 +131,7 @@ impl Kernel {
             principal.clone(),
             tools,
             head,
-            Default::default(),
+            snapshot.budget.clone(),
             self.now(),
         );
 

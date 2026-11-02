@@ -418,3 +418,74 @@ async fn a_session_that_never_ran_has_no_partial() {
     let session = kernel.open(&principal(), id, spec()).await.unwrap();
     assert!(kernel.partial(&session).await.unwrap().is_none());
 }
+
+/// A turn that ended by writing down why is not an abandoned turn.
+///
+/// `turn_failed` exists so a failure that never became an attempt still has a record. It also has to
+/// *end* the turn for recovery: `fold` treats `turn_started` as evidence of an abandoned turn, and
+/// `completes_a_unit` is what retires that evidence. Without it, `load` appends `attempt_failed`
+/// beneath a turn that already said what happened — inventing a model, a trigger and a duration.
+#[tokio::test]
+async fn a_turn_that_ended_in_writing_is_not_re_load_ed_as_abandoned() {
+    let store = Arc::new(SqliteStore::in_memory().unwrap());
+    let kernel = Kernel::builder()
+        .model("primary", Arc::new(FakeModel::text(["unused"])))
+        .store(Arc::clone(&store) as Arc<dyn Store>)
+        // Denies the model, so the turn fails inside the call — the path that writes `turn_failed`
+        // and nothing else.
+        .policy(Arc::new(nucleos::adapter::DenyAll))
+        .clock(Arc::new(FixedClock::at(0)))
+        .routing(Routing {
+            chain: vec!["primary".to_owned()],
+            retries: 0,
+        })
+        .build()
+        .unwrap();
+
+    let id = SessionId::new("s1");
+    let mut session = kernel
+        .open(
+            &principal(),
+            id.clone(),
+            SessionSpec {
+                credit_tokens: 1_000,
+                ..SessionSpec::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        kernel
+            .inference(&mut session, &[])
+            .await
+            .unwrap_err()
+            .code(),
+        ErrorCode::Denied
+    );
+
+    let before = kernel.events(&principal(), &id, 0).await.unwrap();
+    assert!(
+        matches!(
+            before.last().map(|event| &event.kind),
+            Some(EventKind::TurnFailed { .. })
+        ),
+        "the turn ended in writing: {:?}",
+        before
+            .iter()
+            .map(|event| event.kind.type_name())
+            .collect::<Vec<_>>()
+    );
+
+    // Loading is what used to append a second, invented ending.
+    kernel.load(&principal(), &id).await.unwrap();
+    let after = kernel.events(&principal(), &id, 0).await.unwrap();
+    assert_eq!(
+        after.len(),
+        before.len(),
+        "a load added an event to a turn that had already ended: {:?}",
+        after
+            .iter()
+            .map(|event| event.kind.type_name())
+            .collect::<Vec<_>>()
+    );
+}

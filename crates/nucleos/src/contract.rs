@@ -959,6 +959,23 @@ pub struct Snapshot {
     pub usage: Usage,
     /// How many inference calls it has made.
     pub inference_calls: u64,
+    /// The limits this session was opened with.
+    ///
+    /// In the checkpoint for the same reason the credit is: over the ABI every request loads the
+    /// session, and a budget that is re-supplied per request is a budget the caller can forget — or
+    /// quietly widen — by sending a different one. What a session was opened with is part of what the
+    /// session *is*.
+    #[serde(default)]
+    pub budget: Budget,
+    /// Wall-clock milliseconds the session has already burned.
+    ///
+    /// Separate from the start time because the two answer different questions. A session that waited
+    /// an hour for a human verdict has not spent an hour of model time, and a `max_wall_millis` that
+    /// charged it would fire on every session that used parked calls. Accumulated at each checkpoint,
+    /// so a reload continues the clock instead of restarting it — which is what made the wall budget
+    /// impossible to hit over the ABI.
+    #[serde(default)]
+    pub spent_wall_millis: u64,
     /// Tokens granted and not yet spent.
     ///
     /// In the checkpoint because every syscall may be served by a different process: a budget

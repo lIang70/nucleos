@@ -266,6 +266,8 @@ fn snapshot_for(session: &SessionId) -> nucleos::contract::Snapshot {
         usage: nucleos::contract::Usage::default(),
         inference_calls: 0,
         credit_tokens: 0,
+        budget: Default::default(),
+        spent_wall_millis: 0,
         pending: Vec::new(),
         data: std::collections::BTreeMap::new(),
         routing: nucleos::contract::Routing::default(),
