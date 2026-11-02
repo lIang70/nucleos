@@ -507,6 +507,85 @@ pub struct PutResponse {
     pub rules: usize,
 }
 
+/// What applying a document did.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct AppliedDeployment {
+    /// The revision the deployment is now at.
+    pub revision: u64,
+    /// One line: how many models, sources and tenants the document carried.
+    pub summary: String,
+}
+
+/// One row of the configuration history.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ChangeView {
+    /// When it happened, unix milliseconds.
+    pub at_unix_millis: u64,
+    /// The tenant that made it.
+    pub tenant: String,
+    /// The subject within it.
+    pub subject: String,
+    /// Which administrative key signed it.
+    ///
+    /// The field that makes the history an audit rather than a log: without it a row proves a change
+    /// was authorised and cannot say by whom.
+    pub key_id: String,
+    /// What was changed.
+    pub key: String,
+    /// The value, as stored.
+    pub value: String,
+}
+
+/// The configuration history, newest first.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ChangeListResponse {
+    /// The rows.
+    #[serde(default)]
+    pub changes: Vec<ChangeView>,
+}
+
+/// The whole configuration, as one document.
+///
+/// The point is that it is a *document*: a deployment can be exported, edited, diffed, committed to
+/// whatever a team uses, and applied back. Before this, configuration was five write endpoints over a
+/// key-value table, which meant the only way to answer "what was it before" was `sqlite3 system.db`.
+///
+/// What it deliberately does not contain: the sealed model credentials and the token table. Ciphertext
+/// sealed with a key that lives outside the data directory is not exportable in any useful sense, and a
+/// token is issued once and shown once. Those are recovered by other means, and the document says so by
+/// carrying `has_sealed_key` rather than the key.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct Deployment {
+    /// The shape of this document, so a build can refuse one it does not understand.
+    pub document_version: u32,
+    /// How many times a document has been applied. Written by the daemon, ignored on the way in.
+    #[serde(default)]
+    pub revision: u64,
+    /// The system policy, as text. Absent means no policy is stored, which denies by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<String>,
+    /// The models a route may name.
+    #[serde(default)]
+    pub models: Vec<ModelView>,
+    /// The tool sources.
+    #[serde(default)]
+    pub sources: Vec<SourceView>,
+    /// Tenants that wrote something of their own.
+    #[serde(default)]
+    pub tenants: std::collections::BTreeMap<String, TenantDocument>,
+}
+
+/// One tenant's part of the deployment document.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct TenantDocument {
+    /// Its policy, as text. Composed with the system policy rather than replacing it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<String>,
+    /// Its ceilings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits: Option<TenantLimitsView>,
+}
+
 /// What this daemon is running.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct ConfigResponse {
@@ -527,6 +606,18 @@ pub struct ConfigResponse {
     /// The tool generation new sessions are pinned to.
     #[serde(default)]
     pub generation: u64,
+    /// How many times a configuration document has been applied.
+    #[serde(default)]
+    pub revision: u64,
+    /// The models a route may name, as the document holds them.
+    #[serde(default)]
+    pub models: Vec<ModelView>,
+    /// The tool sources, without the tools they currently advertise.
+    #[serde(default)]
+    pub sources: Vec<SourceView>,
+    /// Tenants that wrote a policy or a ceiling of their own.
+    #[serde(default)]
+    pub tenants: std::collections::BTreeMap<String, TenantDocument>,
     /// How many bytes of body the signature covered.
     ///
     /// Zero for every read, which is the point: it shows the verifier ran over the request that was

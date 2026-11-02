@@ -1478,3 +1478,25 @@ which is precisely the case where the client is behind and about to miss the fra
 The catch-up path the main loop already used is now a function both call, because "the store is the
 record" has to be true in the drain too or the terminal-frame promise is only true when nobody is slow.
 
+## 95. A configuration needs a version before it needs a UI
+
+**Decision.** The configuration is one document with a revision, applied in a single transaction, and
+every apply is recorded with the key that signed it.
+
+**What "five write endpoints over a key-value table" cost.** The store had `config/policy`,
+`config/models`, `config/sources`, two tenant prefixes and a tokens table — five shapes, five handlers,
+no object called "the configuration". The consequences were all operational rather than technical: no
+export, so disaster recovery was `sqlite3 system.db .dump`; no revision, so a stale document silently
+reverted what an on-call engineer had just changed; and an audit table nothing read, with `key_id`
+written as an empty string even though the verifier knew it.
+
+**The validation rule that a test forced.** The first version allowed a document without a policy, and
+applying it deleted `config/policy` — after which the running daemon could not rebuild its policy and
+refused the next request with "this deployment has no policy". The store's own rule is that a deployment
+without one is not a deployment; the apply now says so up front instead of discovering it one request
+later.
+
+**And the guard test earned its keep on the same day.** `every_published_route_refuses_a_signature_that
+_verifies_nothing` — written for the four unguarded routes — failed on `GET /v1/config/history`, a route
+added in the same commit that added the document. It was the first thing that noticed.
+

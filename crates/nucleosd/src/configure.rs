@@ -747,6 +747,296 @@ async fn record(
         .map_err(|error| ApiError::from_error(&error))
 }
 
+/// The whole configuration, read out of the store as one document.
+///
+/// Built from the store rather than from what the daemon is holding: an export that described the
+/// running state would be an export that could not reproduce it, and the two differ exactly when
+/// something went wrong.
+pub fn document(system: &SystemStore) -> Result<nucleos::wire::api::Deployment> {
+    use nucleos::wire::api::{Deployment, TenantDocument, TenantLimitsView};
+
+    let policy = system.get(crate::http::POLICY_KEY)?;
+    let models = stored_models(system)?;
+    let sources: Vec<crate::sources::SourceSpec> = match system.get(crate::sources::SOURCES_KEY)? {
+        Some(raw) => serde_json::from_str(&raw)
+            .map_err(|error| Error::internal(format!("stored sources are unreadable: {error}")))?,
+        None => Vec::new(),
+    };
+
+    let mut tenants: std::collections::BTreeMap<String, TenantDocument> =
+        std::collections::BTreeMap::new();
+    for (key, value) in system.with_prefix(TENANT_POLICY_PREFIX)? {
+        if let Some(tenant) = key.strip_prefix(TENANT_POLICY_PREFIX) {
+            tenants.entry(tenant.to_owned()).or_default().policy = Some(value);
+        }
+    }
+    for (key, value) in system.with_prefix(TENANT_LIMITS_PREFIX)? {
+        let Some(tenant) = key.strip_prefix(TENANT_LIMITS_PREFIX) else {
+            continue;
+        };
+        let limits: TenantLimitsView = serde_json::from_str(&value).map_err(|error| {
+            Error::internal(format!(
+                "stored limits for {tenant} are unreadable: {error}"
+            ))
+        })?;
+        tenants.entry(tenant.to_owned()).or_default().limits = Some(limits);
+    }
+
+    Ok(Deployment {
+        document_version: 1,
+        revision: system.revision()?,
+        policy,
+        models,
+        sources: sources
+            .into_iter()
+            .map(|spec| nucleos::wire::api::SourceView {
+                name: spec.name,
+                command: spec.command,
+                args: spec.args,
+                tools: Vec::new(),
+            })
+            .collect(),
+        tenants,
+    })
+}
+
+/// What an apply did.
+#[derive(Debug, Clone)]
+pub struct Applied {
+    /// The revision the deployment is now at.
+    pub revision: u64,
+    /// What changed, in the words the history row uses.
+    pub summary: String,
+}
+
+/// Apply a document: validate all of it, replace the store in one transaction, then make the running
+/// daemon match.
+///
+/// **Validate before writing anything.** A document that is half applied is a deployment referring to a
+/// model nobody defined, and the window between two writes is exactly when a request arrives. The order
+/// is: parse every part, build the whole key set, then one transaction.
+///
+/// **The running daemon is updated after the store**, not before. If rehydration fails the store is
+/// still the truth and a restart converges; the opposite order leaves a daemon enforcing something that
+/// a restart would silently undo.
+pub async fn apply(
+    app: &Arc<crate::http::App>,
+    system: &SystemStore,
+    document: nucleos::wire::api::Deployment,
+    expected_revision: Option<u64>,
+    admin: &crate::admin::Admin,
+) -> Result<Applied> {
+    let current = system.revision()?;
+    if let Some(expected) = expected_revision
+        && expected != current
+    {
+        return Err(Error::new(
+            nucleos::contract::ErrorCode::Conflict,
+            format!(
+                "this deployment is at revision {current}, the document was written against {expected}"
+            ),
+        ));
+    }
+    if document.document_version != 1 {
+        return Err(Error::invalid(format!(
+            "document_version {} is not one this build understands (1)",
+            document.document_version
+        )));
+    }
+
+    // --- validate -----------------------------------------------------------------------------
+    //
+    // A document must carry a policy. Not because it is convenient to require one, but because the
+    // store's own rule is that a deployment without a policy is not a deployment — deny-by-default is
+    // only safe when something says so — and an apply that deleted the policy would produce exactly
+    // that state, one request later.
+    let Some(policy) = &document.policy else {
+        return Err(Error::invalid(
+            "the document carries no policy; a deployment without one denies everything, and \
+             `nucleos init` writes the bootstrap policy this is meant to replace",
+        ));
+    };
+    nucleos_policy::Document::parse(policy).map_err(|error| {
+        Error::invalid(format!(
+            "the system policy is not a valid document: {error}"
+        ))
+    })?;
+    let mut names = std::collections::BTreeSet::new();
+    for model in &document.models {
+        if model.name.trim().is_empty()
+            || model.url.trim().is_empty()
+            || model.model.trim().is_empty()
+        {
+            return Err(Error::invalid(format!(
+                "model {:?} needs a name, a url and a provider model",
+                model.name
+            )));
+        }
+        if !names.insert(model.name.clone()) {
+            return Err(Error::invalid(format!(
+                "two models are called {:?}",
+                model.name
+            )));
+        }
+    }
+    let mut source_names = std::collections::BTreeSet::new();
+    for source in &document.sources {
+        if source.name.trim().is_empty() || source.command.trim().is_empty() {
+            return Err(Error::invalid(format!(
+                "source {:?} needs a name and a command",
+                source.name
+            )));
+        }
+        if !source_names.insert(source.name.clone()) {
+            return Err(Error::invalid(format!(
+                "two sources are called {:?}",
+                source.name
+            )));
+        }
+    }
+    for (tenant, part) in &document.tenants {
+        if let Some(policy) = &part.policy {
+            nucleos_policy::Document::parse(policy).map_err(|error| {
+                Error::invalid(format!(
+                    "the policy for {tenant} is not a valid document: {error}"
+                ))
+            })?;
+        }
+    }
+
+    // --- one transaction ----------------------------------------------------------------------
+    let revision = current.saturating_add(1);
+    let mut entries: Vec<(String, String)> = Vec::new();
+    entries.push((crate::http::POLICY_KEY.to_owned(), policy.clone()));
+    entries.push((
+        MODELS_KEY.to_owned(),
+        serde_json::to_string(&document.models)
+            .map_err(|error| Error::internal(format!("models are not storable: {error}")))?,
+    ));
+    let specs: Vec<crate::sources::SourceSpec> = document
+        .sources
+        .iter()
+        .map(|source| crate::sources::SourceSpec {
+            name: source.name.clone(),
+            command: source.command.clone(),
+            args: source.args.clone(),
+            env: std::collections::BTreeMap::new(),
+        })
+        .collect();
+    entries.push((
+        crate::sources::SOURCES_KEY.to_owned(),
+        serde_json::to_string(&specs)
+            .map_err(|error| Error::internal(format!("sources are not storable: {error}")))?,
+    ));
+    for (tenant, part) in &document.tenants {
+        if let Some(policy) = &part.policy {
+            entries.push((format!("{TENANT_POLICY_PREFIX}{tenant}"), policy.clone()));
+        }
+        if let Some(limits) = &part.limits {
+            entries.push((
+                format!("{TENANT_LIMITS_PREFIX}{tenant}"),
+                serde_json::to_string(limits).map_err(|error| {
+                    Error::internal(format!("limits for {tenant} are not storable: {error}"))
+                })?,
+            ));
+        }
+    }
+    entries.push(("config/revision".to_owned(), revision.to_string()));
+    system.replace(entries).await?;
+
+    let summary = format!(
+        "revision {revision}: {} model(s), {} source(s), {} tenant(s)",
+        document.models.len(),
+        document.sources.len(),
+        document.tenants.len(),
+    );
+    system
+        .record(nucleos_sqlite::Change {
+            at_unix_millis: now(),
+            tenant: admin.principal.tenant.clone(),
+            subject: admin.principal.subject.clone(),
+            key_id: admin.key_id.clone(),
+            key: "deployment".to_owned(),
+            value: summary.clone(),
+        })
+        .await?;
+
+    // --- make the daemon match ----------------------------------------------------------------
+    rehydrate(app, system, &document).await?;
+
+    tracing::info!(
+        event = "deployment_applied",
+        revision,
+        key_id = %admin.key_id,
+        models = document.models.len(),
+        sources = document.sources.len(),
+        tenants = document.tenants.len(),
+    );
+    Ok(Applied { revision, summary })
+}
+
+/// Bring the running daemon in line with the store.
+async fn rehydrate(
+    app: &Arc<crate::http::App>,
+    system: &SystemStore,
+    document: &nucleos::wire::api::Deployment,
+) -> Result<()> {
+    let kernel = app.kernel().map_err(|error| error.into_error())?;
+
+    // Policy first: everything else is checked against it, and a document that widens permissions must
+    // widen them before the models it names are reachable.
+    let layered = layered_from(system)?;
+    kernel.set_policy(Arc::new(layered))?;
+
+    // Models: remove what the document no longer names, then add or replace what it does. Replacing
+    // unconditionally is simpler than diffing fields and has the same effect — a model is a route
+    // target, not a conversation.
+    let wanted: std::collections::BTreeSet<String> = document
+        .models
+        .iter()
+        .map(|model| model.name.clone())
+        .collect();
+    for existing in kernel.models() {
+        if !wanted.contains(&existing) {
+            kernel.remove_model(&existing)?;
+        }
+    }
+    for model in &document.models {
+        let api_key = match app.seal() {
+            Some(seal) => match system.get(&format!("{SEALED_KEY_PREFIX}{}", model.name))? {
+                Some(sealed) => Some(seal.open(&sealed)?),
+                None => None,
+            },
+            None => None,
+        };
+        let adapter = adapter_for(
+            &nucleos::wire::api::ModelRequest {
+                name: model.name.clone(),
+                url: model.url.clone(),
+                model: model.model.clone(),
+                key_file: model.key_file.clone(),
+                context_window: Some(model.context_window),
+                strict_tools: model.strict_tools,
+                reasoning: model.reasoning,
+                ..Default::default()
+            },
+            api_key,
+        )?;
+        kernel.add_model(&model.name, Arc::new(adapter))?;
+    }
+
+    apply_tenant_limits(kernel, system)?;
+
+    // Sources: reconnected from the store, then published as one generation. A source that cannot
+    // start is logged and skipped, the same way start-up treats it.
+    let reloaded = crate::sources::SourceSet::load(system).await?;
+    *app.sources().write().await = reloaded;
+    crate::sources::publish(app, kernel)
+        .await
+        .map_err(|error| error.into_error())?;
+    Ok(())
+}
+
 fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

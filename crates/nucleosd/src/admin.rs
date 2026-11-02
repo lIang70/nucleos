@@ -74,7 +74,7 @@ impl Verifier {
         path: &str,
         body: &[u8],
         header: Option<&str>,
-    ) -> Result<Principal> {
+    ) -> Result<Verified> {
         let header = header.ok_or_else(|| {
             Error::denied(format!(
                 "this endpoint needs an administrative signature: `Authorization: {} …`",
@@ -148,6 +148,7 @@ impl Verifier {
         }
 
         let principal = key.principal();
+        let key_id = key.id.clone();
         tracing::info!(
             event = "admin_request",
             method,
@@ -156,7 +157,7 @@ impl Verifier {
             tenant = %principal.tenant,
             subject = %principal.subject,
         );
-        Ok(principal)
+        Ok(Verified { principal, key_id })
     }
 
     async fn keys(&self) -> Result<Vec<PublicKey>> {
@@ -170,6 +171,19 @@ impl Verifier {
     }
 }
 
+/// Who signed a request, and with which key.
+///
+/// Two facts rather than one: the principal says who may act, the key id says which credential did —
+/// and the history row that records a configuration change needs the second, or an audit can prove a
+/// change was authorised but not by whom.
+#[derive(Debug, Clone)]
+pub struct Verified {
+    /// Who the key belongs to.
+    pub principal: Principal,
+    /// Which key it was.
+    pub key_id: String,
+}
+
 /// An authenticated administrator, with the body the signature covered.
 ///
 /// The body comes with the principal because the signature covers it: an extractor that verified a
@@ -178,6 +192,8 @@ impl Verifier {
 pub struct Admin {
     /// Who signed it.
     pub principal: Principal,
+    /// Which key signed it.
+    pub key_id: String,
     /// What they signed.
     pub body: Bytes,
 }
@@ -208,13 +224,14 @@ impl FromRequest<Arc<crate::http::App>> for Admin {
             .headers
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|value| value.to_str().ok());
-        let principal = verifier
+        let Verified { principal, key_id } = verifier
             .verify(parts.method.as_str(), parts.uri.path(), &bytes, header)
             .await
             .map_err(|error| crate::http::ApiError::unauthorized(&error))?;
 
         Ok(Self {
             principal,
+            key_id,
             body: bytes,
         })
     }
@@ -252,12 +269,14 @@ mod tests {
             1_000_000,
         );
 
-        let principal = verifier
+        let verified = verifier
             .verify("GET", "/v1/config", b"", Some(&header))
             .await
             .unwrap();
-        assert_eq!(principal.tenant, "acme");
-        assert_eq!(principal.subject, "alice");
+        assert_eq!(verified.principal.tenant, "acme");
+        assert_eq!(verified.principal.subject, "alice");
+        // The key that signed it, which is what the configuration history records.
+        assert_eq!(verified.key_id, key.public("acme", "alice").id);
     }
 
     #[tokio::test]

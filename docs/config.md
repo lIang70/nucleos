@@ -436,7 +436,9 @@ Properties it must have:
 Every mutation is a request, signed, recorded, and gated.
 
 ```text
-GET    /v1/config                 what this daemon is actually running
+GET    /v1/config                 the whole configuration, as one document
+PUT    /v1/config                 replace it (If-Match = compare-and-swap)
+GET    /v1/config/history         what changed, and which key signed it
 POST   /v1/models                 add or replace a model
 DELETE /v1/models/{name}          remove one
 POST   /v1/sources                add a tool source   → publishes a generation
@@ -479,6 +481,39 @@ Deletion is the hard direction, and each kind has its own answer:
 | A model | refuse while a live session's routing chain names it; the check reads the tenant store and is best-effort (see §4) |
 | A token | immediate, because revocation that waits is not revocation |
 | An admin key | immediate; warn loudly if it was the last one — recovery is still possible locally, and locking yourself out is worse than a weaker fallback |
+
+### 8.0 The configuration is a document
+
+`GET /v1/config` answers with the whole thing — policy, models, sources, per-tenant policy and
+ceilings, the administrators enrolled — plus a `revision`. `PUT /v1/config` takes the same shape back.
+Three properties, and each one exists because its absence was a specific failure:
+
+**A revision, and `If-Match`.** Without one, an operator holding a document exported an hour ago
+silently reverts whatever the on-call engineer changed in between, and the history shows two applies
+and no mistake. `If-Match: <revision>` turns the apply into a compare-and-swap; a stale document answers
+`409` with code `conflict`, which is a different instruction from `invalid` — re-read, do not fix.
+
+**One transaction.** The document is validated in full before anything is written, then replaced inside
+a single transaction. A half-applied document is a deployment that refers to a model nobody defined,
+and the window between two writes is exactly when a request arrives. A document that fails validation
+changes nothing.
+
+**The history names the key.** `Change.key_id` used to be written as an empty string; the verifier knew
+which key signed and threw it away. `GET /v1/config/history` now answers "who changed the policy, with
+which credential, and when" as a request rather than as a `sqlite3` session.
+
+What the document deliberately does **not** contain:
+
+- **Sealed model credentials** (`config/keys/model/*`). Ciphertext sealed with a key that lives outside
+  the data directory is not exportable in any useful sense — the export would decrypt to nothing on the
+  machine it was restored to. Models carry `has_sealed_key` instead, and a restore re-enters the keys.
+- **The token table.** A token is shown once, at issue; a document that could carry one would be a
+  document worth stealing.
+- **The recovery password.** It is a verifier, not a configuration value, and `nucleos admin recover`
+  is its only writer.
+
+Rollback is therefore "export revision N from the history, apply it" — the document is the rollback
+unit, because the store keeps the applied text rather than a summary of it.
 
 ## 8.1 Two things the mutation surface taught us
 

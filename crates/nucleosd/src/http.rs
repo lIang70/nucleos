@@ -17,11 +17,11 @@ use axum::{Json, Router};
 use nucleos::contract::{ErrorCode, Event, EventKind, Principal, SessionId, SessionState};
 use nucleos::kernel::{HitlVerdict, Kernel, SessionSpec, StateWrite};
 use nucleos::wire::api::{
-    CancelResponse, ConfigKey, ConfigResponse, DescribeResponse, ErrorBody, InferenceRequest,
-    InferenceResponse, MetricsResponse, ProcessInfo, ProcessListResponse, ProcessStartRequest,
-    ProcessStartResponse, ReloadResponse, RetireResponse, SessionListResponse, SessionSummary,
-    SessionView, StartRequest, StartResponse, StateRequest, StdinRequest, ToolBatchRequest,
-    ToolBatchResponse, VerdictRequest,
+    AppliedDeployment, CancelResponse, ChangeListResponse, ChangeView, ConfigKey, ConfigResponse,
+    Deployment, DescribeResponse, ErrorBody, InferenceRequest, InferenceResponse, MetricsResponse,
+    ProcessInfo, ProcessListResponse, ProcessStartRequest, ProcessStartResponse, ReloadResponse,
+    RetireResponse, SessionListResponse, SessionSummary, SessionView, StartRequest, StartResponse,
+    StateRequest, StdinRequest, ToolBatchRequest, ToolBatchResponse, VerdictRequest,
 };
 use nucleos::wire::openapi;
 use nucleos_agent as agent;
@@ -802,6 +802,29 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            method: "put",
+            path: "/v1/config",
+            operation: "applyConfig",
+            summary: "Replace the whole configuration from one document. `If-Match` makes it a \
+                      compare-and-swap.",
+            request: Some("Deployment"),
+            reply: openapi::Reply::Json("AppliedDeployment"),
+        },
+        build: || put(apply_config),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "get",
+            path: "/v1/config/history",
+            operation: "configHistory",
+            summary: "Configuration changes, newest first, with the key that signed each one.",
+            request: None,
+            reply: openapi::Reply::Json("ChangeListResponse"),
+        },
+        build: || get(config_history),
+    },
+    Route {
+        meta: openapi::Route {
             method: "get",
             path: "/v1/metrics",
             operation: "metrics",
@@ -1015,9 +1038,6 @@ async fn config(
         )));
     };
 
-    let policy = system
-        .get(POLICY_KEY)
-        .map_err(|error| ApiError::from_error(&error))?;
     let keys = system
         .get(crate::admin::ADMIN_KEYS_KEY)
         .map_err(|error| ApiError::from_error(&error))?;
@@ -1038,23 +1058,21 @@ async fn config(
         tenant = %admin.principal.tenant,
     );
 
-    let tenants = crate::configure::layered_from(system)
-        .map(|layered| {
-            layered
-                .tenants()
-                .into_iter()
-                .map(ToOwned::to_owned)
-                .collect::<Vec<String>>()
-        })
-        .unwrap_or_default();
+    let document =
+        crate::configure::document(system).map_err(|error| ApiError::from_error(&error))?;
+    let tenants = document.tenants.keys().cloned().collect::<Vec<String>>();
 
     Ok(Json(ConfigResponse {
+        revision: document.revision,
+        models: document.models.clone(),
+        sources: document.sources.clone(),
+        tenants: document.tenants.clone(),
         tenant_policies: tenants,
         schema_version: system
             .schema_version()
             .map_err(|error| ApiError::from_error(&error))?,
         root: app.root().map(|root| root.display().to_string()),
-        policy_json: policy,
+        policy_json: document.policy.clone(),
         admin_keys: keys
             .into_iter()
             .map(|key| ConfigKey {
@@ -1075,6 +1093,93 @@ async fn config(
 }
 
 /// What this daemon has counted.
+/// Replace the whole configuration from one document.
+///
+/// `If-Match: <revision>` is optional and means "only if the deployment is still at revision N". It is
+/// what turns an apply from a last-writer-wins overwrite into a compare-and-swap: without it, an
+/// operator holding a document exported an hour ago silently reverts whatever the on-call engineer
+/// changed in between, and the history shows two applies and no mistake.
+async fn apply_config(
+    State(app): State<Arc<App>>,
+    headers: axum::http::HeaderMap,
+    admin: crate::admin::Admin,
+) -> Result<Json<AppliedDeployment>, ApiError> {
+    let Some(system) = app.system() else {
+        return Err(ApiError::from_error(&nucleos::Error::unavailable(
+            "this daemon has no system store",
+        )));
+    };
+    let document: Deployment = serde_json::from_slice(&admin.body).map_err(|error| {
+        ApiError::from_error(&nucleos::Error::invalid(format!(
+            "the document is not readable: {error}"
+        )))
+    })?;
+    // `If-Match` accepts the weak/quoted form a cache would send as well as a bare number.
+    let expected = headers
+        .get(axum::http::header::IF_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.trim().trim_matches('"').to_owned())
+        .filter(|value| !value.is_empty() && value != "*")
+        .map(|value| {
+            value.parse::<u64>().map_err(|_| {
+                ApiError::from_error(&nucleos::Error::invalid(format!(
+                    "If-Match {value:?} is not a revision"
+                )))
+            })
+        })
+        .transpose()?;
+
+    let applied = crate::configure::apply(&app, system, document, expected, &admin)
+        .await
+        .map_err(|error| ApiError::from_error(&error))?;
+    Ok(Json(AppliedDeployment {
+        revision: applied.revision,
+        summary: applied.summary,
+    }))
+}
+
+/// What has been changed and by which key.
+///
+/// The history existed before this route and nothing read it, which made "who changed the policy" a
+/// question for `sqlite3`. Rows carry the signing key now, so the answer is a request.
+async fn config_history(
+    State(app): State<Arc<App>>,
+    Query(query): Query<HistoryQuery>,
+    // The history names every change and the key that signed it, so it is an administrative read.
+    _admin: crate::admin::Admin,
+) -> Result<Json<ChangeListResponse>, ApiError> {
+    let Some(system) = app.system() else {
+        return Err(ApiError::from_error(&nucleos::Error::unavailable(
+            "this daemon has no system store",
+        )));
+    };
+    let limit = if query.limit == 0 { 50 } else { query.limit };
+    let rows = system
+        .history(limit.min(500))
+        .map_err(|error| ApiError::from_error(&error))?;
+    Ok(Json(ChangeListResponse {
+        changes: rows
+            .into_iter()
+            .map(|change| ChangeView {
+                at_unix_millis: change.at_unix_millis,
+                tenant: change.tenant,
+                subject: change.subject,
+                key_id: change.key_id,
+                key: change.key,
+                value: change.value,
+            })
+            .collect(),
+    }))
+}
+
+/// Query parameters for the configuration history.
+#[derive(Debug, serde::Deserialize)]
+struct HistoryQuery {
+    /// How many rows, newest first.
+    #[serde(default)]
+    limit: usize,
+}
+
 async fn metrics(caller: Caller, State(app): State<Arc<App>>) -> Json<MetricsResponse> {
     let _ = caller;
     Json(app.metrics().snapshot())
@@ -1955,6 +2060,14 @@ pub struct ApiError {
 }
 
 impl ApiError {
+    /// The same failure, in the kernel's vocabulary.
+    ///
+    /// For helpers outside this module that speak `nucleos::Error` and still have to call something
+    /// that answers a status code.
+    pub(crate) fn into_error(self) -> nucleos::Error {
+        nucleos::Error::new(self.body.code, self.body.reason)
+    }
+
     /// A request whose credentials were missing or wrong.
     ///
     /// `401`, not `403`: the difference is "who are you" versus "not you". A denied policy verdict is
@@ -1978,6 +2091,7 @@ impl ApiError {
             // 409 Conflict, not 500: the turn was aborted by the caller's own decision, and the
             // session is still usable. Nothing went wrong, and the code should not suggest it did.
             ErrorCode::Cancelled => StatusCode::CONFLICT,
+            ErrorCode::Conflict => StatusCode::CONFLICT,
             ErrorCode::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             ErrorCode::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         };

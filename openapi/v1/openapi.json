@@ -63,6 +63,26 @@
         ],
         "type": "object"
       },
+      "AppliedDeployment": {
+        "description": "What applying a document did.",
+        "properties": {
+          "revision": {
+            "description": "The revision the deployment is now at.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "summary": {
+            "description": "One line: how many models, sources and tenants the document carried.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "revision",
+          "summary"
+        ],
+        "type": "object"
+      },
       "Attempt": {
         "description": "One attempt, recorded whether or not it produced anything.",
         "properties": {
@@ -252,6 +272,60 @@
         },
         "type": "object"
       },
+      "ChangeListResponse": {
+        "description": "The configuration history, newest first.",
+        "properties": {
+          "changes": {
+            "default": [],
+            "description": "The rows.",
+            "items": {
+              "$ref": "#/components/schemas/ChangeView"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "ChangeView": {
+        "description": "One row of the configuration history.",
+        "properties": {
+          "at_unix_millis": {
+            "description": "When it happened, unix milliseconds.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "key": {
+            "description": "What was changed.",
+            "type": "string"
+          },
+          "key_id": {
+            "description": "Which administrative key signed it.\n\nThe field that makes the history an audit rather than a log: without it a row proves a change\nwas authorised and cannot say by whom.",
+            "type": "string"
+          },
+          "subject": {
+            "description": "The subject within it.",
+            "type": "string"
+          },
+          "tenant": {
+            "description": "The tenant that made it.",
+            "type": "string"
+          },
+          "value": {
+            "description": "The value, as stored.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "at_unix_millis",
+          "tenant",
+          "subject",
+          "key_id",
+          "key",
+          "value"
+        ],
+        "type": "object"
+      },
       "ConfigKey": {
         "description": "One enrolled administrator key, without the key material.",
         "properties": {
@@ -371,12 +445,27 @@
             "minimum": 0,
             "type": "integer"
           },
+          "models": {
+            "default": [],
+            "description": "The models a route may name, as the document holds them.",
+            "items": {
+              "$ref": "#/components/schemas/ModelView"
+            },
+            "type": "array"
+          },
           "policy_json": {
             "description": "The policy document in force, as stored — the daemon does not summarise what it enforces.",
             "type": [
               "string",
               "null"
             ]
+          },
+          "revision": {
+            "default": 0,
+            "description": "How many times a configuration document has been applied.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
           },
           "root": {
             "description": "Where the data lives.",
@@ -398,6 +487,14 @@
             "minimum": 0,
             "type": "integer"
           },
+          "sources": {
+            "default": [],
+            "description": "The tool sources, without the tools they currently advertise.",
+            "items": {
+              "$ref": "#/components/schemas/SourceView"
+            },
+            "type": "array"
+          },
           "tenant_policies": {
             "default": [],
             "description": "The tenants that wrote a policy of their own, composed with the deployment's.",
@@ -405,6 +502,14 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "tenants": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/TenantDocument"
+            },
+            "default": {},
+            "description": "Tenants that wrote a policy or a ceiling of their own.",
+            "type": "object"
           }
         },
         "required": [
@@ -499,6 +604,59 @@
         "required": [
           "field",
           "reason"
+        ],
+        "type": "object"
+      },
+      "Deployment": {
+        "description": "The whole configuration, as one document.\n\nThe point is that it is a *document*: a deployment can be exported, edited, diffed, committed to\nwhatever a team uses, and applied back. Before this, configuration was five write endpoints over a\nkey-value table, which meant the only way to answer \"what was it before\" was `sqlite3 system.db`.\n\nWhat it deliberately does not contain: the sealed model credentials and the token table. Ciphertext\nsealed with a key that lives outside the data directory is not exportable in any useful sense, and a\ntoken is issued once and shown once. Those are recovered by other means, and the document says so by\ncarrying `has_sealed_key` rather than the key.",
+        "properties": {
+          "document_version": {
+            "description": "The shape of this document, so a build can refuse one it does not understand.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "models": {
+            "default": [],
+            "description": "The models a route may name.",
+            "items": {
+              "$ref": "#/components/schemas/ModelView"
+            },
+            "type": "array"
+          },
+          "policy": {
+            "description": "The system policy, as text. Absent means no policy is stored, which denies by default.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "default": 0,
+            "description": "How many times a document has been applied. Written by the daemon, ignored on the way in.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sources": {
+            "default": [],
+            "description": "The tool sources.",
+            "items": {
+              "$ref": "#/components/schemas/SourceView"
+            },
+            "type": "array"
+          },
+          "tenants": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/TenantDocument"
+            },
+            "default": {},
+            "description": "Tenants that wrote something of their own.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "document_version"
         ],
         "type": "object"
       },
@@ -637,6 +795,11 @@
           {
             "const": "timeout",
             "description": "A deadline passed.",
+            "type": "string"
+          },
+          {
+            "const": "conflict",
+            "description": "The request is valid but the thing it refers to moved.\n\nDistinct from `Invalid`, which blames the request. A caller whose configuration document was\nwritten against revision 3 and is being applied to revision 5 sent something correct; the\nanswer is \"re-read and try again\", which is a different instruction.",
             "type": "string"
           },
           {
@@ -3243,6 +3406,30 @@
           }
         ]
       },
+      "TenantDocument": {
+        "description": "One tenant's part of the deployment document.",
+        "properties": {
+          "limits": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TenantLimitsView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its ceilings."
+          },
+          "policy": {
+            "description": "Its policy, as text. Composed with the system policy rather than replacing it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "TenantLimitsRequest": {
         "description": "What one tenant may use.\n\n`null` clears a limit; an empty array allows nothing. The two are different states and mean\ndifferent things — \"no limit\" and \"nothing permitted\" — so neither is encoded as the other.",
         "properties": {
@@ -4145,6 +4332,170 @@
           }
         },
         "summary": "What this daemon is running, for an administrator who signed the request."
+      },
+      "put": {
+        "operationId": "applyConfig",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Deployment"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppliedDeployment"
+                }
+              }
+            },
+            "description": "The result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "Replace the whole configuration from one document. `If-Match` makes it a compare-and-swap."
+      }
+    },
+    "/v1/config/history": {
+      "get": {
+        "operationId": "configHistory",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChangeListResponse"
+                }
+              }
+            },
+            "description": "The result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "Configuration changes, newest first, with the key that signed each one."
       }
     },
     "/v1/describe": {

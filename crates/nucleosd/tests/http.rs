@@ -1344,6 +1344,117 @@ async fn signed(
     (status, body_json(response).await)
 }
 
+/// The same signed request, with extra headers.
+async fn signed_with(
+    app: &Arc<App>,
+    key: &nucleos_auth::KeyPair,
+    key_id: &str,
+    method: &str,
+    path: &str,
+    body: &str,
+    extra: &[(&str, &str)],
+) -> (StatusCode, serde_json::Value) {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let authorization = key.sign_request(key_id, method, path, body.as_bytes(), now);
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(path)
+        .header("authorization", authorization)
+        .header("content-type", "application/json");
+    for (name, value) in extra {
+        builder = builder.header(*name, *value);
+    }
+    let response = router(Arc::clone(app))
+        .oneshot(builder.body(Body::from(body.to_owned())).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    (status, body_json(response).await)
+}
+
+#[tokio::test]
+async fn the_configuration_is_one_document_that_can_be_applied_back() {
+    let (app, key, key_id) = governable().await;
+
+    let (status, before) = signed(&app, &key, &key_id, "GET", "/v1/config", "").await;
+    assert_eq!(status, StatusCode::OK, "{before}");
+    let revision = before["revision"].as_u64().expect("a revision");
+
+    // The document: the whole configuration, not a summary of it.
+    let document = r#"{
+        "document_version": 1,
+        "policy": "{\"default\":\"deny\",\"rules\":[]}",
+        "models": [],
+        "sources": [],
+        "tenants": { "acme": { "limits": { "tenant": "acme", "tools": ["read_file"] } } }
+    }"#;
+    let (status, applied) = signed(&app, &key, &key_id, "PUT", "/v1/config", document).await;
+    assert_eq!(status, StatusCode::OK, "{applied}");
+    assert_eq!(applied["revision"], revision + 1, "{applied}");
+
+    // Read back: what was applied is what the document says.
+    let (status, after) = signed(&app, &key, &key_id, "GET", "/v1/config", "").await;
+    assert_eq!(status, StatusCode::OK, "{after}");
+    assert_eq!(after["revision"], revision + 1);
+    assert_eq!(
+        after["tenants"]["acme"]["limits"]["tools"],
+        serde_json::json!(["read_file"]),
+        "{after}"
+    );
+
+    // And the history names the key that signed it — the audit question the row exists for.
+    let (status, history) = signed(&app, &key, &key_id, "GET", "/v1/config/history", "").await;
+    assert_eq!(status, StatusCode::OK, "{history}");
+    let rows = history["changes"].as_array().unwrap();
+    let row = rows
+        .iter()
+        .find(|row| row["key"] == "deployment")
+        .expect("the apply is recorded");
+    assert_eq!(row["key_id"], key_id, "{row}");
+    assert_eq!(row["subject"], "admin", "{row}");
+    assert_eq!(row["tenant"], "acme", "{row}");
+}
+
+#[tokio::test]
+async fn a_document_written_against_an_older_revision_is_refused() {
+    let (app, key, key_id) = governable().await;
+    let (_, before) = signed(&app, &key, &key_id, "GET", "/v1/config", "").await;
+    let stale = before["revision"].as_u64().unwrap();
+
+    let document = r#"{"document_version":1,"policy":"{\"default\":\"deny\",\"rules\":[]}",
+                       "models":[],"sources":[],"tenants":{}}"#;
+    let first = format!("\"{stale}\"");
+    let (status, applied) = signed_with(
+        &app,
+        &key,
+        &key_id,
+        "PUT",
+        "/v1/config",
+        document,
+        &[("if-match", &first)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "the first apply wins: {applied}");
+
+    // The same document again, written against the revision it has just superseded.
+    let (status, error) = signed_with(
+        &app,
+        &key,
+        &key_id,
+        "PUT",
+        "/v1/config",
+        document,
+        &[("if-match", &first)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{error}");
+    assert_eq!(error["code"], "conflict", "{error}");
+}
+
 #[tokio::test]
 async fn a_policy_change_is_applied_and_recorded() {
     let (app, key, key_id) = governable().await;

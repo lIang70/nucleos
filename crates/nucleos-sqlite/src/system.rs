@@ -179,6 +179,51 @@ impl SystemStore {
         .await
     }
 
+    /// Replace the whole configuration namespace in one transaction.
+    ///
+    /// One transaction because a configuration is one thing: a half-applied document is a deployment
+    /// that refers to a model nobody defined, and the window between two writes is exactly when the
+    /// daemon is asked to serve a request.
+    ///
+    /// What is **not** in the namespace, and survives the replace: the sealed model credentials
+    /// (`config/keys/*`), the revision counter, the history, the recovery password, the token table,
+    /// and the schema version. Credentials are not configuration — exporting ciphertext sealed with a
+    /// key that lives outside the data directory would be an export nobody can restore.
+    pub async fn replace(&self, entries: Vec<(String, String)>) -> Result<()> {
+        self.run(move |connection| {
+            let transaction = connection.transaction().map_err(failed)?;
+            transaction
+                .execute(
+                    "delete from meta
+                     where (key like 'config/%'
+                            and key not like 'config/keys/%'
+                            and key <> 'config/revision'
+                            and key not like 'config/history/%')",
+                    [],
+                )
+                .map_err(failed)?;
+            for (key, value) in &entries {
+                transaction
+                    .execute(
+                        "insert into meta (key, value) values (?1, ?2)
+                         on conflict (key) do update set value = excluded.value",
+                        params![key, value],
+                    )
+                    .map_err(failed)?;
+            }
+            transaction.commit().map_err(failed)
+        })
+        .await
+    }
+
+    /// The configuration revision: how many times a document has been applied.
+    pub fn revision(&self) -> Result<u64> {
+        Ok(self
+            .get("config/revision")?
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0))
+    }
+
     /// Every entry whose key starts with `prefix`, in key order.
     ///
     /// Used for scoped configuration — `config/policy/tenant/` — where the set of tenants is whatever

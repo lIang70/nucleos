@@ -834,6 +834,12 @@ pub enum ErrorCode {
     Budget,
     /// A deadline passed.
     Timeout,
+    /// The request is valid but the thing it refers to moved.
+    ///
+    /// Distinct from `Invalid`, which blames the request. A caller whose configuration document was
+    /// written against revision 3 and is being applied to revision 5 sent something correct; the
+    /// answer is "re-read and try again", which is a different instruction.
+    Conflict,
     /// The caller cancelled it.
     ///
     /// Distinct from `Timeout` because nothing went wrong: an operator or an application decided to

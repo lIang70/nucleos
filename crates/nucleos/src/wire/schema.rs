@@ -86,6 +86,16 @@ pub struct Abi {
     pub model_list_response: api::ModelListResponse,
     /// `PUT /v1/policy` and other changes.
     pub put_response: api::PutResponse,
+    /// The whole configuration, as one document.
+    pub deployment: api::Deployment,
+    /// One tenant's part of it.
+    pub tenant_document: api::TenantDocument,
+    /// `PUT /v1/config`.
+    pub applied_deployment: api::AppliedDeployment,
+    /// `GET /v1/config/history`.
+    pub change_view: api::ChangeView,
+    /// `GET /v1/config/history`.
+    pub change_list_response: api::ChangeListResponse,
     /// `GET /v1/config`.
     pub config_response: api::ConfigResponse,
     /// `GET /v1/metrics`.
