@@ -109,17 +109,9 @@ fn seatbelt(
     }))
 }
 
-#[cfg(not(target_os = "macos"))]
-fn seatbelt(
-    _policy: &SandboxPolicy,
-    _permissions: &SandboxPermissions,
-    _workspace: Option<&String>,
-) -> Result<Option<Confinement>> {
-    Err(crate::error::Error::unavailable(
-        "seatbelt is macOS only; this platform uses bubblewrap when it is Linux, and refuses \
-         otherwise",
-    ))
-}
+// No non-macOS counterpart, deliberately. `confine` dispatches on the target, so on Linux nothing can
+// reach `seatbelt` — and a stub nobody calls is a function whose error message can never be emitted,
+// which is a lie waiting to be believed. `-D dead-code` said so on the first Linux run.
 
 /// The Linux mechanism: one `bwrap` command line per process.
 #[cfg(target_os = "linux")]
