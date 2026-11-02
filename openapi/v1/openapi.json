@@ -1099,6 +1099,31 @@
             "type": "object"
           },
           {
+            "description": "A turn began, and everything after this event belongs to it.\n\nWritten before the first model call, and only once the turn is certain to run: budget spent,\nroute resolved, policy satisfied. That makes it the line a follower watches — before it, a\nfailure is the caller's to handle and belongs in a status code; after it, the log is the record\nof what happened, and a stream that stopped silently is distinguishable from one that stalled.",
+            "properties": {
+              "generation": {
+                "description": "The generation this turn runs under.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "const": "turn_started",
+                "type": "string"
+              },
+              "model": {
+                "description": "The model the route resolved to first.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "model",
+              "generation"
+            ],
+            "type": "object"
+          },
+          {
             "description": "The assembled message a model call produced.\n\nDeltas are a rendering protocol; this is the record. Some content can only be\nassembled — a reasoning signature arrives as its own delta — and a client that joins\nlate should render without replaying every fragment.",
             "properties": {
               "kind": {
@@ -5383,7 +5408,7 @@
             "description": "A dependency was not reachable."
           }
         },
-        "summary": "One model call. Appends nothing: what you send is what you get."
+        "summary": "One model call. `Accept: text/event-stream` streams the turn's events; the last frame is the assembled message."
       }
     },
     "/v1/sessions/{id}/signal": {

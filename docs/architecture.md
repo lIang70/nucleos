@@ -439,6 +439,26 @@ current one and frees exactly what nobody holds. Three consequences, all of them
 
 The current generation is never retired: it is the target of every migration.
 
+**Watching a turn as it happens.** `POST /v1/sessions/{id}/inference` with
+`Accept: text/event-stream` answers with the session's own events, one per SSE frame, `id` being the
+log's sequence. Three decisions make that safe rather than a second protocol:
+
+- **The stream is the log, delivered early.** Frames are whole `Event`s, produced by the same
+  `type_name()` and serde tag as a replay, so a stream cannot say something the record does not. The
+  terminal frame is the kernel's `message_completed`, and a client that ignores every earlier frame
+  gets exactly what the non-streaming call returns.
+- **The notification is an accelerator, not a source.** `emit` appends to the store and then announces
+  on a broadcast channel. A follower that falls behind catches up from the store by sequence number;
+  dropping a notification loses nothing, which is why `emit` ignores the send error — nobody listening
+  is the normal case.
+- **The stream starts at `turn_started`, not at the connection.** That event is written only after the
+  budget is spent, the route resolved and the policy satisfied, so a failure before it still answers
+  with a status code. After it, the log is the record and the client learns the outcome from frames.
+
+Hanging up cancels the turn (`pitfalls` 80): the turn runs in its own task so that the cancellation is
+*recorded* — a future dropped mid-await writes nothing at all, and the log would show a turn that
+simply vanished.
+
 **Reload is over the ABI.** `POST /v1/tools/reload` reconnects the configured source, publishes what
 it advertises now, and answers with the new generation plus what was added and removed. `GET
 /v1/describe` reports the generation, so a caller can tell which set it is talking to. A reload is not

@@ -642,6 +642,18 @@ pub enum EventKind {
         /// Where it went.
         to: Generation,
     },
+    /// A turn began, and everything after this event belongs to it.
+    ///
+    /// Written before the first model call, and only once the turn is certain to run: budget spent,
+    /// route resolved, policy satisfied. That makes it the line a follower watches — before it, a
+    /// failure is the caller's to handle and belongs in a status code; after it, the log is the record
+    /// of what happened, and a stream that stopped silently is distinguishable from one that stalled.
+    TurnStarted {
+        /// The model the route resolved to first.
+        model: String,
+        /// The generation this turn runs under.
+        generation: u64,
+    },
     /// The assembled message a model call produced.
     ///
     /// Deltas are a rendering protocol; this is the record. Some content can only be
@@ -738,6 +750,7 @@ impl EventKind {
             Self::BudgetExhausted { .. } => "nucleos.v1.budget_exhausted",
             Self::Failed { .. } => "nucleos.v1.failed",
             Self::GenerationMigrated { .. } => "nucleos.v1.generation_migrated",
+            Self::TurnStarted { .. } => "nucleos.v1.turn_started",
             Self::MessageCompleted { .. } => "nucleos.v1.message_completed",
             Self::Progress { .. } => "nucleos.v1.progress",
         }

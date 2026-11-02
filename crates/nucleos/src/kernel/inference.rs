@@ -34,6 +34,21 @@ impl Kernel {
         self.begin_round(session);
         let routing = session.routing.clone();
         let targets = self.permit_route(&session.principal, self.resolve_route(&routing)?)?;
+        // The commit point. Everything above could fail without the log knowing a turn existed, so
+        // those failures belong to the caller as a status code. Everything below is written down, and
+        // a follower that saw this event is entitled to learn the outcome from the log rather than
+        // from a connection that may close.
+        self.emit(
+            session,
+            EventKind::TurnStarted {
+                model: targets
+                    .first()
+                    .map(|(name, _)| name.clone())
+                    .unwrap_or_default(),
+                generation: session.generation.0,
+            },
+        )
+        .await?;
 
         // The turn is registered so a cancel can find it, and the call races the signal. Dropping the
         // call's future is what stops it: the adapter's stream owns the HTTP response, and dropping it

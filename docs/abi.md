@@ -209,7 +209,49 @@ misspelled filter is how a caller concludes the feature is broken. Another subje
 absent rather than refused — a listing that names what the caller may not open is a directory of other
 people's work.
 
-### 4.0.0 Retiring generations
+### 4.0.0 Streaming a turn
+
+`POST /v1/sessions/{id}/inference` with `Accept: text/event-stream`.
+
+The response is the session's **events**, one per frame, and nothing else — no second vocabulary, no
+summary type, no synthesized terminal frame:
+
+```text
+id: 42
+event: nucleos.v1.turn_started
+data: {"seq":42,"session":"s1","at_unix_millis":0,"schema_version":1,
+       "kind":"turn_started","model":"primary","generation":3}
+
+id: 43
+event: nucleos.v1.text_delta
+data: {"seq":43,…,"kind":"text_delta","part_index":0,"text":"Hel"}
+```
+
+| Rule | Why |
+|---|---|
+| `id` is the log's sequence, the same cursor `GET /events` uses | a client that reconnects resumes with `Last-Event-ID` on either endpoint, and never has to re-run a turn it already paid for |
+| the SSE `event:` name is derived from the JSON `kind` tag | a client that reads only `data` gets the same type; the two cannot disagree because both come from one enum |
+| the last frame is `message_completed`, carrying the assembled message | a client that ignores every earlier frame ends up with exactly what the non-streaming call returns |
+| deltas carry `part_index` / `index` | without them a stream cannot represent text → tool call → more text, or which call an argument fragment belongs to |
+| the turn is announced by `turn_started` before the first model call | a client can tell "no answer yet" from "never started", and a stream that stops silently is distinguishable from one that stalled |
+
+**Where a stream begins is decided by the log.** A turn that fails before `turn_started` (no credit,
+unknown model, policy refusal) answers with an **HTTP status code and a JSON error**, not a `200` and an
+error frame — even though the kernel may already have recorded *why* (`budget_exhausted`), because that
+record belongs to the session, not to a stream this request never opened. After `turn_started`, failures
+arrive in the stream: `attempt_failed` for a failed attempt, `message_completed` for success.
+
+**Hanging up cancels the turn.** The turn runs in its own task so the record is still written: the log
+gets `attempt_failed` with code `cancelled`, the session stays **open**, and the spend already reported
+stays debited. A client that disconnects has not ended a conversation, only stopped watching one.
+
+**Retries are visible, and provisional.** A route that falls back stays inside the same turn: the log
+gets `attempt_failed`, then the next attempt's deltas. So a client that renders as it reads must treat a
+failed attempt's output as provisional and reset it on `attempt_failed`. A client that only reads the
+last frame never has to care — the terminal frame is the whole answer, which is exactly why it is the
+kernel's own `message_completed` rather than something the transport made up.
+
+### 4.0.1 Retiring generations
 
 `POST /v1/tools/retire` → `{"current": 3, "retired": [1, 2]}`
 
@@ -222,7 +264,7 @@ retired set **holds** it, so dropping the number frees what nobody holds and not
 - A session on a retired generation keeps answering calls from its own set, and its compatibility check
   still compares against that set rather than against a number that no longer resolves.
 
-### 4.0.1 Cancelling a turn
+### 4.0.2 Cancelling a turn
 
 `POST /v1/sessions/{id}/cancel` → `{"cancelled": true|false}`
 

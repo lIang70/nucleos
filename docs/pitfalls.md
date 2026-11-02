@@ -1174,3 +1174,51 @@ requests succeed. A warning is a message somebody has to read at the moment they
 same applies in the other direction — a certificate nobody serves is a deployment whose operator believes
 it is encrypted, and that belief is the thing that will not be true.
 
+## 80. A second sender keeps a stream open forever
+
+**Decision.** The streaming response owns its cancellation through the *drop of the body*
+(`CancelOnDrop`), not through a task watching the channel.
+
+**The deadlock.** The first version spawned a watcher holding a clone of the mpsc sender and awaited
+`Sender::closed()`. That call resolves when every **receiver** is dropped, so the watcher's sender stayed
+alive for as long as the receiver existed — and the receiver only ends when every sender is gone. The
+response body therefore never finished, and the test hung with no error at all: no timeout, no panic, just
+a request that never completed. `Sender::closed()` is a fine signal for "the last consumer went away"; it
+is not a way to observe it while holding the channel open.
+
+**The rule.** A body that wants to do something when it is dropped belongs in a `Drop` impl on the body.
+Dropping the body is what a closed tab looks like from the server, and it arrives immediately — unlike a
+task that is asleep on a channel nobody will ever write to again.
+
+**Disarm on normal completion.** The guard must not fire a cancel after the stream ended by itself, or a
+client that read everything will leave a `turn_cancelled_by_disconnect` in the log for a turn that had
+already answered.
+
+## 81. The commit point is an event, not the transport
+
+**Decision.** A streaming inference answers with an HTTP status code when the turn fails before
+`turn_started`, and with frames after it. `turn_started` is written only after the budget is spent, the
+route resolved and the policy satisfied.
+
+**Why not "the first frame".** The first version decided by the first frame it saw, and a request with no
+credit came back `200` with an SSE body: `spend` writes `budget_exhausted` **before** it returns the
+refusal, so a frame existed even though no turn had begun. "Something was written" and "the turn is
+running" are different questions, and only the second one is the commit point.
+
+**Why not "any error is a frame".** A caller that sends a bad request wants a status code, and SDKs,
+proxies and retry policies all key on one. A `200` followed by an error frame is a request every middlebox
+in the path treats as successful.
+
+**The consequence for the log.** Nothing is lost by answering with an error instead of opening a stream:
+`budget_exhausted` is already in the session's record, and `GET /events` will show it. The stream is a
+convenience, the record is the truth.
+
+## 82. `select!` chooses at random when both branches are ready
+
+**Decision.** The branch that decides "stream or not" is `biased`, with the event feed first.
+
+**The bug it prevents.** A turn on a fast fake model finishes almost immediately, so at the first
+`select!` both the frame and the completion are ready. Without `biased`, `tokio::select!` picks a random
+branch: the same request answers `200` + SSE in one run and `200` + JSON in the next — a flaky test that
+would be dismissed as a flaky test, and a real client that gets the wrong content type one time in two.
+

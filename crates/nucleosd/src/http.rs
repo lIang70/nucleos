@@ -9,12 +9,12 @@
 //! that could disagree with it.
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
-use axum::response::sse::{Event as SseEvent, Sse};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{MethodRouter, delete, get, post, put};
 use axum::{Json, Router};
-use nucleos::contract::{ErrorCode, Principal, SessionId, SessionState};
+use nucleos::contract::{ErrorCode, Event, EventKind, Principal, SessionId, SessionState};
 use nucleos::kernel::{HitlVerdict, Kernel, SessionSpec, StateWrite};
 use nucleos::wire::api::{
     CancelResponse, ConfigKey, ConfigResponse, DescribeResponse, ErrorBody, InferenceRequest,
@@ -29,6 +29,7 @@ use nucleos_sqlite::SqliteStore;
 use std::convert::Infallible;
 use std::sync::Arc;
 use tokio_stream::StreamExt;
+use tokio_stream::wrappers::ReceiverStream;
 
 /// The ABI version this daemon speaks.
 pub const ABI_VERSION: &str = "v1";
@@ -517,7 +518,8 @@ pub const ROUTES: &[Route] = &[
             method: "post",
             path: "/v1/sessions/{id}/inference",
             operation: "inference",
-            summary: "One model call. Appends nothing: what you send is what you get.",
+            summary: "One model call. `Accept: text/event-stream` streams the turn's events; the \
+                      last frame is the assembled message.",
             request: Some("InferenceRequest"),
             reply: openapi::Reply::Json("InferenceResponse"),
         },
@@ -1201,23 +1203,240 @@ async fn view(
     }))
 }
 
+/// One turn, answered at the end or as it happens.
+///
+/// `Accept: text/event-stream` returns the turn's *events*, one per frame, and nothing else: no
+/// second vocabulary, no summary type, no synthesized terminal frame. The last frame is the
+/// `message_completed` the kernel already wrote, carrying the assembled message, so a client that
+/// ignores every earlier frame ends up with exactly what the non-streaming call returns.
+///
+/// The split is decided by the log, not by the transport, and the line is `turn_started`. The kernel
+/// writes it once the turn is certain to run. A turn that fails before that is an `ApiError` with a
+/// status code — even though the kernel may already have written *why* (`budget_exhausted`, say),
+/// because that record belongs to the session and not to a stream this request never opened.
 async fn inference(
     State(app): State<Arc<App>>,
     caller: Caller,
     Path(id): Path<String>,
+    headers: HeaderMap,
     Json(request): Json<InferenceRequest>,
-) -> Result<Json<InferenceResponse>, ApiError> {
+) -> Result<Response, ApiError> {
     let kernel = app.kernel()?.clone();
     let mut session = load(&kernel, &caller, &id).await?;
-    let outcome = kernel
-        .inference(&mut session, &request.messages)
-        .await
-        .map_err(|error| ApiError::from_error(&error))?;
-    Ok(Json(InferenceResponse {
-        message: outcome.message,
-        finish: format!("{:?}", outcome.finish).to_lowercase(),
-        usage: outcome.usage,
-    }))
+
+    if !wants_stream(&headers) {
+        let outcome = kernel
+            .inference(&mut session, &request.messages)
+            .await
+            .map_err(|error| ApiError::from_error(&error))?;
+        return Ok(Json(InferenceResponse {
+            message: outcome.message,
+            finish: format!("{:?}", outcome.finish).to_lowercase(),
+            usage: outcome.usage,
+        })
+        .into_response());
+    }
+
+    let key = session.key();
+    let principal = session.principal().clone();
+    let session_id = session.id().clone();
+    // One past the last event, taken before anything can write: this is where this turn's events
+    // begin, so a follower that falls behind has a floor to catch up from instead of replaying the
+    // whole conversation.
+    let start = session.next_seq();
+    // Subscribed before the turn starts: the kernel announces as it writes, so a follower that
+    // attaches afterwards has already missed the beginning.
+    let mut live = kernel.follow();
+
+    // The turn runs in its own task. A client that disconnects must still get a record: a future
+    // dropped mid-await writes nothing at all, and the log would show a turn that simply vanished.
+    let turn_kernel = Arc::clone(&kernel);
+    let messages = request.messages;
+    let mut turn =
+        tokio::spawn(async move { turn_kernel.inference(&mut session, &messages).await });
+
+    // Before the headers: did the turn start? `turn_started` is the line. Anything earlier is the
+    // caller's problem and belongs in a status code.
+    //
+    // `biased`, and the feed first: when both are ready we want the stream, because frames exist and
+    // a client that asked for them should get them. Without this order the choice is random, and the
+    // same request would sometimes answer JSON and sometimes SSE.
+    // Everything written before the turn was announced. Kept rather than streamed: if the turn never
+    // starts, these are part of the refusal, and the caller reads the refusal as a status code.
+    let mut buffered: Vec<Event> = Vec::new();
+    loop {
+        tokio::select! {
+            biased;
+            frame = live.recv() => match frame {
+                Ok(live) if live.key == key => {
+                    let announced = matches!(live.event.kind, EventKind::TurnStarted { .. });
+                    buffered.push(live.event);
+                    if announced {
+                        break;
+                    }
+                }
+                Ok(_) => {}
+                // A follower that fell behind catches up from the store, which is the truth.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => break,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    return Err(ApiError::from_error(&nucleos::Error::internal(
+                        "the event feed closed while the turn was starting",
+                    )));
+                }
+            },
+            outcome = &mut turn => {
+                // The turn ended without writing anything: this is a refusal, not a stream.
+                return match outcome {
+                    Ok(Ok(outcome)) => Ok(Json(InferenceResponse {
+                        message: outcome.message,
+                        finish: format!("{:?}", outcome.finish).to_lowercase(),
+                        usage: outcome.usage,
+                    })
+                    .into_response()),
+                    Ok(Err(error)) => Err(ApiError::from_error(&error)),
+                    Err(join) => Err(ApiError::from_error(&nucleos::Error::internal(
+                        format!("the turn ended unexpectedly: {join}"),
+                    ))),
+                };
+            }
+        }
+    }
+
+    let (sender, receiver) = tokio::sync::mpsc::channel::<Result<SseEvent, Infallible>>(64);
+
+    let pump_kernel = Arc::clone(&kernel);
+    let pump_session = session_id.clone();
+    let pump_principal = principal.clone();
+    tokio::spawn(async move {
+        let mut last = buffered
+            .last()
+            .map_or_else(|| start.saturating_sub(1), |event| event.seq);
+        for event in &buffered {
+            if sender.send(Ok(sse_frame(event))).await.is_err() {
+                return;
+            }
+        }
+        loop {
+            tokio::select! {
+                frame = live.recv() => match frame {
+                    Ok(live) if live.key == key => {
+                        last = live.event.seq;
+                        if sender.send(Ok(sse_frame(&live.event))).await.is_err() {
+                            return;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        // Behind, not broken. Everything between `last + 1` and now is in the store,
+                        // which is the record; the broadcast was only ever the fast path.
+                        let Ok(events) =
+                            pump_kernel.events(&pump_principal, &pump_session, last + 1).await
+                        else {
+                            return;
+                        };
+                        for event in events {
+                            last = event.seq;
+                            if sender.send(Ok(sse_frame(&event))).await.is_err() {
+                                return;
+                            }
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                },
+                outcome = &mut turn => {
+                    // The turn is over. Whatever it wrote is already in the broadcast queue, so drain
+                    // it before closing — otherwise the last frames race the terminal one.
+                    while let Ok(live) = live.try_recv() {
+                        if live.key == key
+                            && sender.send(Ok(sse_frame(&live.event))).await.is_err()
+                        {
+                            return;
+                        }
+                    }
+                    match outcome {
+                        Ok(Ok(_)) | Ok(Err(_)) => {}
+                        Err(join) => {
+                            tracing::error!(event = "turn_task_failed", detail = %join);
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+    });
+
+    // The turn is cancelled by *this body being dropped*, not by a second task watching the channel.
+    // A task holding a sender of its own would keep the channel open after the turn ended, and the
+    // response would never finish — which is the deadlock this endpoint would have shipped with.
+    Ok(Sse::new(CancelOnDrop {
+        inner: ReceiverStream::new(receiver),
+        kernel,
+        session: session_id,
+        armed: true,
+    })
+    // A comment frame while the model is thinking: without it a silent provider is indistinguishable
+    // from a connection that died, which is the ambiguity this endpoint exists to remove.
+    .keep_alive(KeepAlive::default())
+    .into_response())
+}
+
+/// A body that cancels the turn it belongs to when it is dropped.
+///
+/// Dropping the body is what a client hanging up looks like from here, and it is the only signal that
+/// arrives promptly: a task waiting on a channel cannot tell a slow reader from a gone one.
+///
+/// Disarmed when the stream ends on its own, so the common case — the turn finished and the client
+/// read it — does not send a cancel for a turn that no longer exists, which would be a confusing
+/// `turn_cancelled_by_disconnect` in the log for a client that behaved perfectly.
+struct CancelOnDrop {
+    inner: ReceiverStream<Result<SseEvent, Infallible>>,
+    kernel: Arc<Kernel>,
+    session: SessionId,
+    armed: bool,
+}
+
+impl tokio_stream::Stream for CancelOnDrop {
+    type Item = Result<SseEvent, Infallible>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let this = &mut *self;
+        let polled = std::pin::Pin::new(&mut this.inner).poll_next(context);
+        if matches!(polled, std::task::Poll::Ready(None)) {
+            this.armed = false;
+        }
+        polled
+    }
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        if self.armed && self.kernel.cancel(&self.session) {
+            tracing::info!(event = "turn_cancelled_by_disconnect", session = %self.session);
+        }
+    }
+}
+
+/// Whether the caller asked for the turn as it happens.
+fn wants_stream(headers: &HeaderMap) -> bool {
+    headers
+        .get(axum::http::header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("text/event-stream"))
+}
+
+/// One event, as a frame.
+///
+/// The single place frames are made. `id` is the log's sequence, so a client that reconnects can
+/// continue on `GET /v1/sessions/{id}/events` from where it stopped — the same cursor for both
+/// endpoints, because there is one stream of events and these are two ways to read it.
+fn sse_frame(event: &Event) -> SseEvent {
+    SseEvent::default()
+        .event(event.kind.type_name())
+        .id(event.seq.to_string())
+        .data(serde_json::to_string(event).unwrap_or_else(|_| "{}".to_owned()))
 }
 
 async fn tools(
@@ -1633,13 +1852,7 @@ async fn events(
         .await
         .map_err(|error| ApiError::from_error(&error))?;
 
-    let stream = tokio_stream::iter(events).map(|event| {
-        let frame = SseEvent::default()
-            .event(event.kind.type_name())
-            .id(event.seq.to_string())
-            .data(serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_owned()));
-        Ok(frame)
-    });
+    let stream = tokio_stream::iter(events).map(|event| Ok(sse_frame(&event)));
     Ok(Sse::new(stream))
 }
 

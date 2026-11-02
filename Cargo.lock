@@ -1230,8 +1230,10 @@ dependencies = [
 name = "nucleosd"
 version = "0.0.1-preview"
 dependencies = [
+ "async-trait",
  "axum",
  "axum-server",
+ "http-body-util",
  "nucleos",
  "nucleos-agent",
  "nucleos-auth",

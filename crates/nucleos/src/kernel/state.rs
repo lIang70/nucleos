@@ -49,7 +49,15 @@ impl Kernel {
         session
             .seq
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.store.append(&session.key(), &[event]).await
+        let key = session.key();
+        // Written first, announced second. The order is the guarantee: by the time a follower hears
+        // about an event, a reader of the store can already see it, so catching up from a sequence
+        // number never lands short.
+        self.store
+            .append(&key, std::slice::from_ref(&event))
+            .await?;
+        self.live.announce(super::live::Live { key, event });
+        Ok(())
     }
     /// `record` the session's current state.
     pub async fn record_state(&self, session: &mut session::Session) -> Result<()> {

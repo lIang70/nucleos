@@ -93,6 +93,9 @@ async fn a_single_turn_session_answers_and_checkpoints() -> Result<()> {
         seen,
         vec![
             "nucleos.v1.state_changed",
+            // Written before the call, so a follower can tell a turn that has not answered yet from
+            // one that never started.
+            "nucleos.v1.turn_started",
             "nucleos.v1.text_delta",
             "nucleos.v1.message_completed",
             "nucleos.v1.state_changed",

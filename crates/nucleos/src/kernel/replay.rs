@@ -153,9 +153,13 @@ pub(crate) fn fold(session: &mut Session, event: &Event) -> Applied {
         // The parked call is in the snapshot, and a park writes its own checkpoint, so a parked
         // session cannot be one whose tail needs the pending call rebuilt.
         EventKind::AwaitingHuman { .. } => Applied::Narrative,
-        EventKind::ToolCallStarted { .. } | EventKind::ToolCallArgs { .. } => {
-            // A call that started and never finished: the turn it belonged to is the one that was
-            // abandoned, so this is evidence of that and not state of its own.
+        EventKind::ToolCallStarted { .. }
+        | EventKind::ToolCallArgs { .. }
+        | EventKind::TurnStarted { .. } => {
+            // A call that started and never finished, or a turn that began and never ended: the turn
+            // it belonged to is the one that was abandoned, so this is evidence of that rather than
+            // state of its own. `turn_started` is on the list because a crash before the first delta
+            // otherwise leaves nothing at all — a turn that spent money and wrote no record of it.
             Applied::AbandonedTurn
         }
         EventKind::TextDelta { .. }

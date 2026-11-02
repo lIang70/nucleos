@@ -15,6 +15,7 @@ pub(crate) mod config;
 pub(crate) mod generation;
 pub(crate) mod inference;
 pub(crate) mod lifecycle;
+pub(crate) mod live;
 pub(crate) mod process;
 pub(crate) mod replay;
 pub(crate) mod route;
@@ -121,6 +122,8 @@ pub struct Kernel {
     models: Arc<RwLock<ModelRegistry>>,
     /// Every tool set a live session may be pinned to, plus the current one.
     generations: std::sync::RwLock<generation::Generations>,
+    /// The events this kernel has written, for anything watching a turn as it runs.
+    live: live::Hub,
     /// Turns that are running right now, so a cancel can reach the one it names.
     ///
     /// Keyed by session because a session runs one turn at a time: two concurrent inferences on one
@@ -375,6 +378,7 @@ impl Builder {
         Ok(Kernel {
             models: Arc::new(RwLock::new(self.models)),
             generations: std::sync::RwLock::new(generation::Generations::first(self.tools)?),
+            live: live::Hub::new(),
             turns: RwLock::new(std::collections::BTreeMap::new()),
             tenant_tools: std::sync::RwLock::new(std::collections::BTreeMap::new()),
             tenant_models: std::sync::RwLock::new(std::collections::BTreeMap::new()),
@@ -414,6 +418,17 @@ impl Kernel {
             .map_err(|_| Error::internal("the policy lock is poisoned"))?;
         *current = policy;
         Ok(())
+    }
+
+    /// Follow the events this kernel writes, from now on.
+    ///
+    /// Subscribe **before** starting the turn: the kernel announces events as it writes them, so a
+    /// follower that attaches afterwards has missed whatever was already written. What it missed is in
+    /// the store — a lagging or late follower catches up with `events(from_seq)`, which is why this
+    /// returns a plain receiver rather than a promise of completeness.
+    #[must_use]
+    pub fn follow(&self) -> tokio::sync::broadcast::Receiver<live::Live> {
+        self.live.follow()
     }
 
     /// Cancel the turn a session is running. `true` if one was.
