@@ -1500,3 +1500,24 @@ later.
 _verifies_nothing` — written for the four unguarded routes — failed on `GET /v1/config/history`, a route
 added in the same commit that added the document. It was the first thing that noticed.
 
+## 96. A deployment change is not a conversation's problem
+
+**Decision.** Removing a model a session's route names is allowed; the next turn fails with `not_found`,
+a message that names the model and lists the ones that exist, and the session stays open. Applying the
+model back makes the same session work again.
+
+**Why allow it at all.** A document is the deployment's truth. Refusing to remove a model because some
+session somewhere mentions it would make the configuration a function of history nobody can enumerate —
+and the alternative (removing it and failing silently, or keeping an adapter the operator deleted) is
+worse. What a caller needs is not "this cannot happen" but "when it happens, I can read what happened".
+
+**The distinction the test pins.** 404 (the model is not there) is a different instruction from 503
+(the model is there and could not be reached). An operator reading the first goes to the document; one
+reading the second goes to the provider.
+
+**And a validation that came from writing the test.** The first version of the test restored a model
+without `context_window`, and the turn failed with "the model declares no context window, so a prompt
+cannot be shown to fit" — a correct answer to a question the document should have refused. `0` is not a
+default for that field: it means no prompt fits, so an apply now rejects it as a whole rather than
+installing a model that fails every session at its first turn.
+

@@ -606,6 +606,12 @@ pub struct ConfigResponse {
     /// The tool generation new sessions are pinned to.
     #[serde(default)]
     pub generation: u64,
+    /// The shape of the document this export is, so re-applying it does not need to guess.
+    ///
+    /// An export that cannot say its own version is not an export anybody can restore: the caller
+    /// would have to know which daemon wrote the file before it could send it back.
+    #[serde(default)]
+    pub document_version: u32,
     /// How many times a configuration document has been applied.
     #[serde(default)]
     pub revision: u64,

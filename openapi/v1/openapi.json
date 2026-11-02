@@ -438,6 +438,13 @@
             },
             "type": "array"
           },
+          "document_version": {
+            "default": 0,
+            "description": "The shape of the document this export is, so re-applying it does not need to guess.\n\nAn export that cannot say its own version is not an export anybody can restore: the caller\nwould have to know which daemon wrote the file before it could send it back.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "generation": {
             "default": 0,
             "description": "The tool generation new sessions are pinned to.",

@@ -1344,6 +1344,47 @@ async fn signed(
     (status, body_json(response).await)
 }
 
+/// A bearer request, for the routes that take a tenant rather than an administrator.
+async fn bearer(
+    app: &Arc<App>,
+    token: &str,
+    method: &str,
+    path: &str,
+    body: &str,
+) -> (StatusCode, serde_json::Value) {
+    let response = router(Arc::clone(app))
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(path)
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_owned()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    (status, body_json(response).await)
+}
+
+/// Issue a tenant token into the running fixture's store.
+async fn issue_token_for(app: &Arc<App>, tenant: &str, subject: &str) -> String {
+    let token = nucleos_auth::token::issue();
+    app.system()
+        .expect("the fixture has a system store")
+        .add_token(&nucleos_sqlite::IssuedToken {
+            id: token.id.clone(),
+            tenant: tenant.to_owned(),
+            subject: subject.to_owned(),
+            hash: token.hash.clone(),
+            created_unix_millis: 1,
+        })
+        .await
+        .unwrap();
+    token.token
+}
+
 /// The same signed request, with extra headers.
 async fn signed_with(
     app: &Arc<App>,
@@ -1453,6 +1494,127 @@ async fn a_document_written_against_an_older_revision_is_refused() {
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "{error}");
     assert_eq!(error["code"], "conflict", "{error}");
+}
+
+/// Removing a model a session's route names is allowed, and the session fails by *saying which*.
+///
+/// A document is the deployment's truth: a model it no longer lists is gone, and a session that was
+/// routed to it cannot silently keep using an adapter the operator removed. What must not happen is an
+/// unnamed failure or a session stuck in a state nobody can leave — the error names the model and lists
+/// the ones that exist, and applying the model back makes the same session work again.
+#[tokio::test]
+async fn removing_a_model_fails_the_next_turn_by_name_and_is_recoverable() {
+    let (app, key, key_id) = governable().await;
+
+    let token = issue_token_for(&app, "acme", "alice").await;
+    let (status, opened) = bearer(
+        &app,
+        &token,
+        "POST",
+        "/v1/sessions",
+        r#"{"session":"s1","credit_tokens":1000}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{opened}");
+
+    let without = r#"{
+        "document_version": 1,
+        "policy": "{\"default\":\"allow\",\"rules\":[]}",
+        "models": [], "sources": [], "tenants": {}
+    }"#;
+    let (status, applied) = signed(&app, &key, &key_id, "PUT", "/v1/config", without).await;
+    assert_eq!(status, StatusCode::OK, "{applied}");
+
+    let (status, failed) = bearer(
+        &app,
+        &token,
+        "POST",
+        "/v1/sessions/s1/inference",
+        r#"{"messages":[]}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{failed}");
+    let reason = failed["reason"].as_str().unwrap_or_default();
+    assert!(
+        reason.contains("primary"),
+        "the error names the model: {reason}"
+    );
+
+    // The session is still there: a deployment change does not end conversations.
+    let (status, view) = bearer(&app, &token, "GET", "/v1/sessions/s1", "").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(view["state"], "open");
+
+    // Putting the model back makes the same session work again.
+    let back = r#"{
+        "document_version": 1,
+        "policy": "{\"default\":\"allow\",\"rules\":[]}",
+        "models": [{"name":"primary","url":"https://api.example.invalid/v1/responses","model":"m","context_window":128000}],
+        "sources": [], "tenants": {}
+    }"#;
+    let (status, applied) = signed(&app, &key, &key_id, "PUT", "/v1/config", back).await;
+    assert_eq!(status, StatusCode::OK, "{applied}");
+
+    let (status, answered) = bearer(
+        &app,
+        &token,
+        "POST",
+        "/v1/sessions/s1/inference",
+        r#"{"messages":[]}"#,
+    )
+    .await;
+    // The adapter points at an unreachable host, so the turn fails — but it fails *reaching* the model
+    // (503, unavailable) rather than failing to find it (404, not found), which is the difference this
+    // test is about: the same session recovers when the deployment does.
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{answered}");
+}
+
+/// Export, then apply what was exported: the deployment does not change, except its revision.
+///
+/// This is the property that makes the document a backup rather than a screenshot. If a round trip
+/// reordered, normalised or dropped anything, restoring it would be a change nobody asked for.
+#[tokio::test]
+async fn an_export_applied_back_is_a_no_op_except_the_revision() {
+    let (app, key, key_id) = governable().await;
+
+    let document = r#"{
+        "document_version": 1,
+        "policy": "{\"default\":\"deny\",\"rules\":[{\"decision\":\"allow\",\"model\":\"*\",\"tenant\":\"acme\",\"subject\":\"admin\"}]}",
+        "models": [{"name":"primary","url":"https://api.example.invalid/v1/responses","model":"m","context_window":128000}],
+        "sources": [],
+        "tenants": {"acme": {"limits": {"tenant":"acme","models":["primary"]}}}
+    }"#;
+    let (status, first) = signed(&app, &key, &key_id, "PUT", "/v1/config", document).await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    let revision = first["revision"].as_u64().unwrap();
+
+    let (status, exported) = signed(&app, &key, &key_id, "GET", "/v1/config", "").await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Exactly what `GET` produced, sent back. `revision` is the daemon's to write, so it goes along
+    // and is ignored.
+    let body = serde_json::json!({
+        "document_version": exported["document_version"],
+        "revision": exported["revision"],
+        "policy": exported["policy_json"],
+        "models": exported["models"],
+        "sources": exported["sources"],
+        "tenants": exported["tenants"],
+    })
+    .to_string();
+    let (status, second) = signed(&app, &key, &key_id, "PUT", "/v1/config", &body).await;
+    assert_eq!(status, StatusCode::OK, "{second}");
+    assert_eq!(second["revision"], revision + 1);
+
+    let (status, after) = signed(&app, &key, &key_id, "GET", "/v1/config", "").await;
+    assert_eq!(status, StatusCode::OK);
+    for field in ["policy_json", "models", "sources", "tenants"] {
+        assert_eq!(
+            after[field], exported[field],
+            "{field} changed by a round trip: {} vs {}",
+            after[field], exported[field]
+        );
+    }
 }
 
 #[tokio::test]

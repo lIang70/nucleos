@@ -878,6 +878,16 @@ pub async fn apply(
                 model.name
             )));
         }
+        // Zero is not a default here: it means no prompt fits, and a document that installs such a
+        // model produces a deployment whose every session fails at the first turn. The per-endpoint
+        // `POST /v1/models` has the same field; this is where it is checked for a whole document.
+        if model.context_window == 0 {
+            return Err(Error::invalid(format!(
+                "model {:?} declares a context window of 0, so no prompt could ever fit: set \
+                 `context_window`",
+                model.name
+            )));
+        }
     }
     let mut source_names = std::collections::BTreeSet::new();
     for source in &document.sources {

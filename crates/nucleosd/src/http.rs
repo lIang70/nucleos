@@ -1063,6 +1063,7 @@ async fn config(
     let tenants = document.tenants.keys().cloned().collect::<Vec<String>>();
 
     Ok(Json(ConfigResponse {
+        document_version: document.document_version,
         revision: document.revision,
         models: document.models.clone(),
         sources: document.sources.clone(),
