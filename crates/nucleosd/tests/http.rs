@@ -831,6 +831,40 @@ async fn a_session_is_deleted_only_when_closed_and_owned() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+/// A route that matched nothing is one counter, not one per guess.
+///
+/// The metrics layer runs outside authentication, so an unauthenticated caller reaches it — and a key
+/// derived from the raw path turns "try a thousand URLs" into a thousand permanent map entries.
+#[tokio::test]
+async fn paths_that_match_nothing_share_one_counter() {
+    let (app, _key, _key_id) = governable().await;
+    for guess in ["nope", "worse", "still-nothing"] {
+        let _ = router(Arc::clone(&app))
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/v1/{guess}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+
+    let counters = app.metrics().snapshot().requests;
+    assert!(
+        counters.contains_key("GET unmatched"),
+        "unmatched paths are bucketed: {counters:?}"
+    );
+    assert!(
+        counters
+            .keys()
+            .all(|key| !key.contains("nope") && !key.contains("worse")),
+        "no key is derived from the path: {counters:?}"
+    );
+    assert_eq!(counters.len(), 1, "three guesses, one key: {counters:?}");
+}
+
 #[tokio::test]
 async fn a_configured_token_is_required_on_every_route() {
     let (app, token) = guarded().await;

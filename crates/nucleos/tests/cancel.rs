@@ -167,7 +167,14 @@ async fn cancelling_stops_the_turn_and_leaves_the_session_open() {
 async fn cancelling_a_session_that_is_not_running_says_nothing_happened() {
     let (kernel, _store) = kernel();
     let session = kernel
-        .open(&principal(), SessionId::new("s1"), SessionSpec::default())
+        .open(
+            &principal(),
+            SessionId::new("s1"),
+            SessionSpec {
+                credit_tokens: 1_000,
+                ..SessionSpec::default()
+            },
+        )
         .await
         .unwrap();
     // Not an error: a caller racing the end of a turn is a normal race, not a mistake.

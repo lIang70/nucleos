@@ -971,7 +971,10 @@ async fn observe(
         .extensions()
         .get::<axum::extract::MatchedPath>()
         .map(|path| path.as_str().to_owned())
-        .unwrap_or_else(|| request.uri().path().to_owned());
+        // A route that matched nothing is one bucket, not one per guess. `Router::layer` runs on
+        // unmatched paths, so `GET /v1/<random>` from an unauthenticated caller used to add a key to
+        // the map for every request it made.
+        .unwrap_or_else(|| "unmatched".to_owned());
 
     let mut response = next.run(request).await;
     let millis = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);

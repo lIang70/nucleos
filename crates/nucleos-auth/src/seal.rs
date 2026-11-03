@@ -115,6 +115,32 @@ impl SealKey {
     }
 
     fn read(path: &Path) -> Result<Self> {
+        // Readable by the group or the world is not a key: anybody who can read the file can open
+        // every credential it seals, and a copy of the data directory plus a copy of this file is the
+        // whole deployment. Refused rather than warned — a warning here is a message that arrives
+        // once, at a start-up nobody is watching, about a property that stays true until somebody
+        // acts.
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(path)
+                .map_err(|error| {
+                    Error::invalid(format!(
+                        "cannot stat the seal key {}: {error}",
+                        path.display()
+                    ))
+                })?
+                .permissions()
+                .mode()
+                & 0o777;
+            if mode & 0o077 != 0 {
+                return Err(Error::invalid(format!(
+                    "the seal key {} is {mode:04o}: it must be readable by its owner only (0600), \
+                     or a copy of it opens every credential it seals",
+                    path.display()
+                )));
+            }
+        }
+
         let text = std::fs::read_to_string(path).map_err(|error| {
             Error::invalid(format!(
                 "cannot read the seal key {}: {error}",

@@ -165,9 +165,24 @@ fn users_uid() -> Option<u32> {
 fn create_private(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(path)?;
-    let mode = std::fs::metadata(path)?.permissions().mode() & 0o777;
+    let directory = std::fs::metadata(path)?;
+    let mode = directory.permissions().mode() & 0o777;
+    // A world-writable directory is a *shared* one — `/tmp` and its neighbours — and narrowing it
+    // would break every other user of the host. Refusing is the only answer that does not damage
+    // something outside this daemon: `--socket /tmp/nucleos.sock` is a deployment that has to choose a
+    // private directory.
+    if mode & 0o002 != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "{} is world-writable, so it is shared: pass a private directory for --root and \
+                 --socket rather than adjusting a directory other users rely on",
+                path.display()
+            ),
+        ));
+    }
     if mode & 0o077 != 0 {
-        // Widen-by-default is what got us here; narrow, and say so.
+        // Owner-only was intended; the directory is ours, so narrowing it damages nothing.
         tracing::warn!(
             event = "directory_mode_adjusted",
             path = %path.display(),
@@ -254,6 +269,54 @@ mod tests {
         let text = layout.describe();
         assert!(text.contains("missing"), "{text}");
         assert!(text.contains("sessions.db"), "{text}");
+    }
+}
+
+#[cfg(test)]
+mod directory_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    /// A world-writable directory is shared, and narrowing it breaks everyone else on the host.
+    #[test]
+    fn a_shared_directory_is_refused_rather_than_narrowed() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let path = std::env::temp_dir().join(format!("nucleos-shared-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o777)).unwrap();
+
+        let error = create_private(&path).expect_err("a shared directory is not ours to adjust");
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(error.to_string().contains("world-writable"), "{error}");
+        // And it is still 0777: refusing must not leave the host changed.
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o777
+        );
+
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    /// A directory that is ours is narrowed, because narrowing it damages nothing.
+    #[test]
+    fn an_owners_directory_is_narrowed() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let path = std::env::temp_dir().join(format!("nucleos-own-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        create_private(&path).expect("an owner's directory is narrowed");
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+
+        let _ = std::fs::remove_dir_all(&path);
     }
 }
 

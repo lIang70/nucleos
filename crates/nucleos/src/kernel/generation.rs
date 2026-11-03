@@ -156,6 +156,16 @@ impl Generations {
         retired
     }
 
+    /// Whether this kernel ever published that generation.
+    ///
+    /// `set` falls back to the current one for an unknown number; callers that write the number down
+    /// need to know when that happened, or the checkpoint records a generation the session does not
+    /// hold.
+    #[must_use]
+    pub(crate) fn contains(&self, generation: Generation) -> bool {
+        self.sets.contains_key(&generation.0)
+    }
+
     /// How many sets this kernel still knows about. What a retirement can be measured against.
     #[must_use]
     pub(crate) fn len(&self) -> usize {

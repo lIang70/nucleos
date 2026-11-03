@@ -286,3 +286,40 @@ async fn a_session_that_never_migrates_keeps_working_until_it_ends() {
         .unwrap();
     assert!(session.is_closed());
 }
+
+/// A checkpoint naming a generation this process never published.
+///
+/// That is what a restore into a fresh daemon looks like: `load` falls back to the current set so the
+/// session can run, and the session's *number* has to move with it. A handle pinned to set 1 and
+/// reporting generation 5 writes a checkpoint that is false the moment it is written.
+#[tokio::test]
+async fn a_restored_session_reports_the_generation_it_is_actually_holding() {
+    let (kernel, store) = build();
+    let id = SessionId::new("s1");
+    kernel
+        .open(
+            &principal(),
+            id.clone(),
+            SessionSpec {
+                credit_tokens: 1_000,
+                ..SessionSpec::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(kernel.generation().0, 1, "the fixture publishes one set");
+
+    // A snapshot as an older daemon might have left it: pinned to a set this kernel does not have.
+    let key = nucleos::adapter::SessionKey::new("acme", id.clone());
+    let mut snapshot = store.snapshot(&key).await.unwrap().unwrap();
+    snapshot.generation = nucleos::contract::Generation(5);
+    snapshot.version = snapshot.version.saturating_add(1);
+    store.write_snapshot(snapshot).await.unwrap();
+
+    let restored = kernel.load(&principal(), &id).await.unwrap();
+    assert_eq!(
+        restored.generation(),
+        kernel.generation(),
+        "the session holds the current set, so it says so"
+    );
+}

@@ -36,6 +36,8 @@ enum Ending {
         usage: Usage,
         produced: bool,
         degraded: Vec<Degraded>,
+        /// Where it failed: before the call (`Preflight`) or during it (`Execute`).
+        phase: AttemptPhase,
     },
 }
 
@@ -174,11 +176,12 @@ impl Kernel {
                         usage,
                         produced,
                         degraded,
+                        phase,
                     } => {
                         let attempt = Attempt {
                             index: attempt_index,
                             model: name.clone(),
-                            phase: AttemptPhase::Execute,
+                            phase,
                             trigger,
                             outcome: AttemptOutcome::Failed {
                                 code: error.code(),
@@ -270,7 +273,15 @@ impl Kernel {
         // answer without saying so, so the refusal happens here, where the window and the prompt are
         // both in hand. This is the only thing the kernel may decide about context — *what* to drop
         // is the caller's, because the caller is the one who assembled this list.
-        self.measure(model, &request)?;
+        if let Err(error) = self.measure(model, &request) {
+            return Ok(Ending::Failed {
+                error,
+                usage: Usage::default(),
+                produced: false,
+                degraded: Vec::new(),
+                phase: AttemptPhase::Preflight,
+            });
+        }
 
         let mut stream = match model.invoke(request).await {
             Ok(stream) => stream,
@@ -280,6 +291,7 @@ impl Kernel {
                     usage: Usage::default(),
                     produced: false,
                     degraded: Vec::new(),
+                    phase: AttemptPhase::Execute,
                 });
             }
         };
@@ -374,6 +386,7 @@ impl Kernel {
                         usage: acc.usage,
                         produced: acc.produced,
                         degraded: acc.degraded,
+                        phase: AttemptPhase::Execute,
                     });
                 }
             }

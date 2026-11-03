@@ -1623,3 +1623,40 @@ called `ledger.record` — the route does that for attempts that come back, and 
 event was in the log and the in-memory ledger was not, which is a bill two readers would compute
 differently. Both now.
 
+## 102. Six small lies, each one a promise the code did not keep
+
+A batch, because they share a shape: a documented or implied property that nothing enforced.
+
+**A metric keyed by the path it could not match.** `observe` fell back to `request.uri().path()`, and the
+layer runs outside authentication — so `GET /v1/<anything>` added a permanent key per guess. Now
+`unmatched`, one bucket, because a counter nobody can bound is a memory leak shaped like a metric.
+
+**A shared directory narrowed to 0700.** `create_private` adjusted whatever it was given, so
+`--socket /tmp/nucleos.sock` would `chmod 0700 /tmp` and break every other user on the host. A
+world-writable directory is *shared*: it is refused now, and only a directory that is ours is narrowed.
+
+**A seal key others could read.** The file was opened without looking at its mode. A group-readable key
+makes the data directory's ciphertext decorative, so a mode with any group/other bit is refused with the
+`0600` it needs — not warned about at a start-up nobody is watching.
+
+**A scope the documents advertised and nothing matched.** `docs/config.md` writes `scope: "tenant/<id>"`;
+the matcher compared the whole string against the tenant name, so the documented form matched nothing and
+the branch that looked like it handled it was unreachable. Both the validator and the matcher speak it
+now, and the validator still refuses a bare tenant name — a document cannot tell one from a typo, and
+"matches nothing" is the failure that sends its author looking in the wrong place.
+
+**A preflight refusal that ended the route.** `invoke_once` returned `Err` from `measure`, which left
+`call_model` by `?`: no fallback to the next model, no attempt in the ledger, and §11.1's promise that a
+larger window still gets its chance was false. It is an `Ending::Failed` with `phase: Preflight` now, so
+the walk continues *and* the refusal is recorded as what it was.
+
+**A generation number that outlived its set.** `load` falls back to the current tool set for a number this
+process never published, but kept the number: the session held set 1 and reported 5, and wrote that into
+its next checkpoint. The number follows the fallback now.
+
+**One deferred.** `credit_tokens: 0` closes a session on its first turn, and the wire default is zero — so
+a caller that sets only `budget.max_tokens` opens a session that cannot answer once. Refusing at `open`
+is the honest fix and it makes `credit_tokens` a required field for every caller and fixture (18 sites
+today). That is a wire-contract decision, so it is documented at the field and left to be made
+deliberately rather than smuggled in with a bug fix.
+

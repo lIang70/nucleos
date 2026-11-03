@@ -3253,7 +3253,7 @@
           },
           "credit_tokens": {
             "default": 0,
-            "description": "Tokens granted up front.",
+            "description": "Tokens granted up front.\n\n**Zero is not \"no ceiling\".** `spend` closes the session on its first turn when the credit is\nzero, so a request that omits this field opens a session that cannot answer once — and the stop\nreason will be about tokens it never had. Set it. Making it required is a wire contract change\n(every caller and every fixture would have to state a number), so it is documented here first.",
             "format": "uint64",
             "minimum": 0,
             "type": "integer"

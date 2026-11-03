@@ -121,7 +121,20 @@ impl Kernel {
         // The set is resolved once, here: a snapshot naming a generation this process never published
         // (a restore into a fresh daemon) falls back to the current one, and that fallback is what the
         // session is now pinned to.
-        let tools = self.generations().set(snapshot.generation);
+        let (tools, generation) = {
+            let generations = self.generations();
+            // `set` falls back to the current one for a number this process never published (a restore
+            // into a fresh daemon). The session is then pinned to that set, and its number has to say
+            // so — a checkpoint recording a generation the session does not hold is a fact that is
+            // false the moment it is written.
+            let set = generations.set(snapshot.generation);
+            let generation = if generations.contains(snapshot.generation) {
+                snapshot.generation
+            } else {
+                generations.current()
+            };
+            (set, generation)
+        };
         // The head of the log, not a copy of its counter. A supervisor may still be writing to this
         // session, in which case its counter is current and this handle must join it rather than
         // re-derive a number from the checkpoint.
@@ -134,6 +147,9 @@ impl Kernel {
             snapshot.budget.clone(),
             self.now(),
         );
+        // The number, not just the set: `from_snapshot` copies it from the checkpoint, and the
+        // fallback above decided it should be the current one.
+        session.generation = generation;
 
         // The checkpoint is a cache; the log is the truth. Everything written after it — the tokens
         // a turn spent, the messages it completed, a configuration change — is folded in here, or a

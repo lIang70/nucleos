@@ -150,13 +150,19 @@ impl Document {
                      everything is written as a rule with `tool: \"*\"`"
                 )));
             }
+            // `system`, `tenant`, `own`, or `tenant/<id>` for one named tenant. A bare tenant name is
+            // not accepted: the document cannot tell one from a typo, and "matches nothing" is the
+            // failure mode that sends its author looking in the wrong place.
             if let Some(scope) = &rule.scope
                 && scope != "system"
                 && scope != "tenant"
                 && scope != "own"
+                && !scope
+                    .strip_prefix("tenant/")
+                    .is_some_and(|tenant| !tenant.is_empty())
             {
                 return Err(Error::invalid(format!(
-                    "config scope {scope:?} is not `system`, `tenant`, `own` or a tenant name"
+                    "config scope {scope:?} is not `system`, `tenant`, `own` or `tenant/<id>`"
                 )));
             }
             if !rule.argv_prefix.is_empty() && rule.program.is_none() {

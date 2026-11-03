@@ -145,7 +145,15 @@ fn matches(rule: &Rule, request: &PolicyRequest<'_>) -> bool {
                     match wanted.as_str() {
                         "tenant" => true,
                         "own" => *tenant == request.principal.tenant,
-                        named => named == *tenant,
+                        // Both spellings the documents use: a bare tenant name, and `tenant/<id>` as
+                        // `docs/config.md` writes it. The split form was documented and matched
+                        // nothing, which is worse than not documenting it.
+                        named => {
+                            named == *tenant
+                                || named
+                                    .strip_prefix("tenant/")
+                                    .is_some_and(|named| named == *tenant)
+                        }
                     }
                 }
             }
@@ -424,6 +432,55 @@ mod tests {
     /// These are two questions, and the second one used to be answered by the first: the matcher looked
     /// at the program and never at `permissions`, so a caller that could name an allowed program could
     /// also remove its own confinement by setting `require_escalated` in the request.
+    /// Both spellings of "this tenant" work: a bare name and the `tenant/<id>` form the docs use.
+    #[tokio::test]
+    async fn a_tenant_scope_matches_both_spellings() {
+        let argv = vec!["ls".to_owned()];
+        for scope in ["tenant/acme"] {
+            let document = Document {
+                rules: vec![Rule {
+                    decision: Some(Decision::Allow),
+                    config: Some("*".to_owned()),
+                    scope: Some(scope.to_owned()),
+                    tenant: Some("acme".to_owned()),
+                    ..Rule::default()
+                }],
+                ..Document::default()
+            };
+            document.validate().unwrap_or_else(|error| {
+                panic!("{scope:?} is a scope the document advertises: {error:?}")
+            });
+            assert_eq!(
+                check(
+                    document.clone(),
+                    Gated::Config {
+                        scope: nucleos::adapter::ConfigScope::Tenant("acme"),
+                        subject: "policy",
+                    }
+                )
+                .await,
+                Verdict::Allow,
+                "{scope:?}"
+            );
+            // And it does not reach another tenant.
+            assert!(
+                matches!(
+                    check(
+                        document,
+                        Gated::Config {
+                            scope: nucleos::adapter::ConfigScope::Tenant("other"),
+                            subject: "policy",
+                        }
+                    )
+                    .await,
+                    Verdict::Deny { .. }
+                ),
+                "{scope:?} must not reach another tenant"
+            );
+        }
+        let _ = argv;
+    }
+
     #[tokio::test]
     async fn an_escalation_is_its_own_decision() {
         let policy = SandboxPolicy::default();
