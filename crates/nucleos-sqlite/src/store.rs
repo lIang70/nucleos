@@ -29,7 +29,7 @@ impl SqliteStore {
         Self::from_connection(Connection::open_in_memory().map_err(failed)?)
     }
 
-    fn from_connection(connection: Connection) -> Result<Self> {
+    fn from_connection(mut connection: Connection) -> Result<Self> {
         // WAL is ignored for in-memory databases, which is fine: there is nothing to recover.
         connection
             .pragma_update(None, "journal_mode", "wal")
@@ -61,21 +61,32 @@ impl SqliteStore {
                      -- every checkpoint read it out of the JSON, which meant parsing a document the
                      -- size of the conversation to compare one integer.
                      version integer not null default 0,
+                     -- How many rows of `messages` and `attempts` this checkpoint has already written.
+                     -- The checkpoint appends the difference; without these two it would rewrite every
+                     -- message on every turn, which is the cost this schema exists to remove.
+                     messages_held integer not null default 0,
+                     attempts_held integer not null default 0,
                      body    text    not null,
                      primary key (tenant, session)
                  ) without rowid;
 
-                 -- The same checkpoint without its `messages`, in its own table. Not a column on
-                 -- `snapshots`: a reader that wants the state would otherwise share a b-tree page
-                 -- with a body the size of the conversation, and the point is to never touch it.
-                 create table if not exists checkpoint_heads (
+                 -- The conversation and the attempt ledger, one row each, written once. They live
+                 -- outside the snapshot for the same reason the version does: the snapshot is
+                 -- rewritten at every turn boundary, and a rewrite may not be proportional to a
+                 -- session's age. The body no longer carries either, so it is the head a view reads.
+                 create table if not exists messages (
                      tenant  text    not null,
                      session text    not null,
-                     -- The version as well as the head: the compare-and-swap needs it, and reading it
-                     -- from `snapshots` would touch a row whose body is the whole conversation.
-                     version integer not null,
-                     head    text    not null,
-                     primary key (tenant, session)
+                     ordinal integer not null,
+                     body    text    not null,
+                     primary key (tenant, session, ordinal)
+                 ) without rowid;
+                 create table if not exists attempts (
+                     tenant  text    not null,
+                     session text    not null,
+                     ordinal integer not null,
+                     body    text    not null,
+                     primary key (tenant, session, ordinal)
                  ) without rowid;
 
                  -- The listing's own table: a session exists once it has an event, and its kind is
@@ -123,9 +134,21 @@ impl SqliteStore {
                 .execute_batch("alter table sessions add column subject text")
                 .map_err(failed)?;
         }
-        // The same additive migration for the checkpoint's version column. A database written before
-        // it gets it empty; `version` is backfilled from the body once, because a version of 0 is not
-        // a version this code writes (the first checkpoint is 1) and leaving it there would let a
+        // A database written by a newer build is refused before anything below runs: a migration that
+        // rewrites rows into a shape it does not understand is how a downgrade corrupts a durable
+        // record. The check is repeated in `check_version`, which is the one that records a version.
+        if let Some(version) = read_version(&connection)?
+            && version > SCHEMA_VERSION
+        {
+            return Err(Error::invalid(format!(
+                "session store is schema {version}, this build understands {SCHEMA_VERSION}; \
+                 upgrade nucleosd rather than downgrading the store"
+            )));
+        }
+
+        // The checkpoint's columns, added one at a time so a database written by any earlier build
+        // arrives at the same shape. `version` is backfilled from the body, because a version of 0 is
+        // not a version this code writes (the first checkpoint is 1) and leaving it there would let a
         // stale handle overwrite a newer snapshot.
         let columns: Vec<String> = connection
             .prepare("pragma table_info(snapshots)")
@@ -135,11 +158,20 @@ impl SqliteStore {
                     .and_then(|names| names.collect::<std::result::Result<_, _>>())
             })
             .map_err(failed)?;
-        {
-            let (column, ddl) = (
+        for (column, ddl) in [
+            (
                 "version",
                 "alter table snapshots add column version integer not null default 0",
-            );
+            ),
+            (
+                "messages_held",
+                "alter table snapshots add column messages_held integer not null default 0",
+            ),
+            (
+                "attempts_held",
+                "alter table snapshots add column attempts_held integer not null default 0",
+            ),
+        ] {
             if !columns.iter().any(|name| name == column) {
                 connection.execute_batch(ddl).map_err(failed)?;
             }
@@ -149,6 +181,7 @@ impl SqliteStore {
                 "update snapshots set version = json_extract(body, '$.version') where version = 0",
             )
             .map_err(failed)?;
+        split_checkpoints(&mut connection)?;
         let store = Self {
             connection: Arc::new(Mutex::new(connection)),
         };
@@ -297,65 +330,48 @@ impl Store for SqliteStore {
     async fn snapshot(&self, session: &SessionKey) -> Result<Option<Snapshot>> {
         let (tenant, session) = (session.tenant.clone(), session.id.clone());
         self.run(move |connection| {
-            let body: Option<String> = connection
-                .query_row(
-                    "select body from snapshots where tenant = ?1 and session = ?2",
-                    params![tenant, session.as_str()],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(failed)?;
-            match body {
-                Some(body) => serde_json::from_str(&body).map(Some).map_err(|error| {
-                    Error::invalid(format!("stored snapshot is unreadable: {error}"))
-                }),
-                None => Ok(None),
-            }
-        })
-        .await
-    }
-
-    async fn snapshot_head(&self, session: &SessionKey) -> Result<Option<Snapshot>> {
-        let (tenant, session) = (session.tenant.clone(), session.id.clone());
-        self.run(move |connection| {
             let row: Option<(String, i64)> = connection
                 .query_row(
-                    "select head, version from checkpoint_heads where tenant = ?1 and session = ?2",
+                    "select body, version from snapshots where tenant = ?1 and session = ?2",
                     params![tenant, session.as_str()],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()
                 .map_err(failed)?;
-            let Some((head, version)) = row else {
-                // No side row: either no checkpoint at all, or one written before the table existed.
-                let version: Option<i64> = connection
-                    .query_row(
-                        "select version from snapshots where tenant = ?1 and session = ?2",
-                        params![tenant, session.as_str()],
-                        |row| row.get(0),
-                    )
-                    .optional()
-                    .map_err(failed)?;
-                let Some(version) = version else {
-                    return Ok(None);
-                };
-                let body: String = connection
-                    .query_row(
-                        "select body from snapshots where tenant = ?1 and session = ?2",
-                        params![tenant, session.as_str()],
-                        |row| row.get(0),
-                    )
-                    .map_err(failed)?;
-                let mut snapshot: Snapshot = serde_json::from_str(&body).map_err(|error| {
-                    Error::invalid(format!("stored snapshot is unreadable: {error}"))
-                })?;
-                snapshot.messages = Vec::new();
-                snapshot.ledger = Default::default();
-                snapshot.version = u64::try_from(version).unwrap_or(u64::MAX);
-                return Ok(Some(snapshot));
+            let Some((body, version)) = row else {
+                return Ok(None);
             };
-            let mut snapshot: Snapshot = serde_json::from_str(&head).map_err(|error| {
-                Error::invalid(format!("stored checkpoint head is unreadable: {error}"))
+            let mut snapshot: Snapshot = serde_json::from_str(&body).map_err(|error| {
+                Error::invalid(format!("stored snapshot is unreadable: {error}"))
+            })?;
+            snapshot.version = u64::try_from(version).unwrap_or(u64::MAX);
+            // The two vectors the body leaves out, reassembled in the order they were written. The
+            // checkpoint is not a document any more; it is a row plus its rows.
+            snapshot.messages = rows_in(connection, &tenant, session.as_str(), "messages")?;
+            snapshot.ledger.attempts = rows_in(connection, &tenant, session.as_str(), "attempts")?;
+            Ok(Some(snapshot))
+        })
+        .await
+    }
+
+    async fn snapshot_head(&self, session: &SessionKey) -> Result<Option<Snapshot>> {
+        // The body no longer carries the conversation or the ledger, so the head is the body: one
+        // small row, and nothing parsed that grows with the session's age.
+        let (tenant, session) = (session.tenant.clone(), session.id.clone());
+        self.run(move |connection| {
+            let row: Option<(String, i64)> = connection
+                .query_row(
+                    "select body, version from snapshots where tenant = ?1 and session = ?2",
+                    params![tenant, session.as_str()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(failed)?;
+            let Some((body, version)) = row else {
+                return Ok(None);
+            };
+            let mut snapshot: Snapshot = serde_json::from_str(&body).map_err(|error| {
+                Error::invalid(format!("stored snapshot is unreadable: {error}"))
             })?;
             snapshot.version = u64::try_from(version).unwrap_or(u64::MAX);
             Ok(Some(snapshot))
@@ -385,15 +401,12 @@ impl Store for SqliteStore {
                     snapshot.seq
                 )));
             }
-            // The head leaves out the two things that grow with a session's age — the conversation and
-            // the attempt ledger — because a view renders neither. Taken out, serialized, and put back:
-            // cloning either of them to throw it away would cost what the read costs.
+
+            // The two vectors that grow with a session's age are taken out of the body and written as
+            // rows of their own. A turn appends a message and an attempt; the checkpoint writes those,
+            // not the whole conversation.
             let messages = std::mem::take(&mut snapshot.messages);
-            let ledger = std::mem::take(&mut snapshot.ledger);
-            let head = serde_json::to_string(&snapshot)
-                .map_err(|error| Error::internal(format!("checkpoint head is not storable: {error}")))?;
-            snapshot.messages = messages;
-            snapshot.ledger = ledger;
+            let attempts = std::mem::take(&mut snapshot.ledger.attempts);
             let body = serde_json::to_string(&snapshot)
                 .map_err(|error| Error::internal(format!("snapshot is not storable: {error}")))?;
             let transaction = connection.transaction().map_err(failed)?;
@@ -402,15 +415,23 @@ impl Store for SqliteStore {
             // both think they are the next writer: the first is right and the second is working from a
             // log it read before the first one's work existed. Accepting it would overwrite that work
             // with a materialisation that never saw it.
-            let stored: Option<i64> = transaction
+            let stored: Option<(i64, i64, i64)> = transaction
                 .query_row(
-                    "select version from snapshots where tenant = ?1 and session = ?2",
+                    "select version, messages_held, attempts_held from snapshots
+                     where tenant = ?1 and session = ?2",
                     params![snapshot.principal.tenant, snapshot.session.as_str()],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )
                 .optional()
                 .map_err(failed)?;
-            let stored = stored.map_or(0, |version| u64::try_from(version).unwrap_or(u64::MAX));
+            let (stored, held_messages, held_attempts) =
+                stored.map_or((0, 0, 0), |(version, messages, attempts)| {
+                    (
+                        u64::try_from(version).unwrap_or(u64::MAX),
+                        u64::try_from(messages).unwrap_or(u64::MAX),
+                        u64::try_from(attempts).unwrap_or(u64::MAX),
+                    )
+                });
             if snapshot.version <= stored {
                 return Err(Error::new(
                     nucleos::contract::ErrorCode::Conflict,
@@ -421,34 +442,58 @@ impl Store for SqliteStore {
                     ),
                 ));
             }
+            // A checkpoint adds to a conversation; it never takes away from one. A handle carrying
+            // fewer messages than the store holds is working from a snapshot it did not read, and
+            // writing it would delete somebody's history.
+            if u64::try_from(messages.len()).unwrap_or(u64::MAX) < held_messages {
+                return Err(Error::invalid(format!(
+                    "checkpoint carries {} messages but the store holds {held_messages}: a checkpoint \
+                     may add to a conversation, never remove from it",
+                    messages.len()
+                )));
+            }
+            if u64::try_from(attempts.len()).unwrap_or(u64::MAX) < held_attempts {
+                return Err(Error::invalid(format!(
+                    "checkpoint carries {} attempts but the store holds {held_attempts}: a checkpoint \
+                     may add to a ledger, never remove from it",
+                    attempts.len()
+                )));
+            }
 
+            append_rows(
+                &transaction,
+                &snapshot.principal.tenant,
+                snapshot.session.as_str(),
+                "messages",
+                &messages,
+                held_messages,
+            )?;
+            append_rows(
+                &transaction,
+                &snapshot.principal.tenant,
+                snapshot.session.as_str(),
+                "attempts",
+                &attempts,
+                held_attempts,
+            )?;
             transaction
                 .execute(
-                    "insert into snapshots (tenant, session, seq, version, body)
-                     values (?1, ?2, ?3, ?4, ?5)
+                    "insert into snapshots
+                        (tenant, session, seq, version, messages_held, attempts_held, body)
+                     values (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                      on conflict (tenant, session) do update set seq = excluded.seq,
                                                                  version = excluded.version,
+                                                                 messages_held = excluded.messages_held,
+                                                                 attempts_held = excluded.attempts_held,
                                                                  body = excluded.body",
                     params![
                         snapshot.principal.tenant,
                         snapshot.session.as_str(),
                         i64::try_from(snapshot.seq).unwrap_or(i64::MAX),
                         i64::try_from(snapshot.version).unwrap_or(i64::MAX),
+                        i64::try_from(messages.len()).unwrap_or(i64::MAX),
+                        i64::try_from(attempts.len()).unwrap_or(i64::MAX),
                         body
-                    ],
-                )
-                .map_err(failed)?;
-            transaction
-                .execute(
-                    "insert into checkpoint_heads (tenant, session, version, head)
-                     values (?1, ?2, ?3, ?4)
-                     on conflict (tenant, session) do update set version = excluded.version,
-                                                                 head = excluded.head",
-                    params![
-                        snapshot.principal.tenant,
-                        snapshot.session.as_str(),
-                        i64::try_from(snapshot.version).unwrap_or(i64::MAX),
-                        head
                     ],
                 )
                 .map_err(failed)?;
@@ -477,7 +522,7 @@ impl Store for SqliteStore {
             // session that lost its history rather than one that was removed.
             let transaction = connection.transaction().map_err(failed)?;
             let mut removed = 0u64;
-            for table in ["events", "snapshots", "checkpoint_heads", "sessions"] {
+            for table in ["events", "snapshots", "messages", "attempts", "sessions"] {
                 removed += u64::try_from(
                     transaction
                         .execute(
@@ -606,7 +651,140 @@ fn failed(error: rusqlite::Error) -> Error {
 }
 
 /// The session store's schema version.
-pub const SCHEMA_VERSION: u32 = 1;
+///
+/// 1 — events and snapshots, the snapshot body carrying everything.
+/// 2 — the checkpoint's `version` as a column, and a side row holding the body without its conversation.
+/// 3 — the conversation and the attempt ledger as rows of their own, so a checkpoint is proportional to
+/// what changed rather than to the session's age, and the body is the head a view reads.
+pub const SCHEMA_VERSION: u32 = 3;
+
+/// One column of a checkpoint, in the order it was written.
+fn rows_in<T: serde::de::DeserializeOwned>(
+    connection: &Connection,
+    tenant: &str,
+    session: &str,
+    table: &str,
+) -> Result<Vec<T>> {
+    let mut statement = connection
+        .prepare(&format!(
+            "select body from {table} where tenant = ?1 and session = ?2 order by ordinal"
+        ))
+        .map_err(failed)?;
+    let rows = statement
+        .query_map(params![tenant, session], |row| row.get::<_, String>(0))
+        .map_err(failed)?;
+    let mut values = Vec::new();
+    for body in rows {
+        let body = body.map_err(failed)?;
+        values.push(serde_json::from_str(&body).map_err(|error| {
+            Error::invalid(format!("stored {table} row is unreadable: {error}"))
+        })?);
+    }
+    Ok(values)
+}
+
+/// Write the rows a checkpoint added, and only those.
+///
+/// `held` is how many the store already has; a snapshot carries the same rows as a prefix plus whatever
+/// the session appended since, so appending the difference is both correct and the point.
+fn append_rows<T: serde::Serialize>(
+    transaction: &rusqlite::Transaction<'_>,
+    tenant: &str,
+    session: &str,
+    table: &str,
+    values: &[T],
+    held: u64,
+) -> Result<()> {
+    let mut statement = transaction
+        .prepare(&format!(
+            "insert into {table} (tenant, session, ordinal, body) values (?1, ?2, ?3, ?4)"
+        ))
+        .map_err(failed)?;
+    let held = usize::try_from(held).unwrap_or(usize::MAX);
+    for (ordinal, value) in values.iter().enumerate().skip(held) {
+        let body = serde_json::to_string(value)
+            .map_err(|error| Error::internal(format!("a {table} row is not storable: {error}")))?;
+        statement
+            .execute(params![
+                tenant,
+                session,
+                i64::try_from(ordinal).unwrap_or(i64::MAX),
+                body
+            ])
+            .map_err(failed)?;
+    }
+    Ok(())
+}
+
+/// Move every checkpoint written before version 3 into the shape version 3 reads.
+///
+/// The conversation and the attempt ledger used to live inside the snapshot body. A body that still
+/// carries either is a row written by an older build; one that carries neither parses to the empty
+/// vectors and is skipped, which is what makes this idempotent and independent of the version number.
+fn split_checkpoints(connection: &mut Connection) -> Result<()> {
+    let transaction = connection.transaction().map_err(failed)?;
+    let rows: Vec<(String, String, String)> = {
+        let mut statement = transaction
+            .prepare("select tenant, session, body from snapshots")
+            .map_err(failed)?;
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .and_then(|rows| rows.collect::<std::result::Result<_, _>>())
+            .map_err(failed)?
+    };
+    for (tenant, session, body) in rows {
+        let mut snapshot: Snapshot = serde_json::from_str(&body)
+            .map_err(|error| Error::invalid(format!("stored snapshot is unreadable: {error}")))?;
+        if snapshot.messages.is_empty() && snapshot.ledger.attempts.is_empty() {
+            continue;
+        }
+        let messages = std::mem::take(&mut snapshot.messages);
+        let attempts = std::mem::take(&mut snapshot.ledger.attempts);
+        append_rows(&transaction, &tenant, &session, "messages", &messages, 0)?;
+        append_rows(&transaction, &tenant, &session, "attempts", &attempts, 0)?;
+        let body = serde_json::to_string(&snapshot)
+            .map_err(|error| Error::internal(format!("snapshot is not storable: {error}")))?;
+        transaction
+            .execute(
+                "update snapshots set body = ?1, messages_held = ?2, attempts_held = ?3
+                 where tenant = ?4 and session = ?5",
+                params![
+                    body,
+                    i64::try_from(messages.len()).unwrap_or(i64::MAX),
+                    i64::try_from(attempts.len()).unwrap_or(i64::MAX),
+                    tenant,
+                    session
+                ],
+            )
+            .map_err(failed)?;
+    }
+    // The version-2 side table is superseded: the body no longer grows with the conversation, so the
+    // head and the body are the same row.
+    transaction
+        .execute_batch("drop table if exists checkpoint_heads")
+        .map_err(failed)?;
+    transaction.commit().map_err(failed)
+}
+
+/// The version a store records, if it records one.
+fn read_version(connection: &Connection) -> Result<Option<u32>> {
+    let stored: Option<String> = connection
+        .query_row(
+            "select value from meta where key = 'schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(failed)?;
+    match stored {
+        None => Ok(None),
+        Some(value) => value.parse().map(Some).map_err(|_| {
+            Error::invalid(format!(
+                "session store schema version {value:?} is not a number"
+            ))
+        }),
+    }
+}
 
 impl SqliteStore {
     /// Record the version on first open, and refuse a store written by a newer build.

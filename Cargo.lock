@@ -1221,6 +1221,7 @@ dependencies = [
  "nucleos",
  "nucleos-testkit",
  "rusqlite",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",

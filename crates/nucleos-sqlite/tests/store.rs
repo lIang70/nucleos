@@ -434,6 +434,7 @@ async fn a_checkpoint_keeps_a_head_without_the_conversation() {
 
     let head = store.snapshot_head(&key(&session)).await.unwrap().unwrap();
     assert!(head.messages.is_empty(), "the head never carries one");
+    assert!(head.ledger.attempts.is_empty(), "nor the ledger");
     assert_eq!(head.state, full.state);
     assert_eq!(head.seq, full.seq);
     assert_eq!(head.version, full.version, "the column is authoritative");
@@ -504,5 +505,130 @@ async fn a_checkpoint_written_before_the_new_columns_still_reads() {
         nucleos::contract::ErrorCode::Conflict,
         "{}",
         error.reason()
+    );
+}
+
+/// One attempt, for the tests that care about the ledger's shape.
+fn attempt(index: u32) -> nucleos::contract::Attempt {
+    nucleos::contract::Attempt {
+        index,
+        model: "primary".to_owned(),
+        phase: nucleos::contract::AttemptPhase::Execute,
+        trigger: nucleos::contract::AttemptTrigger::Selection,
+        outcome: nucleos::contract::AttemptOutcome::Ok,
+        usage: nucleos::contract::Usage::default(),
+        duration_millis: 0,
+        degraded: Vec::new(),
+    }
+}
+
+/// A checkpoint writes what changed, not what it has.
+///
+/// The rows are counted through a second connection rather than through `snapshot`: reading the session
+/// back would agree with a store that rewrote every message each time, which is the cost this shape
+/// exists to remove.
+#[tokio::test]
+async fn a_checkpoint_appends_only_what_changed() {
+    let dir = temp_dir("incremental");
+    let path = dir.join("sessions.db");
+    let store = SqliteStore::open(&path).unwrap();
+    let session = SessionId::new("s1");
+    store
+        .append(&key(&session), &[event(&session, 0)])
+        .await
+        .unwrap();
+
+    let mut first = snapshot_for(&session);
+    first.seq = 0;
+    first.version = 1;
+    first.messages = vec![message()];
+    first.ledger.attempts = vec![attempt(0)];
+    store.write_snapshot(first).await.unwrap();
+
+    let mut second = snapshot_for(&session);
+    second.seq = 0;
+    second.version = 2;
+    second.messages = vec![message(), message()];
+    second.ledger.attempts = vec![attempt(0), attempt(1)];
+    store.write_snapshot(second).await.unwrap();
+
+    let loaded = store.snapshot(&key(&session)).await.unwrap().unwrap();
+    assert_eq!(loaded.messages.len(), 2, "both messages read back");
+    assert_eq!(loaded.ledger.attempts.len(), 2, "both attempts read back");
+
+    let raw = rusqlite::Connection::open(&path).unwrap();
+    for table in ["messages", "attempts"] {
+        let rows: i64 = raw
+            .query_row(
+                &format!("select count(*) from {table} where session = 's1'"),
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            rows, 2,
+            "{table}: the checkpoint rewrote what it already had"
+        );
+    }
+    let held: (i64, i64) = raw
+        .query_row(
+            "select messages_held, attempts_held from snapshots where session = 's1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        held,
+        (2, 2),
+        "the checkpoint records how far it has written"
+    );
+    drop(raw);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A checkpoint may add to a conversation, never remove from one.
+#[tokio::test]
+async fn a_checkpoint_cannot_remove_messages() {
+    let store = SqliteStore::in_memory().unwrap();
+    let session = SessionId::new("s1");
+    store
+        .append(&key(&session), &[event(&session, 0)])
+        .await
+        .unwrap();
+
+    let mut three = snapshot_for(&session);
+    three.seq = 0;
+    three.version = 1;
+    three.messages = vec![message(), message(), message()];
+    store.write_snapshot(three).await.unwrap();
+
+    let mut one = snapshot_for(&session);
+    one.seq = 0;
+    one.version = 2;
+    one.messages = vec![message()];
+    let error = store.write_snapshot(one).await.unwrap_err();
+    assert_eq!(
+        error.code(),
+        nucleos::contract::ErrorCode::Invalid,
+        "{}",
+        error.reason()
+    );
+    assert!(
+        error.reason().contains("never remove"),
+        "{}",
+        error.reason()
+    );
+
+    assert_eq!(
+        store
+            .snapshot(&key(&session))
+            .await
+            .unwrap()
+            .unwrap()
+            .messages
+            .len(),
+        3,
+        "a refused checkpoint changed nothing"
     );
 }

@@ -653,18 +653,20 @@ partial answer. Under-reporting cost is the one direction nobody forgives.
 ## 10. Persistence
 
 ```text
-Store:  events[sid] = [(seq, at, Event)]        append-only
-        snapshot[sid] = latest materialised state
-        head[sid]     = snapshot without the parts that grow with age
-recover: load(snapshot) → replay(events_since(snapshot.seq))
+Store:  events[sid]   = [(seq, at, Event)]      append-only
+        snapshot[sid] = latest materialised state — the state, not the conversation
+        messages[sid] = [(ordinal, Message)]    written once, appended
+        attempts[sid] = [(ordinal, Attempt)]
+recover: load(snapshot + messages + attempts) → replay(events_since(snapshot.seq))
 ```
 
-Two things beside the snapshot are worth naming, because both exist to keep a hot path away from the
-conversation's size. The checkpoint's `version` is a column rather than a field inside the JSON, so the
-compare-and-swap costs a lookup instead of a parse. And `head` is a second, small row — the same
-checkpoint with `messages` and `ledger` empty — which is what `GET /v1/sessions/{id}` reads; the view
-path is paged by the same fold, so it reports the same session, without ever parsing the history it does
-not render.
+Three things are separate because they grow with a session's age, and a checkpoint is rewritten at every
+turn boundary. The conversation and the attempt ledger are rows of their own, written once; the snapshot
+records how many it has already written, so a turn writes what changed rather than what it has
+(`pitfalls` 105). The `version` is a column rather than a field inside the JSON, so the
+compare-and-swap costs a lookup instead of a parse. What is left of the body is the state — which is
+exactly what `GET /v1/sessions/{id}` needs, so the view reads one small row and never touches the
+conversation it does not return.
 
 That single choice buys four things: **recovery** after a crash, **replay** for tests and
 evaluation (recorded model deltas are fed back, no new calls), **audit** (a `denied` event

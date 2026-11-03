@@ -85,6 +85,9 @@ pub trait Store: Send + Sync {
     async fn sessions(&self, query: &SessionQuery) -> Result<SessionPage>;
 
     /// The most recent snapshot, if one was ever written.
+    ///
+    /// Reassembled: the state, the conversation and the ledger may live in different rows, and a caller
+    /// gets the session, not the storage layout.
     async fn snapshot(&self, session: &SessionKey) -> Result<Option<Snapshot>>;
 
     /// The same checkpoint, without the parts that grow with a session's age.
@@ -108,6 +111,9 @@ pub trait Store: Send + Sync {
     /// Part of the trait rather than of one backend: writing a snapshot is the kernel's
     /// decision, and a store that cannot accept one makes "checkpoint only at a turn
     /// boundary" unimplementable.
+    ///
+    /// The snapshot carries the whole session, and a store may write only what changed: it already
+    /// holds a prefix of `messages` and of `ledger.attempts`, and the tail is what this call adds.
     async fn write_snapshot(&self, snapshot: Snapshot) -> Result<()>;
 
     /// Remove one session: its events, its checkpoint and its listing row.

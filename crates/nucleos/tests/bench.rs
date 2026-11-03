@@ -256,8 +256,8 @@ async fn write_one_transaction_per_event() {
 ///
 /// The ratio is the property. With a checkpoint after every turn this grew tenfold by 1,200 messages,
 /// because each turn rewrote the whole conversation into the snapshot. The throttle (`pitfalls` 105)
-/// is what keeps the turn flat; what is left is the append's own checkpoint, whose size still follows
-/// the history — which is what the next slice has to move out of the snapshot.
+/// and the split — the conversation and the ledger are rows of their own — are what keep both flat:
+/// a turn and its append cost the same on the first message as on the twelve-hundredth.
 #[ignore]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_turn_costs_the_same_at_the_start_and_the_end() {

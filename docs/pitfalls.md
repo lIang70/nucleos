@@ -1723,8 +1723,10 @@ turn, a `state` append — still writes one immediately.
 **Why.** A checkpoint is a cache of the log, and `load` already folds the tail. Rewriting a snapshot that
 carries the conversation and the attempt ledger after every turn made the per-turn cost grow with the
 session's age: measured on a 1,200-message session, 2.2 ms of a turn was the snapshot and 2.0 ms was the
-append's own. After the throttle the turn costs 0.08 ms and the append 0.7 ms; what growth is left is the
-snapshot's own content, which is the next thing to fix rather than this one.
+append's own. The throttle took the turn to 0.08 ms; the append was still 0.54 ms at 1,200 messages,
+because the snapshot body carried the conversation and the ledger. Moving both into rows of their own
+(`architecture` §10) is what finished it: 0.13 ms at the first turn and 0.12 ms at the twelve-hundredth,
+which is what "proportional to what changed" means.
 
 **What must stay immediate, and why it is not an exception.** `state` has no event of its own: appended
 messages are durable *because* of its checkpoint, so throttling it would answer `204` for something that
