@@ -109,4 +109,26 @@ pub trait Store: Send + Sync {
     /// Inclusive is the only choice that makes `from_seq` in the ABI mean what it says: a
     /// client asking from `seq` wants that event, not the one after it.
     async fn events_since(&self, session: &SessionKey, seq: u64) -> Result<Vec<Event>>;
+
+    /// A bounded page, for a reader that must not materialise a whole history.
+    ///
+    /// Streaming a session's events is a loop over this, not one `events_since` and a `Vec` sized by
+    /// the session's age: the first frame has to arrive before the last piece of history is read.
+    async fn events_page(
+        &self,
+        session: &SessionKey,
+        from_seq: u64,
+        limit: usize,
+    ) -> Result<Vec<Event>>;
+
+    /// A bounded page read **backwards**, oldest first within the page.
+    ///
+    /// What reconstructing an unfinished turn needs: the fragment is the tail of the log, so reading
+    /// from the end until a boundary costs a turn, not a session.
+    async fn events_before(
+        &self,
+        session: &SessionKey,
+        before_seq: u64,
+        limit: usize,
+    ) -> Result<Vec<Event>>;
 }

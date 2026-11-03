@@ -230,12 +230,44 @@ impl Kernel {
     /// The fragment is in the event stream, not in `messages`; this reads it back so a caller can
     /// decide what to do — report it, or continue the conversation from it. It cannot be resumed:
     /// no provider continues a generation from the middle.
+    /// The fragment an unfinished turn left behind, if any.
+    ///
+    /// Read **backwards** from the head, a page at a time, and stop at the first boundary. The
+    /// fragment is the tail of the log; reading from seq 0 made `GET /v1/sessions/{id}` cost the
+    /// session's whole history, on the endpoint clients poll.
+    ///
+    /// The pages are capped: past `PARTIAL_CAP` events the fragment is not a fragment, and reporting
+    /// nothing is a better answer than reading a history to find one.
     pub async fn partial(
         &self,
         session: &session::Session,
     ) -> Result<Option<crate::contract::PartialTurn>> {
-        let events = self.store.events_since(&session.key(), 0).await?;
-        Ok(replay::partial(&events))
+        const PAGE: usize = 256;
+        const CAP: usize = 8 * PAGE;
+
+        let key = session.key();
+        let mut end = session.next_seq();
+        let mut collected: Vec<crate::contract::Event> = Vec::new();
+        while collected.len() < CAP && end > 0 {
+            let page = self.store.events_before(&key, end, PAGE).await?;
+            let Some(first) = page.first() else {
+                break;
+            };
+            end = first.seq;
+            let mut boundary = false;
+            for event in page.iter().rev() {
+                collected.push(event.clone());
+                if replay::ends_the_fragment(&event.kind) {
+                    boundary = true;
+                    break;
+                }
+            }
+            if boundary {
+                break;
+            }
+        }
+        collected.reverse();
+        Ok(replay::partial(&collected))
     }
 
     /// Publish a new tool set, and pin new sessions to it.
@@ -487,6 +519,24 @@ impl Kernel {
             .remove(&key);
         tracing::info!(event = "session_deleted", session = %session, tenant = %principal.tenant);
         Ok(removed)
+    }
+
+    /// One bounded page of a session's events.
+    ///
+    /// What the SSE handler loops over: a page at a time, so the first frame does not wait for the
+    /// last piece of history and memory does not grow with the session's age.
+    pub async fn events_page(
+        &self,
+        principal: &crate::contract::Principal,
+        id: &SessionId,
+        from_seq: u64,
+        limit: usize,
+    ) -> Result<Vec<crate::contract::Event>> {
+        let key = crate::adapter::SessionKey {
+            tenant: principal.tenant.clone(),
+            id: id.clone(),
+        };
+        self.store.events_page(&key, from_seq, limit).await
     }
 
     /// Follow the events this kernel writes, from now on.

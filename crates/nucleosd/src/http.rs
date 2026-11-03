@@ -28,7 +28,6 @@ use nucleos_agent as agent;
 use nucleos_sqlite::SqliteStore;
 use std::convert::Infallible;
 use std::sync::Arc;
-use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 
 /// The ABI version this daemon speaks.
@@ -2098,6 +2097,20 @@ async fn verdict(
     Ok(Json(StartResponse::from(&outcome)))
 }
 
+/// How many events one page of a replay holds.
+///
+/// Small enough that the first frame arrives immediately, large enough that a long history is a few
+/// round trips to the store rather than hundreds.
+const PAGE: usize = 256;
+
+/// The reader's place in a replay: the kernel, whose log, and where to continue.
+struct Pages {
+    kernel: Arc<Kernel>,
+    principal: Principal,
+    id: SessionId,
+    next: u64,
+}
+
 /// Query parameters for the event stream.
 #[derive(Debug, serde::Deserialize)]
 struct EventsQuery {
@@ -2129,13 +2142,44 @@ async fn events(
     // is the one line between "I can read my session's events" and "I can read yours".
     let _ = load(&kernel, &caller, &id).await?;
 
-    let events = kernel
-        .events(&caller.0, &SessionId::new(id), from_seq)
-        .await
-        .map_err(|error| ApiError::from_error(&error))?;
-
-    let stream = tokio_stream::iter(events).map(|event| Ok(sse_frame(&event)));
-    Ok(Sse::new(stream))
+    // Paged and lazy. The old shape read the whole log into a `Vec` before sending the first frame,
+    // so both the latency to first byte and the memory were functions of the session's age. A pump
+    // with a bounded channel is the same shape the inference stream uses.
+    let (sender, receiver) = tokio::sync::mpsc::channel::<Result<SseEvent, Infallible>>(PAGE);
+    let pages = Pages {
+        kernel,
+        principal: caller.0.clone(),
+        id: SessionId::new(id),
+        next: from_seq,
+    };
+    tokio::spawn(async move {
+        let Pages {
+            kernel,
+            principal,
+            id,
+            mut next,
+        } = pages;
+        loop {
+            let Ok(page) = kernel.events_page(&principal, &id, next, PAGE).await else {
+                return;
+            };
+            if page.is_empty() {
+                return;
+            }
+            let short = page.len() < PAGE;
+            for event in page {
+                next = event.seq.saturating_add(1);
+                if sender.send(Ok(sse_frame(&event))).await.is_err() {
+                    return;
+                }
+            }
+            // A short page means the store had nothing more; a full one means there may be another.
+            if short {
+                return;
+            }
+        }
+    });
+    Ok(Sse::new(ReceiverStream::new(receiver)))
 }
 
 async fn load(

@@ -177,6 +177,20 @@ pub(crate) fn fold(session: &mut Session, event: &Event) -> Applied {
     }
 }
 
+/// Whether an event ends the fragment a reader is reassembling.
+///
+/// One function, because two readers need it: `partial` walks forward and resets on these, and the
+/// kernel now walks *backwards* from the head and stops on them. Two lists would drift, and the
+/// failure would be a fragment that includes a previous turn.
+pub(crate) fn ends_the_fragment(kind: &EventKind) -> bool {
+    matches!(
+        kind,
+        EventKind::MessageCompleted { .. }
+            | EventKind::ToolFinished { .. }
+            | EventKind::StateChanged { .. }
+    )
+}
+
 /// Reassemble what the assistant had produced in a turn that never finished.
 ///
 /// Reads the log rather than the session: the fragment is deliberately not in `messages`, because a
@@ -191,12 +205,7 @@ pub(crate) fn partial(events: &[Event]) -> Option<crate::contract::PartialTurn> 
         // A completed message, a finished tool or a state change ends the fragment. `attempt_failed`
         // deliberately does not: an attempt that streamed and then died left exactly the fragment
         // this function is for, and the record of the abandonment must not erase what it announces.
-        if matches!(
-            &event.kind,
-            EventKind::MessageCompleted { .. }
-                | EventKind::ToolFinished { .. }
-                | EventKind::StateChanged { .. }
-        ) {
+        if ends_the_fragment(&event.kind) {
             partial = crate::contract::PartialTurn::default();
             call = None;
             saw_anything = false;

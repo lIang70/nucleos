@@ -133,6 +133,19 @@ impl SqliteStore {
     }
 }
 
+/// Rows of stored bodies, as events.
+fn read_events(rows: impl Iterator<Item = rusqlite::Result<String>>) -> Result<Vec<Event>> {
+    let mut events = Vec::new();
+    for body in rows {
+        let body = body.map_err(failed)?;
+        events
+            .push(serde_json::from_str(&body).map_err(|error| {
+                Error::internal(format!("stored event is unreadable: {error}"))
+            })?);
+    }
+    Ok(events)
+}
+
 #[async_trait]
 impl Store for SqliteStore {
     async fn append(&self, session: &SessionKey, events: &[Event]) -> Result<()> {
@@ -140,14 +153,23 @@ impl Store for SqliteStore {
         let events = events.to_vec();
         self.run(move |connection| {
             let transaction = connection.transaction().map_err(failed)?;
-            let next: Option<i64> = transaction
-                .query_row(
-                    "select max(seq) + 1 from events where tenant = ?1 and session = ?2",
-                    params![tenant, session.as_str()],
-                    |row| row.get(0),
-                )
-                .map_err(failed)?;
-            let mut expected = next.map_or(0, |seq| u64::try_from(seq).unwrap_or(u64::MAX));
+            // In a build with assertions — which is every test — the store checks that the batch
+            // really continues the log. It caught a shared-counter race once, and it costs one query
+            // per append. In release the caller's sequence is trusted: the kernel reserves it from the
+            // log's head under the append lock, and the primary key rejects a duplicate. A gap *inside*
+            // the batch is still checked either way.
+            let mut expected = if cfg!(debug_assertions) {
+                let next: Option<i64> = transaction
+                    .query_row(
+                        "select max(seq) + 1 from events where tenant = ?1 and session = ?2",
+                        params![tenant, session.as_str()],
+                        |row| row.get(0),
+                    )
+                    .map_err(failed)?;
+                next.map_or(0, |seq| u64::try_from(seq).unwrap_or(u64::MAX))
+            } else {
+                events.first().map_or(0, |event| event.seq)
+            };
 
             for event in &events {
                 if event.session != session {
@@ -351,6 +373,72 @@ impl Store for SqliteStore {
         .await
     }
 
+    async fn events_page(
+        &self,
+        session: &SessionKey,
+        from_seq: u64,
+        limit: usize,
+    ) -> Result<Vec<Event>> {
+        let (tenant, id) = (session.tenant.clone(), session.id.clone());
+        self.run(move |connection| {
+            let mut statement = connection
+                .prepare(
+                    "select body from events where tenant = ?1 and session = ?2 and seq >= ?3
+                     order by seq limit ?4",
+                )
+                .map_err(failed)?;
+            read_events(
+                statement
+                    .query_map(
+                        params![
+                            tenant,
+                            id.as_str(),
+                            i64::try_from(from_seq).unwrap_or(i64::MAX),
+                            i64::try_from(limit).unwrap_or(i64::MAX)
+                        ],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .map_err(failed)?,
+            )
+        })
+        .await
+    }
+
+    async fn events_before(
+        &self,
+        session: &SessionKey,
+        before_seq: u64,
+        limit: usize,
+    ) -> Result<Vec<Event>> {
+        let (tenant, id) = (session.tenant.clone(), session.id.clone());
+        self.run(move |connection| {
+            let mut statement = connection
+                .prepare(
+                    "select body from events where tenant = ?1 and session = ?2 and seq < ?3
+                     order by seq desc limit ?4",
+                )
+                .map_err(failed)?;
+            let mut events = read_events(
+                statement
+                    .query_map(
+                        params![
+                            tenant,
+                            id.as_str(),
+                            i64::try_from(before_seq).unwrap_or(i64::MAX),
+                            i64::try_from(limit).unwrap_or(i64::MAX)
+                        ],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .map_err(failed)?,
+            )?;
+            // Descending on the way out of SQLite, ascending to the reader: the folder wants one
+            // direction and every other reader in this file gets the other.
+            events.reverse();
+            Ok(events)
+        })
+        .await
+    }
+
     async fn events_since(&self, session: &SessionKey, seq: u64) -> Result<Vec<Event>> {
         let (tenant, session) = (session.tenant.clone(), session.id.clone());
         self.run(move |connection| {
@@ -370,14 +458,7 @@ impl Store for SqliteStore {
                     |row| row.get::<_, String>(0),
                 )
                 .map_err(failed)?;
-            let mut events = Vec::new();
-            for body in rows {
-                let body = body.map_err(failed)?;
-                events.push(serde_json::from_str(&body).map_err(|error| {
-                    Error::invalid(format!("stored event is unreadable: {error}"))
-                })?);
-            }
-            Ok(events)
+            read_events(rows)
         })
         .await
     }
