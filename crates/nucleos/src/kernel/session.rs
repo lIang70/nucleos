@@ -49,6 +49,18 @@ pub struct Session {
     pub(crate) buffered_events: Vec<crate::contract::EventKind>,
     /// When the buffer was last written, so a slow stream flushes on time rather than on count.
     pub(crate) last_flush: std::time::Instant,
+    /// When this handle last wrote a checkpoint, so a session that writes nothing does not checkpoint
+    /// on every request.
+    ///
+    /// Wall time rather than the injected clock: this is a throttle, not a fact the log records, and a
+    /// fixed test clock would make it never fire. `last_flush` above is the same choice.
+    pub(crate) last_checkpoint: std::time::Instant,
+    /// The last sequence number the stored checkpoint includes.
+    ///
+    /// Paired with `last_checkpoint` because either alone is the wrong throttle: a session writing one
+    /// event a minute would checkpoint every event on time alone, and a burst would never checkpoint
+    /// on time alone. Count covers throughput, time covers idle.
+    pub(crate) checkpointed_through: u64,
     /// What this turn has debited so far. Reset at every turn, taken by a cancel.
     ///
     /// A cancelled attempt is dropped mid-stream, so the route never returns an `Ending` to record. The
@@ -267,6 +279,17 @@ impl Session {
         self.log.next()
     }
 
+    /// Whether this handle owes the store a checkpoint.
+    ///
+    /// `false` means the events since the last one are in the log, where `load` already folds them —
+    /// and the checkpoint is a cache of the log, not the record. Two thresholds, because either alone
+    /// is wrong: count bounds how much a crash has to re-fold, time bounds how long a session on a
+    /// slow trickle goes uncheckpointed.
+    pub(crate) fn checkpoint_due(&self) -> bool {
+        self.log.next().saturating_sub(self.checkpointed_through) >= super::state::CHECKPOINT_EVENTS
+            || self.last_checkpoint.elapsed() >= super::state::CHECKPOINT_INTERVAL
+    }
+
     pub(crate) fn new(init: New) -> Self {
         Self {
             id: init.id,
@@ -286,6 +309,8 @@ impl Session {
             turn_usage: Usage::default(),
             buffered_events: Vec::new(),
             last_flush: std::time::Instant::now(),
+            last_checkpoint: std::time::Instant::now(),
+            checkpointed_through: 0,
             log: init.log,
             pending: Vec::new(),
             data: std::collections::BTreeMap::new(),
@@ -432,6 +457,10 @@ impl Session {
             turn_usage: Usage::default(),
             buffered_events: Vec::new(),
             last_flush: std::time::Instant::now(),
+            // The handle just read the store, so the checkpoint it read is the one it starts from.
+            // Checkpointing again immediately would rewrite a snapshot that is current.
+            last_checkpoint: std::time::Instant::now(),
+            checkpointed_through: snapshot.seq,
             // The counter belongs to the log, not to this handle: `load` may be handing out a second
             // handle for a session a supervisor is still writing to, and the head it resolves to is
             // already at the right number.

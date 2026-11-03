@@ -1473,7 +1473,9 @@ async fn view(
     Path(id): Path<String>,
 ) -> Result<Json<SessionView>, ApiError> {
     let kernel = app.kernel()?.clone();
-    let session = load(&kernel, &caller, &id).await?;
+    // The head, not the whole history: this endpoint is polled, and parsing a long conversation to
+    // answer "where is it and what has it spent" is the cost that grew with the session's age.
+    let session = load_head(&kernel, &caller, &id).await?;
     Ok(Json(SessionView {
         session: session.id().as_str().to_owned(),
         state: if session.is_closed() {
@@ -2263,6 +2265,18 @@ async fn load(
 ) -> Result<nucleos::kernel::Session, ApiError> {
     kernel
         .load(&caller.0, &SessionId::new(id))
+        .await
+        .map_err(|error| ApiError::from_error(&error))
+}
+
+/// The same session, without its conversation.
+async fn load_head(
+    kernel: &Kernel,
+    caller: &Caller,
+    id: &str,
+) -> Result<nucleos::kernel::Session, ApiError> {
+    kernel
+        .load_head(&caller.0, &SessionId::new(id))
         .await
         .map_err(|error| ApiError::from_error(&error))
 }

@@ -57,7 +57,24 @@ impl SqliteStore {
                      tenant  text    not null,
                      session text    not null,
                      seq     integer not null,
+                     -- The version, beside the body rather than inside it: the compare-and-swap on
+                     -- every checkpoint read it out of the JSON, which meant parsing a document the
+                     -- size of the conversation to compare one integer.
+                     version integer not null default 0,
                      body    text    not null,
+                     primary key (tenant, session)
+                 ) without rowid;
+
+                 -- The same checkpoint without its `messages`, in its own table. Not a column on
+                 -- `snapshots`: a reader that wants the state would otherwise share a b-tree page
+                 -- with a body the size of the conversation, and the point is to never touch it.
+                 create table if not exists checkpoint_heads (
+                     tenant  text    not null,
+                     session text    not null,
+                     -- The version as well as the head: the compare-and-swap needs it, and reading it
+                     -- from `snapshots` would touch a row whose body is the whole conversation.
+                     version integer not null,
+                     head    text    not null,
                      primary key (tenant, session)
                  ) without rowid;
 
@@ -106,6 +123,32 @@ impl SqliteStore {
                 .execute_batch("alter table sessions add column subject text")
                 .map_err(failed)?;
         }
+        // The same additive migration for the checkpoint's version column. A database written before
+        // it gets it empty; `version` is backfilled from the body once, because a version of 0 is not
+        // a version this code writes (the first checkpoint is 1) and leaving it there would let a
+        // stale handle overwrite a newer snapshot.
+        let columns: Vec<String> = connection
+            .prepare("pragma table_info(snapshots)")
+            .and_then(|mut statement| {
+                statement
+                    .query_map([], |row| row.get::<_, String>(1))
+                    .and_then(|names| names.collect::<std::result::Result<_, _>>())
+            })
+            .map_err(failed)?;
+        {
+            let (column, ddl) = (
+                "version",
+                "alter table snapshots add column version integer not null default 0",
+            );
+            if !columns.iter().any(|name| name == column) {
+                connection.execute_batch(ddl).map_err(failed)?;
+            }
+        }
+        connection
+            .execute_batch(
+                "update snapshots set version = json_extract(body, '$.version') where version = 0",
+            )
+            .map_err(failed)?;
         let store = Self {
             connection: Arc::new(Mutex::new(connection)),
         };
@@ -272,11 +315,63 @@ impl Store for SqliteStore {
         .await
     }
 
-    async fn write_snapshot(&self, snapshot: Snapshot) -> Result<()> {
+    async fn snapshot_head(&self, session: &SessionKey) -> Result<Option<Snapshot>> {
+        let (tenant, session) = (session.tenant.clone(), session.id.clone());
         self.run(move |connection| {
+            let row: Option<(String, i64)> = connection
+                .query_row(
+                    "select head, version from checkpoint_heads where tenant = ?1 and session = ?2",
+                    params![tenant, session.as_str()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(failed)?;
+            let Some((head, version)) = row else {
+                // No side row: either no checkpoint at all, or one written before the table existed.
+                let version: Option<i64> = connection
+                    .query_row(
+                        "select version from snapshots where tenant = ?1 and session = ?2",
+                        params![tenant, session.as_str()],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(failed)?;
+                let Some(version) = version else {
+                    return Ok(None);
+                };
+                let body: String = connection
+                    .query_row(
+                        "select body from snapshots where tenant = ?1 and session = ?2",
+                        params![tenant, session.as_str()],
+                        |row| row.get(0),
+                    )
+                    .map_err(failed)?;
+                let mut snapshot: Snapshot = serde_json::from_str(&body).map_err(|error| {
+                    Error::invalid(format!("stored snapshot is unreadable: {error}"))
+                })?;
+                snapshot.messages = Vec::new();
+                snapshot.ledger = Default::default();
+                snapshot.version = u64::try_from(version).unwrap_or(u64::MAX);
+                return Ok(Some(snapshot));
+            };
+            let mut snapshot: Snapshot = serde_json::from_str(&head).map_err(|error| {
+                Error::invalid(format!("stored checkpoint head is unreadable: {error}"))
+            })?;
+            snapshot.version = u64::try_from(version).unwrap_or(u64::MAX);
+            Ok(Some(snapshot))
+        })
+        .await
+    }
+
+    async fn write_snapshot(&self, mut snapshot: Snapshot) -> Result<()> {
+        self.run(move |connection| {
+            // Where the log ends, not how many rows it has. `count(*)` walked every event this session
+            // ever wrote on every checkpoint; `max(seq)` is a descent into the primary key. The two
+            // numbers agree because the log is dense — the store refuses a gap on append — and a dense
+            // log's end is its length.
             let held: i64 = connection
                 .query_row(
-                    "select count(*) from events where tenant = ?1 and session = ?2",
+                    "select coalesce(max(seq) + 1, 0) from events where tenant = ?1 and session = ?2",
                     params![snapshot.principal.tenant, snapshot.session.as_str()],
                     |row| row.get(0),
                 )
@@ -290,6 +385,15 @@ impl Store for SqliteStore {
                     snapshot.seq
                 )));
             }
+            // The head leaves out the two things that grow with a session's age — the conversation and
+            // the attempt ledger — because a view renders neither. Taken out, serialized, and put back:
+            // cloning either of them to throw it away would cost what the read costs.
+            let messages = std::mem::take(&mut snapshot.messages);
+            let ledger = std::mem::take(&mut snapshot.ledger);
+            let head = serde_json::to_string(&snapshot)
+                .map_err(|error| Error::internal(format!("checkpoint head is not storable: {error}")))?;
+            snapshot.messages = messages;
+            snapshot.ledger = ledger;
             let body = serde_json::to_string(&snapshot)
                 .map_err(|error| Error::internal(format!("snapshot is not storable: {error}")))?;
             let transaction = connection.transaction().map_err(failed)?;
@@ -300,8 +404,7 @@ impl Store for SqliteStore {
             // with a materialisation that never saw it.
             let stored: Option<i64> = transaction
                 .query_row(
-                    "select json_extract(body, '$.version') from snapshots
-                     where tenant = ?1 and session = ?2",
+                    "select version from snapshots where tenant = ?1 and session = ?2",
                     params![snapshot.principal.tenant, snapshot.session.as_str()],
                     |row| row.get(0),
                 )
@@ -321,13 +424,31 @@ impl Store for SqliteStore {
 
             transaction
                 .execute(
-                    "insert into snapshots (tenant, session, seq, body) values (?1, ?2, ?3, ?4)
-                     on conflict (tenant, session) do update set seq = excluded.seq, body = excluded.body",
+                    "insert into snapshots (tenant, session, seq, version, body)
+                     values (?1, ?2, ?3, ?4, ?5)
+                     on conflict (tenant, session) do update set seq = excluded.seq,
+                                                                 version = excluded.version,
+                                                                 body = excluded.body",
                     params![
                         snapshot.principal.tenant,
                         snapshot.session.as_str(),
                         i64::try_from(snapshot.seq).unwrap_or(i64::MAX),
+                        i64::try_from(snapshot.version).unwrap_or(i64::MAX),
                         body
+                    ],
+                )
+                .map_err(failed)?;
+            transaction
+                .execute(
+                    "insert into checkpoint_heads (tenant, session, version, head)
+                     values (?1, ?2, ?3, ?4)
+                     on conflict (tenant, session) do update set version = excluded.version,
+                                                                 head = excluded.head",
+                    params![
+                        snapshot.principal.tenant,
+                        snapshot.session.as_str(),
+                        i64::try_from(snapshot.version).unwrap_or(i64::MAX),
+                        head
                     ],
                 )
                 .map_err(failed)?;
@@ -356,7 +477,7 @@ impl Store for SqliteStore {
             // session that lost its history rather than one that was removed.
             let transaction = connection.transaction().map_err(failed)?;
             let mut removed = 0u64;
-            for table in ["events", "snapshots", "sessions"] {
+            for table in ["events", "snapshots", "checkpoint_heads", "sessions"] {
                 removed += u64::try_from(
                     transaction
                         .execute(

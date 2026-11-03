@@ -141,7 +141,9 @@ impl Kernel {
             },
         )
         .await?;
-        self.write_checkpoint(session).await?;
+        // Throttled: the log already holds this turn. A caller that wants the checkpoint sooner calls
+        // `checkpoint`, and every path that *ends* something does.
+        self.checkpoint_if_due(session).await?;
         Ok(InferenceOutcome {
             message: call.message,
             finish: call.finish,

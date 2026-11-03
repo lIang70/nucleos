@@ -120,9 +120,26 @@ impl Kernel {
         self.emit(session, kind).await
     }
     /// Write the checkpoint for the boundary the session is standing on.
-    /// Write the checkpoint for the boundary the session is standing on.
     pub async fn checkpoint(&self, session: &mut session::Session) -> Result<()> {
         self.write_checkpoint(session).await
+    }
+
+    /// Write a checkpoint only when this handle owes one.
+    ///
+    /// The turn-success path uses this: the events that describe the turn are already in the log, and
+    /// `load` folds them. A checkpoint is a cache, so paying to rewrite the whole snapshot after every
+    /// turn is a cost with no answer — except that it bounds how much a crash has to re-fold, which is
+    /// what the two thresholds bound instead.
+    ///
+    /// Paths that *end* something still force one: a close, a park, a configuration change and a
+    /// failure each write state the caller is entitled to see durable immediately, and none of them is
+    /// on a hot path.
+    pub(crate) async fn checkpoint_if_due(&self, session: &mut session::Session) -> Result<()> {
+        if session.checkpoint_due() {
+            self.write_checkpoint(session).await
+        } else {
+            Ok(())
+        }
     }
 
     /// Write the checkpoint, and move the version only if the store accepted it.
@@ -135,22 +152,32 @@ impl Kernel {
     pub(crate) async fn write_checkpoint(&self, session: &mut session::Session) -> Result<()> {
         let next = session.version.saturating_add(1);
         match session.snapshot(self.now(), next) {
-            Some(snapshot) => match self.store.write_snapshot(snapshot).await {
-                Ok(()) => {
-                    session.version = next;
-                    Ok(())
+            Some(snapshot) => {
+                // What this checkpoint actually includes, taken before it is moved into the store: a
+                // supervisor may advance the log while the write is in flight, and the throttle must
+                // count the events that are durable, not the ones that exist.
+                let through = snapshot.seq;
+                match self.store.write_snapshot(snapshot).await {
+                    Ok(()) => {
+                        session.version = next;
+                        // Only on success: a refused checkpoint wrote nothing, so the events it would
+                        // have covered are still the ones a `load` has to fold.
+                        session.checkpointed_through = through;
+                        session.last_checkpoint = std::time::Instant::now();
+                        Ok(())
+                    }
+                    Err(error) if error.code() == crate::contract::ErrorCode::Conflict => {
+                        tracing::debug!(
+                            event = "checkpoint_skipped",
+                            session = %session.id,
+                            version = next,
+                            consequence = "a newer checkpoint exists; the log already has this handle's writes",
+                        );
+                        Ok(())
+                    }
+                    Err(error) => Err(error),
                 }
-                Err(error) if error.code() == crate::contract::ErrorCode::Conflict => {
-                    tracing::debug!(
-                        event = "checkpoint_skipped",
-                        session = %session.id,
-                        version = next,
-                        consequence = "a newer checkpoint exists; the log is the truth and has this                                        handle's writes",
-                    );
-                    Ok(())
-                }
-                Err(error) => Err(error),
-            },
+            }
             None => Ok(()),
         }
     }
@@ -159,6 +186,16 @@ impl Kernel {
         &self.clock
     }
 }
+
+/// How many events may accumulate past the last checkpoint before one is written anyway.
+///
+/// It bounds how much a crash has to re-fold, which is the only thing periodic checkpointing buys once
+/// the log is the record. 512 is a few turns of a streamed answer: a `load` folds them in about a
+/// millisecond, and a checkpoint of a long session is far more expensive than that.
+pub(crate) const CHECKPOINT_EVENTS: u64 = 512;
+
+/// ...and how long a checkpoint may be skipped, so a session on a slow trickle still bounds its tail.
+pub(crate) const CHECKPOINT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// How many streamed fragments go into one append.
 ///

@@ -489,3 +489,47 @@ async fn a_turn_that_ended_in_writing_is_not_re_load_ed_as_abandoned() {
             .collect::<Vec<_>>()
     );
 }
+
+/// A turn that ends inside the checkpoint window is not checkpointed, and must still reload as the
+/// same session.
+///
+/// This is what the throttle buys and what it may not cost: the log holds the turn, so a reload folds
+/// it — the message, the step it charged to the budget, and the head a view reads.
+#[tokio::test]
+async fn a_turn_that_ends_without_a_checkpoint_reloads_as_the_same_session() {
+    let store = store();
+    let kernel = kernel(&store);
+    let id = SessionId::new("s1");
+    let mut session = kernel.open(&principal(), id.clone(), spec()).await.unwrap();
+    let outcome = kernel.inference(&mut session, &[]).await.unwrap();
+
+    // The point of the test: the checkpoint really is behind the log, so everything below is folded
+    // rather than read from a snapshot.
+    let stored = store.snapshot(&key(&id)).await.unwrap().unwrap();
+    assert!(
+        stored.seq + 1 < session.next_seq(),
+        "the checkpoint is at {} and the log at {}: the throttle did not fire",
+        stored.seq,
+        session.next_seq()
+    );
+
+    let loaded = kernel.load(&principal(), &id).await.unwrap();
+    assert_eq!(loaded.messages(), [outcome.message]);
+    assert_eq!(
+        loaded.inference_calls(),
+        session.inference_calls(),
+        "a completed turn is a step the budget charged, and a reload does not give it back"
+    );
+
+    // The view path: the same session, without parsing the conversation.
+    let head = kernel.load_head(&principal(), &id).await.unwrap();
+    assert!(head.messages().is_empty(), "a head carries no conversation");
+    assert_eq!(head.inference_calls(), loaded.inference_calls());
+    assert_eq!(head.is_closed(), loaded.is_closed());
+    assert_eq!(head.next_seq(), loaded.next_seq());
+
+    // Idempotent: the first load wrote the recovery record, and a second one must not add to it.
+    let again = kernel.load(&principal(), &id).await.unwrap();
+    assert_eq!(again.messages().len(), 1);
+    assert_eq!(again.inference_calls(), loaded.inference_calls());
+}

@@ -101,8 +101,6 @@ impl Kernel {
     /// because a resume that had to be told its own configuration again is a resume that can
     /// silently behave differently.
     pub async fn load(&self, principal: &Principal, id: &SessionId) -> Result<session::Session> {
-        // The lookup itself is scoped to the tenant, so another tenant's session is not "forbidden",
-        // it does not exist: the query cannot reach it.
         let key = crate::adapter::SessionKey {
             tenant: principal.tenant.clone(),
             id: id.clone(),
@@ -112,6 +110,49 @@ impl Kernel {
             .snapshot(&key)
             .await?
             .ok_or_else(|| Error::not_found(format!("no checkpoint for session {id}")))?;
+        self.restore(principal, id, snapshot, true).await
+    }
+
+    /// Load a session for a reader that needs its state, not its conversation.
+    ///
+    /// The same restore, over a checkpoint whose `messages` the store never parsed. What comes back is
+    /// a session with an empty history and an exact everything-else: the tail is folded identically, so
+    /// a view cannot disagree with the log. Use `load` when the conversation is the point.
+    pub async fn load_head(
+        &self,
+        principal: &Principal,
+        id: &SessionId,
+    ) -> Result<session::Session> {
+        let key = crate::adapter::SessionKey {
+            tenant: principal.tenant.clone(),
+            id: id.clone(),
+        };
+        let snapshot = self
+            .store
+            .snapshot_head(&key)
+            .await?
+            .ok_or_else(|| Error::not_found(format!("no checkpoint for session {id}")))?;
+        self.restore(principal, id, snapshot, false).await
+    }
+
+    /// Bring one checkpoint up to the log's head.
+    ///
+    /// `conversation` says whether the caller wants the message history. A head folds the same tail
+    /// and then drops the messages it collected: the state it returns is exact, and the conversation
+    /// it would have to keep is the thing it exists to avoid.
+    async fn restore(
+        &self,
+        principal: &Principal,
+        id: &SessionId,
+        snapshot: crate::contract::Snapshot,
+        conversation: bool,
+    ) -> Result<session::Session> {
+        // The lookup itself is scoped to the tenant, so another tenant's session is not "forbidden",
+        // it does not exist: the query cannot reach it.
+        let key = crate::adapter::SessionKey {
+            tenant: principal.tenant.clone(),
+            id: id.clone(),
+        };
 
         // Within a tenant, an id is still its creator's. `NotFound` rather than `Denied`: a refusal
         // that says "this exists but is not yours" enumerates the identifiers other subjects use.
@@ -194,7 +235,9 @@ impl Kernel {
         // A turn the runtime did not survive is recorded rather than inferred. Nothing else in the
         // log says it happened: the deltas are there, but they look the same as a turn that is still
         // streaming.
-        if unfinished && session.state == crate::contract::SessionState::Open {
+        // A head is a read, and a read does not write: recording the abandoned turn belongs to whoever
+        // is about to drive the session, which is the caller that asked for `load`.
+        if conversation && unfinished && session.state == crate::contract::SessionState::Open {
             let attempt = crate::contract::Attempt {
                 index: u32::try_from(session.ledger.len()).unwrap_or(u32::MAX),
                 model: session.routing.chain.first().cloned().unwrap_or_default(),
@@ -213,6 +256,13 @@ impl Kernel {
                 crate::contract::EventKind::AttemptFailed { attempt },
             )
             .await?;
+        }
+
+        if !conversation {
+            // Both of the things a head leaves out, dropped after folding: the state it returns is
+            // exact, and the history it would have to keep is the thing it exists to avoid.
+            session.messages.clear();
+            session.ledger = crate::contract::Ledger::default();
         }
         Ok(session)
     }

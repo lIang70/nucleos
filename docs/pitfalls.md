@@ -77,12 +77,17 @@ unreproducible by definition.
 
 ## 8. Compatibility is structural, not numbered
 
-**Decision.** Two generations are compatible when tool names match and input schemas are
-structurally equal (new optional properties allowed) and the isolation descriptor is
-identical.
+**Decision.** Two generations are compatible when tool names match and every request the pinned
+schema accepted is still accepted by the new one (new optional properties allowed; a removal, a
+rename or a newly required property is not).
 
 **Why.** A version number is a human claim, and humans get it wrong. A schema diff is
 machine-checkable and cannot lie about itself.
+
+**What is missing.** The isolation descriptor this entry used to name is not carried by `ToolSpec`
+or `Generation`, so the comparison is names and schemas only. A tool that keeps both but moves from
+a sandboxed child to in-process execution is therefore compatible today, and that is a known gap
+rather than a guarantee.
 
 ## 9. The kernel does not know the transport
 
@@ -100,7 +105,8 @@ transport can be replaced without touching a single domain type.
 
 ## 10. No multi-bearer abstraction
 
-**Decision.** One ABI, reached over gRPC. In-process use calls the library directly.
+**Decision.** One ABI, reached over JSON/HTTP with server-sent events for streams. In-process use
+calls the library directly.
 
 **Why.** Making in-process, child-process and remote callers present one interface forces
 every method to the most conservative shape. The abstraction costs more than the three
@@ -139,9 +145,9 @@ ambiguous — the writer cannot know whether a state is settled. Single-writer m
 
 ## 15. The schema is committed, and a test fails when it drifts
 
-**Decision.** `schema/v1/schema.json` is generated from the kernel's types and committed.
-Regeneration is explicit (`NUCLEOS_SCHEMA=1 cargo test -p nucleos --test schema`), and the
-default run only reads — so CI fails instead of quietly rewriting the file.
+**Decision.** `openapi/v1/openapi.json` is generated from the route table and the kernel's types,
+and committed. Regeneration is explicit (`NUCLEOS_OPENAPI=1 cargo test -p nucleosd --test openapi`),
+and the default run only reads — so CI fails instead of quietly rewriting the file.
 
 **Why.** Under C1 the kernel's serialized shape is a promise to every client, and a promise with
 no artefact is a rumour. The committed schema is what an SDK generates from; the drift test is
@@ -656,7 +662,7 @@ the set it is holding still answers every call it can make.
 ## 51. The socket's permissions are the authentication
 
 **Decision.** `nucleosd` creates its socket in a `0700` directory, `chmod`s the socket to `0600`, and
-optionally requires `NUCLEOS_TOKEN` on every route.
+requires a bearer token on every route once the system store holds one.
 
 **Why not peer credentials.** They are the right answer for a unix socket and they need `unsafe`,
 which the workspace forbids. A comment claiming "the peer is already the local user" is not a check;

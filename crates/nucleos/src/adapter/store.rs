@@ -87,6 +87,22 @@ pub trait Store: Send + Sync {
     /// The most recent snapshot, if one was ever written.
     async fn snapshot(&self, session: &SessionKey) -> Result<Option<Snapshot>>;
 
+    /// The same checkpoint, without the parts that grow with a session's age.
+    ///
+    /// `messages` and `ledger` are empty: a view needs what the session *is* — its state, its spend,
+    /// the call it waits on — and renders neither of those, while they are the whole cost of parsing a
+    /// long session. A view is the endpoint clients poll.
+    ///
+    /// The default implementation is for stores that do not keep a second copy: correct, just not
+    /// faster. `nucleos-sqlite` keeps one, produced from the body at write time.
+    async fn snapshot_head(&self, session: &SessionKey) -> Result<Option<Snapshot>> {
+        Ok(self.snapshot(session).await?.map(|mut snapshot| {
+            snapshot.messages = Vec::new();
+            snapshot.ledger = Default::default();
+            snapshot
+        }))
+    }
+
     /// Record a checkpoint.
     ///
     /// Part of the trait rather than of one backend: writing a snapshot is the kernel's

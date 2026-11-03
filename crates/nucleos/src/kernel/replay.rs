@@ -113,8 +113,15 @@ pub(crate) fn fold(session: &mut Session, event: &Event) -> Applied {
             session.ledger.record(attempt.clone());
             Applied::State
         }
-        EventKind::MessageCompleted { message, .. } => {
+        EventKind::MessageCompleted {
+            message,
+            step_index,
+        } => {
             session.messages.push(message.clone());
+            // The step counter is a budget, and the checkpoint may be older than this event: a turn
+            // that completed is a step the session took, so a reload must not hand it back. The 1-based
+            // step index the event carries is the same number `spend` charges against.
+            session.steps = session.steps.max(u64::from(*step_index));
             Applied::State
         }
         EventKind::ToolFinished { result, usage, .. } => {

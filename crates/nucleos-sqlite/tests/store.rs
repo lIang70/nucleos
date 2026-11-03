@@ -215,14 +215,13 @@ async fn a_session_survives_the_process_that_wrote_it() {
         .await
         .unwrap()
         .expect("the checkpoint was written");
-    assert!(snapshot.seq > 0);
-    let events = reopened
-        .events_since(&key(session.id()), snapshot.seq + 1)
-        .await
-        .unwrap();
+    // The checkpoint may be behind the log — that is the throttle, and `load` folds the tail — but it
+    // can never claim an event the log does not hold.
     assert!(
-        events.is_empty(),
-        "the snapshot is the end of the log so far"
+        snapshot.seq < session.next_seq(),
+        "a checkpoint at {} claims the log's end at {}",
+        snapshot.seq,
+        session.next_seq()
     );
 
     let kernel = nucleos::Kernel::builder()
@@ -247,6 +246,11 @@ async fn a_session_survives_the_process_that_wrote_it() {
         .await
         .unwrap();
     assert_eq!(loaded.id(), session.id());
+    assert_eq!(
+        loaded.messages().len(),
+        1,
+        "the tail the checkpoint did not cover was folded: the turn's message is the recovery record"
+    );
 
     let _ = std::fs::remove_dir_all(&directory);
 }
@@ -392,5 +396,113 @@ async fn a_checkpoint_that_is_not_newer_is_refused() {
         store.snapshot(&key).await.unwrap().unwrap().state,
         nucleos::contract::SessionState::Open,
         "a refused write changed nothing"
+    );
+}
+
+/// One message, for the tests that care about the conversation rather than its content.
+fn message() -> nucleos::contract::Message {
+    nucleos::contract::Message {
+        role: nucleos::contract::Role::Assistant,
+        content: nucleos::contract::Content::new([nucleos::contract::Part::new(
+            nucleos::contract::PartKind::Text(nucleos::contract::TextPart {
+                text: "the answer".to_owned(),
+            }),
+        )]),
+    }
+}
+
+/// The checkpoint keeps the conversation and the state in separate columns, so a view reads one
+/// without parsing the other.
+#[tokio::test]
+async fn a_checkpoint_keeps_a_head_without_the_conversation() {
+    let store = SqliteStore::in_memory().unwrap();
+    let session = SessionId::new("s1");
+    store
+        .append(&key(&session), &[event(&session, 0)])
+        .await
+        .unwrap();
+
+    let mut snapshot = snapshot_for(&session);
+    snapshot.messages = vec![message()];
+    snapshot.seq = 0;
+    snapshot.version = 4;
+    store.write_snapshot(snapshot).await.unwrap();
+
+    let full = store.snapshot(&key(&session)).await.unwrap().unwrap();
+    assert_eq!(full.messages.len(), 1, "the conversation is kept");
+    assert_eq!(full.version, 4);
+
+    let head = store.snapshot_head(&key(&session)).await.unwrap().unwrap();
+    assert!(head.messages.is_empty(), "the head never carries one");
+    assert_eq!(head.state, full.state);
+    assert_eq!(head.seq, full.seq);
+    assert_eq!(head.version, full.version, "the column is authoritative");
+}
+
+/// A database written before the checkpoint's `version`/`head` columns still reads, and still refuses
+/// a stale write.
+///
+/// The version is backfilled from the body once, at open: a stored `0` is not a version this code
+/// writes (the first checkpoint is 1), and leaving it there would let a handle that read the session
+/// long ago overwrite a newer snapshot.
+#[tokio::test]
+async fn a_checkpoint_written_before_the_new_columns_still_reads() {
+    let dir = temp_dir("old-snapshot");
+    let path = dir.join("sessions.db");
+    let session = SessionId::new("s1");
+    let mut snapshot = snapshot_for(&session);
+    snapshot.messages = vec![message()];
+    snapshot.seq = 0;
+    snapshot.version = 3;
+    let body = serde_json::to_string(&snapshot).unwrap();
+
+    {
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "create table events (
+                     tenant text not null, session text not null, seq integer not null, body text not null,
+                     primary key (tenant, session, seq)
+                 ) without rowid;
+                 create table snapshots (
+                     tenant text not null, session text not null, seq integer not null, body text not null,
+                     primary key (tenant, session)
+                 ) without rowid;
+                 create table sessions (
+                     tenant text not null, session text not null, kind text, subject text,
+                     primary key (tenant, session)
+                 ) without rowid;",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "insert into events (tenant, session, seq, body) values ('acme', 's1', 0, '{}')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "insert into snapshots (tenant, session, seq, body) values ('acme', 's1', 0, ?1)",
+                [&body],
+            )
+            .unwrap();
+    }
+
+    let store = SqliteStore::open(&path).unwrap();
+
+    let head = store.snapshot_head(&key(&session)).await.unwrap().unwrap();
+    assert!(
+        head.messages.is_empty(),
+        "the fallback answers from the body without it"
+    );
+    assert_eq!(head.version, 3, "the version was backfilled from the body");
+
+    // And the compare-and-swap still sees the backfilled version: 3 is not newer than 3.
+    let error = store.write_snapshot(snapshot).await.unwrap_err();
+    assert_eq!(
+        error.code(),
+        nucleos::contract::ErrorCode::Conflict,
+        "{}",
+        error.reason()
     );
 }

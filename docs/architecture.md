@@ -186,9 +186,19 @@ crates/
   nucleos/         contract/ · adapter/ · kernel/ (syscalls) · wire/
   nucleos-agent/   the reference loop, built on those syscalls
   nucleos-openai/  one provider adapter: the OpenAI-compatible family
+  nucleos-mcp/     MCP tool sources (stdio child processes)
+  nucleos-policy/  deny-by-default policy document, layered system + tenant
+  nucleos-sqlite/  the event log, checkpoints and the system store
+  nucleos-auth/    sealed credentials, Ed25519 admin signatures, tokens, recovery
+  nucleos-testkit/ test doubles; no binary depends on it
+  nucleos-cli/     the operator's client: init · config · models · tokens · sources · admin · seal
   nucleosd/        router · error mapping · listener
 openapi/           the published ABI, committed
 ```
+
+The adapter crates exist so the kernel can keep its promise never to depend on a transport, an
+HTTP client or a particular database: each is one implementation of one trait, replaceable
+without touching the kernel.
 
 `nucleos-openai` exists as its own crate because the kernel must not depend on an HTTP client: the
 kernel owns the mechanism, and a provider's dialect is an adapter like any other.
@@ -262,9 +272,10 @@ different store than production is a test of a store nobody deploys; and `nucleo
 "no policy configured" was, until recently, what the daemon actually ran.
 
 `AllowAll` and `DenyAll` stay in the kernel crate as adapters rather than stand-ins — they are
-answers, not substitutes — but the daemon no longer picks one by default. It reads `NUCLEOS_POLICY`
-and refuses to start without it; `"default": "allow"` in that file is how a deployment says "gate
-nothing", in a file that is versioned and reviewed.
+answers, not substitutes — but the daemon no longer picks one by default. It reads the policy
+document from the system store and refuses to start without one, naming `nucleos init`;
+`"default": "allow"` in that document is how a deployment says "gate nothing", in a document that is
+signed, recorded and reviewed.
 
 ## 5. Session state machine
 
@@ -410,15 +421,21 @@ POST /v1/tools/retire → forget every number but the current one
 
 Because the set is immutable, compatibility is a pure function of two generations:
 
-- **Compatible** — same tool names, structurally equal input schemas (new _optional_
-  properties allowed), and the same derived isolation descriptor. The session migrates to the
-  latest generation **at its next turn boundary**, recorded as a `generation_migrated` event.
-  The isolation term is the one that cannot be dropped: a tool whose name and schema are unchanged
-  but which now runs in-process where it used to run in a sandboxed child is a silent downgrade
-  that every other check passes.
+- **Compatible** — same tool names, and input schemas where every request the pinned schema accepted
+  is still accepted (new _optional_ properties are fine; a rename, a removal or a newly required
+  property is not). The session migrates to the latest generation **at its next turn boundary**,
+  recorded as a `generation_migrated` event.
 - **Incompatible** — the session stays pinned to its generation until it ends.
 
-Compatibility is decided by schema structure, not by a version number somebody typed.
+Compatibility is decided by schema structure, not by a version number somebody typed. The kernel's
+own `tool_search` is excluded from the comparison: it is rebuilt per generation and is never the
+reason a migration is refused.
+
+One term is argued for and **not yet carried**: a derived isolation descriptor, so that a tool
+keeping its name and schema but moving from a sandboxed child to in-process execution reads as
+incompatible. `ToolSpec` and `Generation` hold nothing of the kind today, so the comparison is names
+and schemas; adding the field and the check is additive and is the one place this function is
+weaker than the paragraph above would like.
 
 **What is built.** `Kernel::publish(tools)` adds a generation and pins new sessions to it; a session
 resolves tools through the generation it is pinned to, not the newest one, which is the whole point:
@@ -803,12 +820,12 @@ caller's compaction changes the view without touching the log.
 
 Three claims, and the daemon only makes the ones it can keep:
 
-| Claim                             | How                                                              |
-| --------------------------------- | ---------------------------------------------------------------- |
-| only the local user can connect   | the socket lives in a `0700` directory and is `0600`             |
+| Claim                             | How                                                                                       |
+| --------------------------------- | ----------------------------------------------------------------------------------------- |
+| only the local user can connect   | the socket lives in a `0700` directory and is `0600`                                      |
 | a remote caller is encrypted      | TLS on TCP, and no plaintext mode exists (`--tcp` without a certificate refuses to start) |
-| a request carries a credential    | a hashed token in the system store, checked on **every** route including `describe` |
-| every session belongs to somebody | one principal from `NUCLEOS_PRINCIPAL`, for now                  |
+| a request carries a credential    | a hashed token in the system store, checked on **every** route including `describe`       |
+| every session belongs to somebody | a token names its tenant and subject; with no token issued, every call is `default/local` |
 
 Peer credentials (`LOCAL_PEERCRED`) would be the better first row, and they need `unsafe`, which this
 workspace forbids. So the check is pushed to the one place that can enforce it without it — the
@@ -972,10 +989,12 @@ better answer than a daemon that will not start.
 [`config.md`](config.md) is the proposal that would replace it: `nucleos init` once, configuration in
 the store, a signed request per change, and two databases with two lifecycles.
 
-Its first step is built: the daemon now opens **two** databases under one root — `system.db` for
-configuration and `sessions.db` for sessions — and takes `--root` and `--socket`, with platform
-defaults that are absolute and a socket in a private directory rather than a predictable name in
-`/tmp`. The rest is still a proposal, and the document says which half is which.
+Its first step is built, and so is most of the rest: the daemon opens **two** databases under one
+root — `system.db` for configuration and `sessions.db` for sessions — takes `--root` and
+`--socket`, holds an advisory lock on the root, and serves the document surface (`GET|PUT
+/v1/config`, `GET /v1/config/history`, `nucleos config export|apply|history`). What remains a
+proposal is the parts [§11](config.md) lists as open questions rather than a missing half of the
+design.
 
 What it does **not** propose to change, because the architecture already decided it: session wiring
 (kind, sandbox, workspace, budget) stays startup-only and lives in the checkpoint; everything a request
