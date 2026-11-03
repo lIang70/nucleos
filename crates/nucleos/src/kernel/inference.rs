@@ -50,6 +50,12 @@ impl Kernel {
         )
         .await?;
 
+        // The step is taken here, not on success: a turn that failed was still a turn, and a budget
+        // that only counts the ones that worked is a budget a retry loop can spend forever. It is
+        // after `spend` — which is what reads `steps` — and before the call.
+        session.steps = session.steps.saturating_add(1);
+        session.turn_usage = crate::contract::Usage::default();
+
         // What the log held when the turn was announced. Anything written after this point explains
         // the outcome; nothing written after it means the turn failed without a trace.
         let announced_at = session.next_seq();
@@ -74,25 +80,30 @@ impl Kernel {
                 // was already reported stays debited, and the deltas are in the log where a caller can
                 // read what the model had said before it was stopped. It is *not* retried — a cancelled
                 // turn is a decision, and repeating it would undo the decision.
-                self.emit(
-                    session,
-                    EventKind::AttemptFailed {
-                        attempt: crate::contract::Attempt {
-                            index: u32::try_from(session.steps).unwrap_or(u32::MAX),
-                            model: routing.chain.first().cloned().unwrap_or_default(),
-                            phase: crate::contract::AttemptPhase::Execute,
-                            trigger: crate::contract::AttemptTrigger::Selection,
-                            outcome: crate::contract::AttemptOutcome::Failed {
-                                code: crate::contract::ErrorCode::Cancelled,
-                                reason: "cancelled by the caller while running".to_owned(),
-                            },
-                            usage: crate::contract::Usage::default(),
-                            duration_millis: 0,
-                            degraded: Vec::new(),
-                        },
+                // Taken before the event is built: one expression cannot borrow the session twice.
+                let spent = std::mem::take(&mut session.turn_usage);
+                let attempt = crate::contract::Attempt {
+                    index: u32::try_from(session.steps).unwrap_or(u32::MAX),
+                    model: routing.chain.first().cloned().unwrap_or_default(),
+                    phase: crate::contract::AttemptPhase::Execute,
+                    trigger: crate::contract::AttemptTrigger::Selection,
+                    outcome: crate::contract::AttemptOutcome::Failed {
+                        code: crate::contract::ErrorCode::Cancelled,
+                        reason: "cancelled by the caller while running".to_owned(),
                     },
-                )
-                .await?;
+                    // What the dropped attempt had already cost. The provider bills it, so a ledger
+                    // that recorded zero would under-report exactly the turns somebody cancelled to
+                    // save money.
+                    usage: spent,
+                    duration_millis: 0,
+                    degraded: Vec::new(),
+                };
+                // In the ledger as well as the log. The route records its attempts; this one never got
+                // back to the route, and an in-memory ledger that disagrees with the log is a bill two
+                // readers would compute differently.
+                session.ledger.record(attempt.clone());
+                self.emit(session, EventKind::AttemptFailed { attempt })
+                    .await?;
                 self.write_checkpoint(session).await?;
                 return Err(error);
             }
@@ -118,7 +129,6 @@ impl Kernel {
                 return Err(error);
             }
         };
-        session.steps = session.steps.saturating_add(1);
         let step_index = u32::try_from(session.steps).unwrap_or(u32::MAX);
         self.emit(
             session,

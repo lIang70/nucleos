@@ -408,6 +408,7 @@ impl Kernel {
     /// Spend credit, and record the spend whether or not the answer turns out to be usable.
     fn debit(&self, session: &mut Session, usage: &Usage) {
         session.usage.add(usage);
+        session.turn_usage.add(usage);
         session.credit_tokens = session.credit_tokens.saturating_sub(usage.total_tokens());
     }
 }

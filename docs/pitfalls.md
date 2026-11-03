@@ -1598,3 +1598,28 @@ close it first), its owner only (`404`, like every other cross-subject read). A 
 listing entry with no log, which reads as a session that lost its history rather than one that was
 removed.
 
+## 101. A bill rebuilt from zero under-reports the interrupted
+
+**Decision.** The ledger is part of the checkpoint. A cancelled attempt is billed for what it streamed.
+A step is counted when a turn *starts*, not when it succeeds. And the cancel path records its attempt in
+the ledger as well as the log.
+
+**Four ways the same number went wrong.**
+
+- **`from_snapshot` set `Ledger::default()`.** Every request loads, so a resumed session reported having
+  spent nothing — and the sessions that get resumed are exactly the ones somebody is reconciling.
+- **The cancelled attempt recorded `Usage::default()`.** The route debits as it streams, so by the time
+  a cancel drops the future the provider has already been paid for those tokens. The ledger said zero:
+  not "unknown", but "free", which no provider believes. `Session::turn_usage` accumulates the turn's
+  debits and the cancel takes them.
+- **`steps` moved only on success.** A turn that failed was not a turn, so a retry loop that never
+  succeeds never reaches `max_steps` — the one budget that is supposed to bound a retry loop.
+- **The index disagreed with itself.** The cancel path used `steps` before the increment and
+  `message_completed` used `steps + 1`, so the first cancelled turn and the first answered turn shared
+  an index. With the increment moved to the start of the turn, both read the same number.
+
+**The part the test found rather than the reading.** The cancel branch emitted `attempt_failed` but never
+called `ledger.record` — the route does that for attempts that come back, and this one never does. The
+event was in the log and the in-memory ledger was not, which is a bill two readers would compute
+differently. Both now.
+

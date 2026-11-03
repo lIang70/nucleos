@@ -41,6 +41,12 @@ pub struct Session {
     pub(crate) spent_wall_millis: u64,
     /// How many checkpoints this session has written. Bumped only by a successful one.
     pub(crate) version: u64,
+    /// What this turn has debited so far. Reset at every turn, taken by a cancel.
+    ///
+    /// A cancelled attempt is dropped mid-stream, so the route never returns an `Ending` to record. The
+    /// debits it made before the drop are real — the provider bills them — and without this the ledger
+    /// would record the attempt as having cost nothing.
+    pub(crate) turn_usage: Usage,
     /// The counter and the lock for this session's log.
     ///
     /// Not the handle's own: the kernel keeps one per `(tenant, session)` and hands the same `Arc` to
@@ -269,6 +275,7 @@ impl Session {
             started_unix_millis: init.now_unix_millis,
             spent_wall_millis: 0,
             version: 0,
+            turn_usage: Usage::default(),
             log: init.log,
             pending: Vec::new(),
             data: std::collections::BTreeMap::new(),
@@ -358,6 +365,7 @@ impl Session {
             state: self.state,
             messages: self.messages.clone(),
             usage: self.usage.clone(),
+            ledger: self.ledger.clone(),
             inference_calls: self.steps,
             credit_tokens: self.credit_tokens,
             budget: self.budget.clone(),
@@ -402,7 +410,7 @@ impl Session {
             usage: snapshot.usage,
             steps: snapshot.inference_calls,
             credit_tokens: snapshot.credit_tokens,
-            ledger: Ledger::default(),
+            ledger: snapshot.ledger,
             budget,
             // The clock restarts here and what it had already spent is restored beside it. The
             // alternative — one start time and a subtraction — would charge every idle gap between
@@ -411,14 +419,17 @@ impl Session {
             started_unix_millis: now_unix_millis,
             spent_wall_millis: snapshot.spent_wall_millis,
             version: snapshot.version,
+            turn_usage: Usage::default(),
             // The counter belongs to the log, not to this handle: `load` may be handing out a second
             // handle for a session a supervisor is still writing to, and the head it resolves to is
             // already at the right number.
             log,
             pending: snapshot.pending,
             data: snapshot.data,
+            // Restored, not zeroed: a resumed session that stopped retrying would be a session whose
+            // behaviour changed because it was interrupted. Read before `routing` is moved.
+            retries: snapshot.routing.retries,
             routing: snapshot.routing,
-            retries: 0,
             params: snapshot.params,
             workspace: snapshot.workspace,
             sandbox: snapshot.sandbox,

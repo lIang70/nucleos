@@ -990,6 +990,13 @@ pub struct Snapshot {
     /// impossible to hit over the ABI.
     #[serde(default)]
     pub spent_wall_millis: u64,
+    /// Every attempt this session has made, and the bill they add up to.
+    ///
+    /// In the checkpoint because it is the record, not a statistic: a resumed session that reported
+    /// nothing spent would under-report exactly the sessions that were interrupted, which are the ones
+    /// somebody is reconciling.
+    #[serde(default)]
+    pub ledger: Ledger,
     /// Tokens granted and not yet spent.
     ///
     /// In the checkpoint because every syscall may be served by a different process: a budget

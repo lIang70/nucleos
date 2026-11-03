@@ -265,6 +265,7 @@ fn snapshot_for(session: &SessionId) -> nucleos::contract::Snapshot {
         state: SessionState::Open,
         messages: Vec::new(),
         usage: nucleos::contract::Usage::default(),
+        ledger: Default::default(),
         inference_calls: 0,
         credit_tokens: 0,
         budget: Default::default(),
