@@ -119,3 +119,52 @@ fn the_stream_is_documented_as_a_stream() {
             .contains("Last-Event-ID")
     );
 }
+
+/// Every `{placeholder}` in a path is declared, and nothing else is.
+///
+/// OpenAPI requires it — a path template with an undeclared variable is invalid, and generators either
+/// refuse the document or emit the braces literally — and the client-facing consequence is worse than
+/// the validation error: a generated method with no `id` argument.
+///
+/// The document is generated, so this asserts the generator, not the table: path parameters are derived
+/// from the template precisely so a route cannot name one and forget to declare it.
+#[test]
+fn every_path_parameter_is_declared() {
+    let document = openapi::document(&openapi_routes()).unwrap();
+    let mut checked = 0;
+    for (path, item) in document["paths"].as_object().unwrap() {
+        let mut in_template: Vec<String> = Vec::new();
+        let mut rest = path.as_str();
+        while let Some(open) = rest.find('{') {
+            let close = rest[open..].find('}').expect("a `{` without `}`");
+            in_template.push(rest[open + 1..open + close].to_owned());
+            rest = &rest[open + close + 1..];
+        }
+
+        for (method, operation) in item.as_object().unwrap() {
+            let declared: Vec<String> = operation["parameters"]
+                .as_array()
+                .map(|parameters| {
+                    parameters
+                        .iter()
+                        .filter(|parameter| parameter["in"] == "path")
+                        .map(|parameter| parameter["name"].as_str().unwrap().to_owned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            assert_eq!(
+                declared, in_template,
+                "{method} {path}: the path names {in_template:?}, the document declares {declared:?}"
+            );
+            // And a path parameter is required by definition; an optional one is a template that may
+            // not be filled.
+            for parameter in operation["parameters"].as_array().into_iter().flatten() {
+                if parameter["in"] == "path" {
+                    assert_eq!(parameter["required"], true, "{method} {path}");
+                }
+            }
+            checked += 1;
+        }
+    }
+    assert!(checked > 30, "only {checked} operations checked");
+}

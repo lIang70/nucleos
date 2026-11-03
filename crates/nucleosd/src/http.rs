@@ -23,7 +23,7 @@ use nucleos::wire::api::{
     ReloadResponse, RetireResponse, SessionListResponse, SessionSummary, SessionView, StartRequest,
     StartResponse, StateRequest, StdinRequest, ToolBatchRequest, ToolBatchResponse, VerdictRequest,
 };
-use nucleos::wire::openapi;
+use nucleos::wire::openapi::{self, Kind, Parameter};
 use nucleos_agent as agent;
 use nucleos_sqlite::SqliteStore;
 use std::convert::Infallible;
@@ -486,6 +486,7 @@ pub struct Route {
 pub const ROUTES: &[Route] = &[
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "get",
             path: "/v1/describe",
             operation: "describe",
@@ -497,6 +498,7 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "post",
             path: "/v1/agents",
             operation: "runAgent",
@@ -508,6 +510,7 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "post",
             path: "/v1/sessions",
             operation: "openSession",
@@ -519,6 +522,7 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "get",
             path: "/v1/sessions/{id}",
             operation: "viewSession",
@@ -530,18 +534,20 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "post",
             path: "/v1/sessions/{id}/inference",
             operation: "inference",
             summary: "One model call. `Accept: text/event-stream` streams the turn's events; the \
                       last frame is the assembled message.",
             request: Some("InferenceRequest"),
-            reply: openapi::Reply::Json("InferenceResponse"),
+            reply: openapi::Reply::JsonOrStream("InferenceResponse"),
         },
         build: || post(inference),
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "post",
             path: "/v1/sessions/{id}/tools",
             operation: "invokeTools",
@@ -553,6 +559,7 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "post",
             path: "/v1/sessions/{id}/state",
             operation: "appendState",
@@ -564,6 +571,7 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "post",
             path: "/v1/processes",
             operation: "startProcess",
@@ -575,6 +583,7 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "delete",
             path: "/v1/sessions/{id}",
             operation: "deleteSession",
@@ -586,6 +595,7 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "post",
             path: "/v1/sessions/{id}/cancel",
             operation: "cancelTurn",
@@ -603,6 +613,19 @@ pub const ROUTES: &[Route] = &[
             summary: "The sessions this caller owns, newest page first.",
             request: None,
             reply: openapi::Reply::Json("SessionListResponse"),
+            parameters: &[
+                Parameter::query(
+                    "kind",
+                    Kind::String,
+                    "Only sessions of this kind: `agent` or `process`.",
+                ),
+                Parameter::query("limit", Kind::Integer, "How many rows; 20 when absent."),
+                Parameter::query(
+                    "page_token",
+                    Kind::String,
+                    "Continue after this session id.",
+                ),
+            ],
         },
         build: || get(list_sessions),
     },
@@ -614,11 +637,20 @@ pub const ROUTES: &[Route] = &[
             summary: "The processes this node is running. Not durable: memory, not the log.",
             request: None,
             reply: openapi::Reply::Json("ProcessListResponse"),
+            parameters: &[
+                Parameter::query("page_size", Kind::Integer, "How many rows; 20 when absent."),
+                Parameter::query(
+                    "page_token",
+                    Kind::String,
+                    "Continue after this session id.",
+                ),
+            ],
         },
         build: || get(list_processes),
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "post",
             path: "/v1/sessions/{id}/stdin",
             operation: "writeStdin",
@@ -630,6 +662,7 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "post",
             path: "/v1/sessions/{id}/signal",
             operation: "signalProcess",
@@ -641,6 +674,7 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "post",
             path: "/v1/sessions/{id}/wait",
             operation: "waitProcess",
@@ -652,6 +686,7 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "put",
             path: "/v1/policy",
             operation: "putPolicy",
@@ -663,6 +698,7 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "put",
             path: "/v1/tenants/{tenant}/limits",
             operation: "putTenantLimits",
@@ -674,6 +710,7 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "put",
             path: "/v1/tenants/{tenant}/policy",
             operation: "putTenantPolicy",
@@ -685,6 +722,7 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "get",
             path: "/v1/admin/keys",
             operation: "listAdminKeys",
@@ -696,6 +734,7 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "post",
             path: "/v1/admin/keys",
             operation: "enrolAdminKey",
@@ -707,6 +746,7 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "delete",
             path: "/v1/admin/keys/{id}",
             operation: "revokeAdminKey",
@@ -718,6 +758,7 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "get",
             path: "/v1/sources",
             operation: "listSources",
@@ -729,6 +770,7 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "post",
             path: "/v1/sources",
             operation: "addSource",
@@ -740,6 +782,7 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "delete",
             path: "/v1/sources/{name}",
             operation: "removeSource",
@@ -751,6 +794,7 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "post",
             path: "/v1/tokens",
             operation: "issueToken",
@@ -762,6 +806,7 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "get",
             path: "/v1/tokens",
             operation: "listTokens",
@@ -773,6 +818,7 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "delete",
             path: "/v1/tokens/{id}",
             operation: "revokeToken",
@@ -784,6 +830,7 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "get",
             path: "/v1/models",
             operation: "listModels",
@@ -795,6 +842,7 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "post",
             path: "/v1/models",
             operation: "addModel",
@@ -806,6 +854,7 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "delete",
             path: "/v1/models/{name}",
             operation: "removeModel",
@@ -817,6 +866,7 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "get",
             path: "/v1/config",
             operation: "config",
@@ -828,6 +878,7 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "put",
             path: "/v1/config",
             operation: "applyConfig",
@@ -846,11 +897,17 @@ pub const ROUTES: &[Route] = &[
             summary: "Configuration changes, newest first, with the key that signed each one.",
             request: None,
             reply: openapi::Reply::Json("ChangeListResponse"),
+            parameters: &[Parameter::query(
+                "limit",
+                Kind::Integer,
+                "How many rows, newest first; 50 when absent.",
+            )],
         },
         build: || get(config_history),
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "get",
             path: "/v1/metrics",
             operation: "metrics",
@@ -862,6 +919,7 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "post",
             path: "/v1/tools/retire",
             operation: "retireGenerations",
@@ -873,6 +931,7 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "post",
             path: "/v1/tools/reload",
             operation: "reloadTools",
@@ -884,6 +943,7 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "post",
             path: "/v1/sessions/{id}/configure",
             operation: "configureSession",
@@ -895,6 +955,7 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "post",
             path: "/v1/sessions/{id}/close",
             operation: "closeSession",
@@ -906,6 +967,7 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         meta: openapi::Route {
+            parameters: &[],
             method: "post",
             path: "/v1/sessions/{id}/verdict",
             operation: "verdict",
@@ -923,6 +985,18 @@ pub const ROUTES: &[Route] = &[
             summary: "The event stream. `id:` is the event's `seq`, so Last-Event-ID resumes.",
             request: None,
             reply: openapi::Reply::Stream,
+            parameters: &[
+                Parameter::query(
+                    "from_seq",
+                    Kind::Integer,
+                    "The cursor to replay from, inclusive. Absent replays the whole log.",
+                ),
+                Parameter::header(
+                    "Last-Event-ID",
+                    Kind::String,
+                    "The last `id` this client saw; wins over `from_seq`.",
+                ),
+            ],
         },
         build: || get(events),
     },

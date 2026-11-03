@@ -4111,6 +4111,17 @@
     "/v1/admin/keys/{id}": {
       "delete": {
         "operationId": "revokeAdminKey",
+        "parameters": [
+          {
+            "description": "The session this addresses.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -4441,6 +4452,17 @@
     "/v1/config/history": {
       "get": {
         "operationId": "configHistory",
+        "parameters": [
+          {
+            "description": "How many rows, newest first; 50 when absent.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -4839,6 +4861,17 @@
     "/v1/models/{name}": {
       "delete": {
         "operationId": "removeModel",
+        "parameters": [
+          {
+            "description": "The model or source this names.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -4995,6 +5028,26 @@
     "/v1/processes": {
       "get": {
         "operationId": "listProcesses",
+        "parameters": [
+          {
+            "description": "How many rows; 20 when absent.",
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Continue after this session id.",
+            "in": "query",
+            "name": "page_token",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -5159,6 +5212,35 @@
     "/v1/sessions": {
       "get": {
         "operationId": "listSessions",
+        "parameters": [
+          {
+            "description": "Only sessions of this kind: `agent` or `process`.",
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "How many rows; 20 when absent.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Continue after this session id.",
+            "in": "query",
+            "name": "page_token",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -5323,6 +5405,17 @@
     "/v1/sessions/{id}": {
       "delete": {
         "operationId": "deleteSession",
+        "parameters": [
+          {
+            "description": "The session this addresses.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -5399,6 +5492,17 @@
       },
       "get": {
         "operationId": "viewSession",
+        "parameters": [
+          {
+            "description": "The session this addresses.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -5477,6 +5581,17 @@
     "/v1/sessions/{id}/cancel": {
       "post": {
         "operationId": "cancelTurn",
+        "parameters": [
+          {
+            "description": "The session this addresses.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -5555,6 +5670,17 @@
     "/v1/sessions/{id}/close": {
       "post": {
         "operationId": "closeSession",
+        "parameters": [
+          {
+            "description": "The session this addresses.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -5633,6 +5759,17 @@
     "/v1/sessions/{id}/configure": {
       "post": {
         "operationId": "configureSession",
+        "parameters": [
+          {
+            "description": "The session this addresses.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -5721,6 +5858,35 @@
     "/v1/sessions/{id}/events": {
       "get": {
         "operationId": "events",
+        "parameters": [
+          {
+            "description": "The session this addresses.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The cursor to replay from, inclusive. Absent replays the whole log.",
+            "in": "query",
+            "name": "from_seq",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The last `id` this client saw; wins over `from_seq`.",
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -5799,6 +5965,17 @@
     "/v1/sessions/{id}/inference": {
       "post": {
         "operationId": "inference",
+        "parameters": [
+          {
+            "description": "The session this addresses.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -5816,9 +5993,14 @@
                 "schema": {
                   "$ref": "#/components/schemas/InferenceResponse"
                 }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/Event"
+                }
               }
             },
-            "description": "The result."
+            "description": "JSON, or the turn's events when `Accept: text/event-stream`. The last frame is the assembled message, so a client that ignores the others gets the same answer."
           },
           "400": {
             "content": {
@@ -5887,6 +6069,17 @@
     "/v1/sessions/{id}/signal": {
       "post": {
         "operationId": "signalProcess",
+        "parameters": [
+          {
+            "description": "The session this addresses.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "204": {
             "description": "Done."
@@ -5958,6 +6151,17 @@
     "/v1/sessions/{id}/state": {
       "post": {
         "operationId": "appendState",
+        "parameters": [
+          {
+            "description": "The session this addresses.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -6039,6 +6243,17 @@
     "/v1/sessions/{id}/stdin": {
       "post": {
         "operationId": "writeStdin",
+        "parameters": [
+          {
+            "description": "The session this addresses.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -6120,6 +6335,17 @@
     "/v1/sessions/{id}/tools": {
       "post": {
         "operationId": "invokeTools",
+        "parameters": [
+          {
+            "description": "The session this addresses.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -6208,6 +6434,17 @@
     "/v1/sessions/{id}/verdict": {
       "post": {
         "operationId": "verdict",
+        "parameters": [
+          {
+            "description": "The session this addresses.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -6296,6 +6533,17 @@
     "/v1/sessions/{id}/wait": {
       "post": {
         "operationId": "waitProcess",
+        "parameters": [
+          {
+            "description": "The session this addresses.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -6538,6 +6786,17 @@
     "/v1/sources/{name}": {
       "delete": {
         "operationId": "removeSource",
+        "parameters": [
+          {
+            "description": "The model or source this names.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -6616,6 +6875,17 @@
     "/v1/tenants/{tenant}/limits": {
       "put": {
         "operationId": "putTenantLimits",
+        "parameters": [
+          {
+            "description": "The tenant this addresses.",
+            "in": "path",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -6704,6 +6974,17 @@
     "/v1/tenants/{tenant}/policy": {
       "put": {
         "operationId": "putTenantPolicy",
+        "parameters": [
+          {
+            "description": "The tenant this addresses.",
+            "in": "path",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -6946,6 +7227,17 @@
     "/v1/tokens/{id}": {
       "delete": {
         "operationId": "revokeToken",
+        "parameters": [
+          {
+            "description": "The session this addresses.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {

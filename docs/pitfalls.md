@@ -1685,3 +1685,26 @@ that window loses the last few characters of an answer in progress, never a comp
 paths flush first, which is why `message_completed` can never be in the store without the text it
 summarises.
 
+## 104. A contract that omits its own inputs is not a contract
+
+**Decision.** Path parameters are generated from the `{placeholder}` in the route's path; query and
+header parameters are declared beside the handler. A test walks every operation and asserts the declared
+`in: path` names equal the template's.
+
+**The failure.** The published document had forty paths with `{id}` in them and **zero** `parameters`
+entries. Two consequences, one loud and one quiet: OpenAPI requires a path parameter for every template
+variable, so generators either refuse the document or emit the braces literally; and `listSessions` came
+out with no `kind`, `limit` or `page_token` argument at all — so the pagination and resumption that had
+just been implemented were reachable only by hand-written requests. The ABI's only published artefact
+described a smaller API than the daemon served.
+
+**Why the path half is generated and the rest is declared.** A template variable cannot be forgotten if
+the generator reads the template; a query parameter cannot be derived from anything, so it sits beside the
+handler where the handler already reads it. The test compares the two lists, which is what keeps the
+derived half honest when the template syntax changes.
+
+**And the second answer a route gives.** `POST /v1/sessions/{id}/inference` returns JSON or an SSE stream
+depending on `Accept`. The document said `application/json` only, so a generated client could not ask for
+the stream it was designed around. `Reply::JsonOrStream` publishes both media types on one operation,
+because it is one operation: same request, same authentication, same commit point.
+

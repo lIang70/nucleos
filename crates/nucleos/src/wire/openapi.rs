@@ -25,6 +25,90 @@ pub enum Reply {
     /// A server-sent event stream. Not expressible as a schema: an SDK generates a client for
     /// every other route and hand-writes this one.
     Stream,
+    /// Either, chosen by `Accept`.
+    ///
+    /// One route with two answers is a fact about the route, not two routes: the request, the
+    /// authentication and the commit point are identical, and a client that documents only one of
+    /// them cannot ask for the other.
+    JsonOrStream(&'static str),
+}
+
+/// Where a parameter travels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Location {
+    /// In the query string.
+    Query,
+    /// In a header.
+    Header,
+}
+
+/// A parameter's type, as the document describes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// A string.
+    String,
+    /// A non-negative integer.
+    Integer,
+}
+
+/// A query or header parameter.
+///
+/// Path parameters are **not** here: they are derived from the `{placeholder}` in the route's path,
+/// so a route cannot name one and forget to declare it.
+#[derive(Debug, Clone, Copy)]
+pub struct Parameter {
+    /// Its name, exactly as the handler reads it.
+    pub name: &'static str,
+    /// Where it travels.
+    pub location: Location,
+    /// Its type.
+    pub kind: Kind,
+    /// One line a generated client shows its caller.
+    pub description: &'static str,
+}
+
+impl Parameter {
+    /// A query parameter.
+    #[must_use]
+    pub const fn query(name: &'static str, kind: Kind, description: &'static str) -> Self {
+        Self {
+            name,
+            location: Location::Query,
+            kind,
+            description,
+        }
+    }
+
+    /// A header parameter.
+    #[must_use]
+    pub const fn header(name: &'static str, kind: Kind, description: &'static str) -> Self {
+        Self {
+            name,
+            location: Location::Header,
+            kind,
+            description,
+        }
+    }
+
+    fn json(self) -> Value {
+        json!({
+            "name": self.name,
+            "in": match self.location {
+                Location::Query => "query",
+                Location::Header => "header",
+            },
+            // A query or header the handler treats as optional: absent means "use the default",
+            // and saying otherwise would make every generated client demand it.
+            "required": false,
+            "schema": {
+                "type": match self.kind {
+                    Kind::String => "string",
+                    Kind::Integer => "integer",
+                }
+            },
+            "description": self.description,
+        })
+    }
 }
 
 /// One route, as data.
@@ -46,6 +130,8 @@ pub struct Route {
     pub request: Option<&'static str>,
     /// What it answers with.
     pub reply: Reply,
+    /// Query and header parameters. Path parameters come from the path itself.
+    pub parameters: &'static [Parameter],
 }
 
 /// The published document.
@@ -88,6 +174,23 @@ fn operation(route: &Route) -> Result<Value, serde_json::Error> {
     operation.insert("operationId".to_owned(), json!(route.operation));
     operation.insert("summary".to_owned(), json!(route.summary));
 
+    let mut parameters: Vec<Value> = placeholders(route.path)
+        .into_iter()
+        .map(|name| {
+            json!({
+                "name": name,
+                "in": "path",
+                "required": true,
+                "schema": { "type": "string" },
+                "description": path_description(&name),
+            })
+        })
+        .collect();
+    parameters.extend(route.parameters.iter().copied().map(Parameter::json));
+    if !parameters.is_empty() {
+        operation.insert("parameters".to_owned(), json!(parameters));
+    }
+
     if let Some(name) = route.request {
         operation.insert(
             "requestBody".to_owned(),
@@ -111,6 +214,20 @@ fn operation(route: &Route) -> Result<Value, serde_json::Error> {
         }
         Reply::NoContent => {
             responses.insert("204".to_owned(), json!({ "description": "Done." }));
+        }
+        Reply::JsonOrStream(name) => {
+            responses.insert(
+                "200".to_owned(),
+                json!({
+                    "description": "JSON, or the turn's events when `Accept: text/event-stream`. \
+The last frame is the assembled message, so a client that ignores the others gets the same \
+answer.",
+                    "content": {
+                        "application/json": { "schema": reference(name) },
+                        "text/event-stream": { "schema": reference("Event") },
+                    },
+                }),
+            );
         }
         Reply::Stream => {
             responses.insert(
@@ -202,4 +319,31 @@ pub fn referenced_schemas(routes: &[Route]) -> Vec<&'static str> {
     }
     names.push("ErrorBody");
     names
+}
+
+/// The `{name}` placeholders in a path, in order.
+fn placeholders(path: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut rest = path;
+    while let Some(open) = rest.find('{') {
+        let Some(close) = rest[open..].find('}') else {
+            break;
+        };
+        names.push(rest[open + 1..open + close].to_owned());
+        rest = &rest[open + close + 1..];
+    }
+    names
+}
+
+/// One line for a path parameter, by name.
+///
+/// The names are few and the sentences matter to whoever reads a generated client: "The session this
+/// addresses" is worth writing three times.
+fn path_description(name: &str) -> &'static str {
+    match name {
+        "id" => "The session this addresses.",
+        "tenant" => "The tenant this addresses.",
+        "name" => "The model or source this names.",
+        _ => "Named in the path.",
+    }
 }
