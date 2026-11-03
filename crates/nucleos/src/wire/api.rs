@@ -379,6 +379,17 @@ pub struct RetireResponse {
     pub retired: Vec<u64>,
 }
 
+/// What a deletion did.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct DeletedResponse {
+    /// Whether anything was removed.
+    ///
+    /// `true` always on success: a request that named nothing answers `404`, so `false` here would be
+    /// a second way to say the same thing.
+    #[serde(default)]
+    pub deleted: bool,
+}
+
 /// What a cancel did.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct CancelResponse {

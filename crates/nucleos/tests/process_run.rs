@@ -398,6 +398,9 @@ async fn the_listing_is_durable_and_only_counts_process_sessions() -> nucleos::R
     let mut snapshot = store.snapshot(&key(&id)).await?.unwrap();
     snapshot.process.as_mut().unwrap().status =
         nucleos::contract::ProcessStatus::Running { pid: 1 };
+    // A new version, because the store refuses a write that is not newer than what it holds — which is
+    // the invariant this test now sits on top of.
+    snapshot.version = snapshot.version.saturating_add(1);
     store.write_snapshot(snapshot).await?;
     let listed = fresh
         .processes("acme", &nucleos::contract::ProcessQuery::default())

@@ -6,7 +6,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use nucleos::adapter::{SessionQuery, Store};
+use nucleos::adapter::{SessionKey, SessionQuery, Store};
 use nucleos::contract::{Event, EventKind, SessionId, SessionKind, SessionState};
 use nucleos_sqlite::SqliteStore;
 use nucleos_testkit::{FakeModel, FakeTool, FixedClock};
@@ -260,6 +260,7 @@ fn snapshot_for(session: &SessionId) -> nucleos::contract::Snapshot {
         },
         session: session.clone(),
         seq: 0,
+        version: 1,
         generation: nucleos::contract::Generation(0),
         state: SessionState::Open,
         messages: Vec::new(),
@@ -335,4 +336,60 @@ async fn two_tenants_can_share_a_session_id() {
         .await
         .unwrap();
     assert!(stranger.sessions.is_empty());
+}
+
+/// A checkpoint that is not strictly newer is refused, and changes nothing.
+///
+/// This is what makes a stale handle detectable: two requests load the same session, both write down a
+/// materialisation of the log, and without the version the second one silently replaces the first one's
+/// work with a view that never saw it.
+#[tokio::test]
+async fn a_checkpoint_that_is_not_newer_is_refused() {
+    let store = SqliteStore::in_memory().unwrap();
+    let id = SessionId::new("s1");
+    let key = SessionKey::new("acme", id.clone());
+
+    // A snapshot may not claim more of the log than exists: one event, then a checkpoint that covers it.
+    store
+        .append(
+            &key,
+            &[nucleos::contract::Event {
+                seq: 0,
+                session: id.clone(),
+                at_unix_millis: 0,
+                schema_version: nucleos::contract::Event::SCHEMA_VERSION,
+                kind: nucleos::contract::EventKind::StateChanged {
+                    state: nucleos::contract::SessionState::Open,
+                    stop: None,
+                },
+                meta: Default::default(),
+            }],
+        )
+        .await
+        .unwrap();
+
+    let mut snapshot = snapshot_for(&id);
+    snapshot.seq = 0;
+    snapshot.version = 2;
+    store.write_snapshot(snapshot.clone()).await.unwrap();
+
+    // The same version again: refused, and the stored body is untouched.
+    let error = store.write_snapshot(snapshot.clone()).await.unwrap_err();
+    assert_eq!(error.code(), nucleos::contract::ErrorCode::Conflict);
+    assert!(error.reason().contains("not newer"), "{}", error.reason());
+    assert_eq!(store.snapshot(&key).await.unwrap().unwrap().version, 2);
+
+    // An older one too — the case a handle loaded before somebody else's checkpoint produces.
+    let mut stale = snapshot;
+    stale.version = 1;
+    stale.state = nucleos::contract::SessionState::Closed;
+    assert_eq!(
+        store.write_snapshot(stale).await.unwrap_err().code(),
+        nucleos::contract::ErrorCode::Conflict
+    );
+    assert_eq!(
+        store.snapshot(&key).await.unwrap().unwrap().state,
+        nucleos::contract::SessionState::Open,
+        "a refused write changed nothing"
+    );
 }

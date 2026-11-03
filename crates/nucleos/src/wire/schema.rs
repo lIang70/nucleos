@@ -90,6 +90,8 @@ pub struct Abi {
     pub deployment: api::Deployment,
     /// One tenant's part of it.
     pub tenant_document: api::TenantDocument,
+    /// `DELETE /v1/sessions/{id}`.
+    pub deleted_response: api::DeletedResponse,
     /// `PUT /v1/config`.
     pub applied_deployment: api::AppliedDeployment,
     /// `GET /v1/config/history`.

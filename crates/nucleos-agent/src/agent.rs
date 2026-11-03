@@ -68,7 +68,7 @@ pub async fn answer(
             .record_refusal(&mut session, &pending.call, "refused by a human")
             .await?;
     }
-    kernel.checkpoint(&session).await?;
+    kernel.checkpoint(&mut session).await?;
     drive(kernel, &mut session).await
 }
 

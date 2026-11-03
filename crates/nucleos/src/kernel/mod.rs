@@ -451,6 +451,44 @@ impl Kernel {
         )
     }
 
+    /// Remove a session: its log, its checkpoint, and the head this kernel was holding for it.
+    ///
+    /// Only a closed session may be removed — deleting an open one would destroy a conversation
+    /// somebody may still be using, and the answer to "I want it gone" for a running session is
+    /// `close` first. Returns whether anything was there.
+    pub async fn delete(
+        &self,
+        session: &SessionId,
+        principal: &crate::contract::Principal,
+    ) -> Result<bool> {
+        let key = crate::adapter::SessionKey {
+            tenant: principal.tenant.clone(),
+            id: session.clone(),
+        };
+        // Ownership is the store's key, and the state is the checkpoint's: both are answered before
+        // anything is removed, because deletion is the one operation there is no undo for.
+        let snapshot = self.store.snapshot(&key).await?;
+        let Some(snapshot) = snapshot else {
+            return Ok(false);
+        };
+        if snapshot.principal.subject != principal.subject {
+            return Err(Error::not_found(format!("no session {session}")));
+        }
+        if snapshot.state == crate::contract::SessionState::Open {
+            return Err(Error::new(
+                crate::contract::ErrorCode::Conflict,
+                format!("session {session} is open: close it before removing it"),
+            ));
+        }
+        let removed = self.store.delete(&key).await?;
+        self.logs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&key);
+        tracing::info!(event = "session_deleted", session = %session, tenant = %principal.tenant);
+        Ok(removed)
+    }
+
     /// Follow the events this kernel writes, from now on.
     ///
     /// Subscribe **before** starting the turn: the kernel announces events as it writes them, so a

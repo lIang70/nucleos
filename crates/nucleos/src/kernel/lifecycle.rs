@@ -92,7 +92,7 @@ impl Kernel {
             self.permit_route(&session.principal, self.resolve_route(&session.routing)?)?;
         }
         self.emit_state(&mut session).await?;
-        self.write_checkpoint(&session).await?;
+        self.write_checkpoint(&mut session).await?;
         Ok(session)
     }
     /// Load a session from its checkpoint.

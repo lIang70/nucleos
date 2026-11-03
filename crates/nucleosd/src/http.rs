@@ -18,10 +18,10 @@ use nucleos::contract::{ErrorCode, Event, EventKind, Principal, SessionId, Sessi
 use nucleos::kernel::{HitlVerdict, Kernel, SessionSpec, StateWrite};
 use nucleos::wire::api::{
     AppliedDeployment, CancelResponse, ChangeListResponse, ChangeView, ConfigKey, ConfigResponse,
-    Deployment, DescribeResponse, ErrorBody, InferenceRequest, InferenceResponse, MetricsResponse,
-    ProcessInfo, ProcessListResponse, ProcessStartRequest, ProcessStartResponse, ReloadResponse,
-    RetireResponse, SessionListResponse, SessionSummary, SessionView, StartRequest, StartResponse,
-    StateRequest, StdinRequest, ToolBatchRequest, ToolBatchResponse, VerdictRequest,
+    DeletedResponse, Deployment, DescribeResponse, ErrorBody, InferenceRequest, InferenceResponse,
+    MetricsResponse, ProcessInfo, ProcessListResponse, ProcessStartRequest, ProcessStartResponse,
+    ReloadResponse, RetireResponse, SessionListResponse, SessionSummary, SessionView, StartRequest,
+    StartResponse, StateRequest, StdinRequest, ToolBatchRequest, ToolBatchResponse, VerdictRequest,
 };
 use nucleos::wire::openapi;
 use nucleos_agent as agent;
@@ -573,6 +573,17 @@ pub const ROUTES: &[Route] = &[
             reply: openapi::Reply::Json("ProcessStartResponse"),
         },
         build: || post(start_process),
+    },
+    Route {
+        meta: openapi::Route {
+            method: "delete",
+            path: "/v1/sessions/{id}",
+            operation: "deleteSession",
+            summary: "Remove a closed session and its log. An open session answers 409.",
+            request: None,
+            reply: openapi::Reply::Json("DeletedResponse"),
+        },
+        build: || axum::routing::delete(delete_session),
     },
     Route {
         meta: openapi::Route {
@@ -1237,6 +1248,29 @@ struct HistoryQuery {
     /// How many rows, newest first.
     #[serde(default)]
     limit: usize,
+}
+
+/// Remove a closed session: its log, its checkpoint, its listing row.
+///
+/// Only a closed one. Deleting an open session would destroy a conversation somebody may still be
+/// using, and "I want it gone" for a running session is `close` first — which the refusal says.
+async fn delete_session(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    Path(id): Path<String>,
+) -> Result<Json<DeletedResponse>, ApiError> {
+    let kernel = app.kernel()?.clone();
+    let session = SessionId::new(id);
+    let removed = kernel
+        .delete(&session, &caller.0)
+        .await
+        .map_err(|error| ApiError::from_error(&error))?;
+    if !removed {
+        return Err(ApiError::from_error(&nucleos::Error::not_found(format!(
+            "no session {session}"
+        ))));
+    }
+    Ok(Json(DeletedResponse { deleted: true }))
 }
 
 async fn metrics(caller: Caller, State(app): State<Arc<App>>) -> Json<MetricsResponse> {

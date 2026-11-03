@@ -614,6 +614,17 @@
         ],
         "type": "object"
       },
+      "DeletedResponse": {
+        "description": "What a deletion did.",
+        "properties": {
+          "deleted": {
+            "default": false,
+            "description": "Whether anything was removed.\n\n`true` always on success: a request that named nothing answers `404`, so `false` here would be\na second way to say the same thing.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
       "Deployment": {
         "description": "The whole configuration, as one document.\n\nThe point is that it is a *document*: a deployment can be exported, edited, diffed, committed to\nwhatever a team uses, and applied back. Before this, configuration was five write endpoints over a\nkey-value table, which meant the only way to answer \"what was it before\" was `sqlite3 system.db`.\n\nWhat it deliberately does not contain: the sealed model credentials and the token table. Ciphertext\nsealed with a key that lives outside the data directory is not exportable in any useful sense, and a\ntoken is issued once and shown once. Those are recovered by other means, and the document says so by\ncarrying `has_sealed_key` rather than the key.",
         "properties": {
@@ -5310,6 +5321,82 @@
       }
     },
     "/v1/sessions/{id}": {
+      "delete": {
+        "operationId": "deleteSession",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeletedResponse"
+                }
+              }
+            },
+            "description": "The result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "Remove a closed session and its log. An open session answers 409."
+      },
       "get": {
         "operationId": "viewSession",
         "responses": {

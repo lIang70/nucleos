@@ -271,6 +271,32 @@ impl Store for SqliteStore {
             let body = serde_json::to_string(&snapshot)
                 .map_err(|error| Error::internal(format!("snapshot is not storable: {error}")))?;
             let transaction = connection.transaction().map_err(failed)?;
+
+            // Strictly newer, or nothing. Equal versions mean two handles loaded the same snapshot and
+            // both think they are the next writer: the first is right and the second is working from a
+            // log it read before the first one's work existed. Accepting it would overwrite that work
+            // with a materialisation that never saw it.
+            let stored: Option<i64> = transaction
+                .query_row(
+                    "select json_extract(body, '$.version') from snapshots
+                     where tenant = ?1 and session = ?2",
+                    params![snapshot.principal.tenant, snapshot.session.as_str()],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(failed)?;
+            let stored = stored.map_or(0, |version| u64::try_from(version).unwrap_or(u64::MAX));
+            if snapshot.version <= stored {
+                return Err(Error::new(
+                    nucleos::contract::ErrorCode::Conflict,
+                    format!(
+                        "snapshot version {} is not newer than the stored {stored}: this handle read \
+                         the session before another writer advanced it",
+                        snapshot.version
+                    ),
+                ));
+            }
+
             transaction
                 .execute(
                     "insert into snapshots (tenant, session, seq, body) values (?1, ?2, ?3, ?4)
@@ -297,6 +323,30 @@ impl Store for SqliteStore {
                 )
                 .map_err(failed)?;
             transaction.commit().map_err(failed)
+        })
+        .await
+    }
+
+    async fn delete(&self, session: &SessionKey) -> Result<bool> {
+        let (tenant, id) = (session.tenant.clone(), session.id.clone());
+        self.run(move |connection| {
+            // One transaction: a half-deleted session is a listing entry with no log, which reads as a
+            // session that lost its history rather than one that was removed.
+            let transaction = connection.transaction().map_err(failed)?;
+            let mut removed = 0u64;
+            for table in ["events", "snapshots", "sessions"] {
+                removed += u64::try_from(
+                    transaction
+                        .execute(
+                            &format!("delete from {table} where tenant = ?1 and session = ?2"),
+                            params![tenant, id.as_str()],
+                        )
+                        .map_err(failed)?,
+                )
+                .unwrap_or(0);
+            }
+            transaction.commit().map_err(failed)?;
+            Ok(removed > 0)
         })
         .await
     }

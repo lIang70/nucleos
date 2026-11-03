@@ -96,7 +96,7 @@ async fn wall_millis_are_charged_to_running_and_not_to_waiting() {
 
     // Four seconds of running, written into the checkpoint the way a request's ending would.
     clock.advance(4_000);
-    kernel.checkpoint(&session).await.unwrap();
+    kernel.checkpoint(&mut session).await.unwrap();
 
     // A minute passes between requests. That is nobody's model time, and a session parked on a human
     // verdict must not exhaust its budget while it waits.
@@ -109,7 +109,7 @@ async fn wall_millis_are_charged_to_running_and_not_to_waiting() {
 
     // Two more seconds of running brings the total past the limit.
     clock.advance(2_000);
-    kernel.checkpoint(&session).await.unwrap();
+    kernel.checkpoint(&mut session).await.unwrap();
     session = kernel.load(&principal(), &id).await.unwrap();
     let error = kernel
         .inference(&mut session, &[])

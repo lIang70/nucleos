@@ -781,6 +781,56 @@ async fn every_answer_carries_a_request_id() {
     assert_eq!(ids.len(), 3, "ids are per request, not per route");
 }
 
+/// Removing a session: only a closed one, and only its owner.
+///
+/// Deletion is the one operation with no undo, so the two refusals come before anything is removed: an
+/// open session is still somebody's conversation (`409`), and another subject's session does not exist
+/// for you (`404`).
+#[tokio::test]
+async fn a_session_is_deleted_only_when_closed_and_owned() {
+    let (app, _key, _key_id) = governable().await;
+    let token = issue_token_for(&app, "acme", "alice").await;
+
+    let (status, _) = bearer(
+        &app,
+        &token,
+        "POST",
+        "/v1/sessions",
+        r#"{"session":"s1","credit_tokens":1000}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Open: refused, and the reason says what to do first.
+    let (status, refused) = bearer(&app, &token, "DELETE", "/v1/sessions/s1", "").await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    assert!(
+        refused["reason"].as_str().unwrap().contains("close"),
+        "{refused}"
+    );
+
+    let (status, closed) = bearer(&app, &token, "POST", "/v1/sessions/s1/close", "{}").await;
+    assert_eq!(status, StatusCode::OK, "{closed}");
+
+    let (status, deleted) = bearer(&app, &token, "DELETE", "/v1/sessions/s1", "").await;
+    assert_eq!(status, StatusCode::OK, "{deleted}");
+    assert_eq!(deleted["deleted"], true);
+
+    // Gone from every reading: the view, the log, and the listing.
+    let (status, missing) = bearer(&app, &token, "GET", "/v1/sessions/s1", "").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{missing}");
+    let (status, events) =
+        bearer(&app, &token, "GET", "/v1/sessions/s1/events?from_seq=0", "").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{events}");
+    let (status, listed) = bearer(&app, &token, "GET", "/v1/sessions", "").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(listed["sessions"], serde_json::json!([]), "{listed}");
+
+    // And deleting it again is a 404 rather than a success nobody can tell from the first.
+    let (status, _) = bearer(&app, &token, "DELETE", "/v1/sessions/s1", "").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
 #[tokio::test]
 async fn a_configured_token_is_required_on_every_route() {
     let (app, token) = guarded().await;

@@ -94,6 +94,16 @@ pub trait Store: Send + Sync {
     /// boundary" unimplementable.
     async fn write_snapshot(&self, snapshot: Snapshot) -> Result<()>;
 
+    /// Remove one session: its events, its checkpoint and its listing row.
+    ///
+    /// One call rather than three deletions at the call site, because a half-deleted session is a
+    /// listing entry with no log — which reads as a session that lost its history rather than one that
+    /// was removed. Returns whether anything was there.
+    ///
+    /// Retention is the only caller today. The log grows forever otherwise, and `config.md` promises
+    /// pruning, so the primitive exists before the policy that drives it.
+    async fn delete(&self, session: &SessionKey) -> Result<bool>;
+
     /// Events from `seq` onward, inclusive, oldest first.
     ///
     /// Inclusive is the only choice that makes `from_seq` in the ABI mean what it says: a

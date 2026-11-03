@@ -1574,3 +1574,27 @@ somebody will ask about, so the id is minted *outside* authentication.
 **What it is not.** Not a trace. The event log remains the trace for anything a session owns; this id
 answers "which request was that" and stops.
 
+## 100. A cache that cannot tell it is stale will overwrite the truth
+
+**Decision.** `Snapshot.version` increments on every checkpoint, and `write_snapshot` refuses a write
+that is not strictly newer. A refused checkpoint is **skipped, not failed**: the checkpoint is a cache of
+a log that already contains this handle's writes.
+
+**The failure.** Two requests can load one session. Each writes down a materialisation of the log, and
+without a version the second one to finish replaces the first one's work with a view of a log it read
+before that work existed — and nothing about the result looks wrong. `seq` cannot catch it: the stale
+handle's `seq` is taken from the shared log head at write time, so it is *fresh* while its `messages` are
+not.
+
+**Why the refusal does not become an error.** The first version propagated `Conflict` to the caller, and
+an ordinary sequence — `wait` for a process, then `close` — failed with "this handle read the session
+before another writer advanced it". That is true and it is not the caller's problem: their writes are in
+the log, `load` folds the tail, and a cache miss is not a failed operation. The kernel logs the skip and
+returns success; the protection remains exactly where it was, in the store.
+
+**And the primitive retention needed.** `Store::delete` removes a session's events, checkpoint and listing
+row in one transaction, and `DELETE /v1/sessions/{id}` exposes it — closed sessions only (`409` says
+close it first), its owner only (`404`, like every other cross-subject read). A half-deleted session is a
+listing entry with no log, which reads as a session that lost its history rather than one that was
+removed.
+

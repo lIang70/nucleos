@@ -955,6 +955,14 @@ pub struct Snapshot {
     pub principal: Principal,
     /// The last event folded in.
     pub seq: u64,
+    /// How many times this session has been checkpointed.
+    ///
+    /// The store refuses a write that is not strictly newer, which is what makes a **stale handle**
+    /// detectable: two requests can load the same session, and without this the second one to finish
+    /// overwrites the first one's work with a materialisation of a log it read before that work
+    /// existed. The version is the only thing in the snapshot that says "I have seen less than you".
+    #[serde(default)]
+    pub version: u64,
     /// The tool-source generation the session is pinned to.
     pub generation: Generation,
     /// Where the session was.

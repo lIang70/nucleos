@@ -76,12 +76,36 @@ impl Kernel {
     }
     /// Write the checkpoint for the boundary the session is standing on.
     /// Write the checkpoint for the boundary the session is standing on.
-    pub async fn checkpoint(&self, session: &session::Session) -> Result<()> {
+    pub async fn checkpoint(&self, session: &mut session::Session) -> Result<()> {
         self.write_checkpoint(session).await
     }
-    pub(crate) async fn write_checkpoint(&self, session: &session::Session) -> Result<()> {
-        match session.snapshot(self.now()) {
-            Some(snapshot) => self.store.write_snapshot(snapshot).await,
+
+    /// Write the checkpoint, and move the version only if the store accepted it.
+    ///
+    /// A refusal is not a failure. The store rejects anything that is not strictly newer than what it
+    /// holds, which is how a **stale handle** is stopped from overwriting a fresher materialisation —
+    /// but this handle's own work is already in the log, and the checkpoint is a cache of that log.
+    /// Failing the caller here would turn "somebody else checkpointed more recently" into "your close
+    /// failed", which is a lie about what was durable.
+    pub(crate) async fn write_checkpoint(&self, session: &mut session::Session) -> Result<()> {
+        let next = session.version.saturating_add(1);
+        match session.snapshot(self.now(), next) {
+            Some(snapshot) => match self.store.write_snapshot(snapshot).await {
+                Ok(()) => {
+                    session.version = next;
+                    Ok(())
+                }
+                Err(error) if error.code() == crate::contract::ErrorCode::Conflict => {
+                    tracing::debug!(
+                        event = "checkpoint_skipped",
+                        session = %session.id,
+                        version = next,
+                        consequence = "a newer checkpoint exists; the log is the truth and has this                                        handle's writes",
+                    );
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            },
             None => Ok(()),
         }
     }

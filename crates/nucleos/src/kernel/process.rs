@@ -436,13 +436,30 @@ async fn supervise(
             stop: Some(crate::contract::StopReason::Completed),
         })
         .await;
-    if let Ok(Some(mut snapshot)) = log.store.snapshot(&log.session).await {
+    // Read, mutate, write — retried, because the checkpoint is versioned and a request may have
+    // advanced it while this task was reading. Three attempts is enough for a race of exactly two
+    // writers; a persistent conflict means something else is wrong and a log line is the honest
+    // answer rather than a lost exit.
+    for _ in 0..3 {
+        let Ok(Some(mut snapshot)) = log.store.snapshot(&log.session).await else {
+            break;
+        };
         snapshot.state = crate::contract::SessionState::Closed;
         snapshot.seq = log.head.next().saturating_sub(1);
+        snapshot.version = snapshot.version.saturating_add(1);
         if let Some(process) = snapshot.process.as_mut() {
-            process.status = crate::contract::ProcessStatus::Exited { output: summary };
+            process.status = crate::contract::ProcessStatus::Exited {
+                output: summary.clone(),
+            };
         }
-        let _ = log.store.write_snapshot(snapshot).await;
+        match log.store.write_snapshot(snapshot).await {
+            Ok(()) => break,
+            Err(error) if error.code() == crate::contract::ErrorCode::Conflict => continue,
+            Err(error) => {
+                tracing::warn!(event = "exit_checkpoint_failed", detail = %error.reason());
+                break;
+            }
+        }
     }
     let _ = exited.send(output);
 }
