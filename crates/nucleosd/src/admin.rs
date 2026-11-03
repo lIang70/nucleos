@@ -224,8 +224,16 @@ impl FromRequest<Arc<crate::http::App>> for Admin {
             .headers
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|value| value.to_str().ok());
+        // The query string is part of what the signature covers. `uri.path()` excludes it, so a
+        // captured signature could be replayed against the same path with different parameters —
+        // `from_seq`, `limit`, a future filter — and every one of those changes what is answered.
+        // The client signs the request target it sent; this verifies the request target it received.
+        let target = parts
+            .uri
+            .path_and_query()
+            .map_or_else(|| parts.uri.path().to_owned(), |pq| pq.as_str().to_owned());
         let Verified { principal, key_id } = verifier
-            .verify(parts.method.as_str(), parts.uri.path(), &bytes, header)
+            .verify(parts.method.as_str(), &target, &bytes, header)
             .await
             .map_err(|error| crate::http::ApiError::unauthorized(&error))?;
 
@@ -369,6 +377,35 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    /// A query string is part of the request, so it is part of the signature.
+    ///
+    /// `Uri::path()` drops it. Verifying over the path alone let a captured signature be replayed
+    /// against the same route with different parameters — `limit`, `from_seq`, anything a later filter
+    /// adds — and the answer changes even though the signature does not.
+    #[tokio::test]
+    async fn a_signature_covers_the_query_string() {
+        let key = nucleos_auth::KeyPair::generate();
+        let verifier = verifier_with(&key).await;
+        let key_id = key.public("acme", "alice").id.clone();
+
+        let signed_for = "/v1/config/history?limit=5";
+        let header = key.sign_request(&key_id, "GET", signed_for, b"", 1_000_000);
+
+        // Presented against a different query on the same path: refused, and refused as a signature
+        // failure rather than as a replay — which is what the next step checks.
+        let error = verifier
+            .verify("GET", "/v1/config/history?limit=500", b"", Some(&header))
+            .await
+            .expect_err("the query is covered");
+        assert!(error.reason().contains("not authorised"), "{error:?}");
+
+        // And the failure did not spend the nonce: the request it was signed for still works.
+        verifier
+            .verify("GET", signed_for, b"", Some(&header))
+            .await
+            .expect("the request it was signed for");
     }
 
     #[tokio::test]

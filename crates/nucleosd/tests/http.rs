@@ -1755,10 +1755,17 @@ async fn every_change_lands_in_the_deployment_history() {
 
     let history = app.system().unwrap().history(10).unwrap();
     let keys: Vec<&str> = history.iter().map(|change| change.key.as_str()).collect();
-    assert_eq!(keys, ["policy", "models"], "{history:?}");
+    // Newest first: `limit` means "how many do I want to know about", and the answer to that is the
+    // recent ones — not the three oldest changes the deployment ever had.
+    assert_eq!(keys, ["models", "policy"], "{history:?}");
     assert!(
         history.iter().all(|change| change.subject == "admin"),
         "every row names who made the change"
+    );
+    // And by which key: an audit that cannot say that proves authorisation without identity.
+    assert!(
+        history.iter().all(|change| change.key_id == key_id),
+        "every row names the key that signed: {history:?}"
     );
 }
 

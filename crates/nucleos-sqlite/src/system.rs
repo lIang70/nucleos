@@ -352,8 +352,11 @@ impl SystemStore {
         let connection = self.lock();
         let mut statement = connection
             .prepare(
+                // Newest first: `limit` means "how many do I want to know about", and the answer to
+                // that is the recent ones. The old order made `--limit 3` a list of the three oldest
+                // changes a deployment ever had, which is never the question.
                 "select at_unix_millis, tenant, subject, key_id, key, value
-                 from history order by at_unix_millis, rowid limit ?1",
+                 from history order by at_unix_millis desc, rowid desc limit ?1",
             )
             .map_err(failed)?;
         let rows = statement

@@ -739,7 +739,9 @@ async fn record(
             at_unix_millis: now(),
             tenant: admin.principal.tenant.clone(),
             subject: admin.principal.subject.clone(),
-            key_id: String::new(),
+            // The verifier knows which key signed; throwing that away made the history prove a change
+            // was authorised while being unable to say by whom — the one question an audit exists for.
+            key_id: admin.key_id.clone(),
             key: key.to_owned(),
             value: value.to_owned(),
         })
