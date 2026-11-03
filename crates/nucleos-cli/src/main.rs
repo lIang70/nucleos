@@ -7,7 +7,17 @@
 use nucleos_cli::init::{Options, run};
 use std::path::PathBuf;
 
-fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn main() {
+    // `Result`'s default termination prints `Debug`, and a `nucleos::Error` derives one that reads
+    // `Error { code: Conflict, reason: "...", ... }`. What a person needs is the sentence the daemon
+    // sent — the code is useful, but not as a struct dump around it.
+    if let Err(error) = command() {
+        eprintln!("Error: {error}");
+        std::process::exit(1);
+    }
+}
+
+fn command() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("init") => init(&args[1..]),
@@ -196,11 +206,24 @@ fn nucleosd_layout(root: Option<PathBuf>, socket: Option<PathBuf>) -> (PathBuf, 
 }
 
 fn config(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use nucleos_cli::config::Command;
+
+    // A subcommand is optional: `nucleos config` is the read it always was.
+    let (command, rest) = match args.split_first() {
+        Some((first, rest)) if !first.starts_with('-') => (Some(first.as_str()), rest),
+        _ => (None, args),
+    };
+
     let mut options = nucleos_cli::config::Options::default();
-    let mut rest = args.iter();
-    while let Some(arg) = rest.next() {
+    let mut out: Option<PathBuf> = None;
+    let mut file: Option<String> = None;
+    let mut if_match: Option<u64> = None;
+    let mut limit = 50usize;
+
+    let mut iter = rest.iter();
+    while let Some(arg) = iter.next() {
         let mut value = |what: &str| -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-            rest.next()
+            iter.next()
                 .cloned()
                 .ok_or_else(|| Box::from(format!("{what} needs a value")))
         };
@@ -208,9 +231,48 @@ fn config(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync
             "--socket" => options.socket = Some(PathBuf::from(value("--socket")?)),
             "--key-id" => options.key_id = Some(value("--key-id")?),
             "--key-file" => options.key_file = Some(PathBuf::from(value("--key-file")?)),
+            "--client-config" => {
+                options.client_config = Some(PathBuf::from(value("--client-config")?))
+            }
+            "--out" => out = Some(PathBuf::from(value("--out")?)),
+            "--file" => file = Some(value("--file")?),
+            "--if-match" => {
+                if_match = Some(value("--if-match")?.parse().map_err(|_| {
+                    Box::<dyn std::error::Error + Send + Sync>::from("--if-match needs a revision")
+                })?);
+            }
+            "--limit" => {
+                limit = value("--limit")?.parse().map_err(|_| {
+                    Box::<dyn std::error::Error + Send + Sync>::from("--limit needs a number")
+                })?;
+            }
+            other if !other.starts_with('-') => {
+                // The positional argument of `apply`.
+                if file.replace(other.to_owned()).is_some() {
+                    return Err(Box::from("apply takes one document"));
+                }
+            }
             other => return Err(Box::from(format!("unknown option {other:?}\ntry --help"))),
         }
     }
+
+    options.command = match command {
+        None | Some("show") => Command::Show,
+        Some("export") => Command::Export { out },
+        Some("apply") => Command::Apply {
+            file: file
+                .ok_or_else(|| Box::<dyn std::error::Error + Send + Sync>::from(
+                    "apply needs a document: `nucleos config apply deployment.json` or `-` for stdin",
+                ))?,
+            if_match,
+        },
+        Some("history") => Command::History { limit },
+        Some(other) => {
+            return Err(Box::from(format!(
+                "unknown config subcommand {other:?}: expected show, export, apply or history"
+            )));
+        }
+    };
     nucleos_cli::config::run(&options)?;
     Ok(())
 }

@@ -66,16 +66,49 @@ impl Remote {
 
     /// Sign one request and send it.
     pub fn request(&self, method: &str, path: &str, body: &[u8]) -> Result<Response> {
+        self.request_with(method, path, body, &[])
+    }
+
+    /// The same request, with headers beyond the credential.
+    pub fn request_with(
+        &self,
+        method: &str,
+        path: &str,
+        body: &[u8],
+        extra: &[(&str, &str)],
+    ) -> Result<Response> {
         let authorization =
             self.key
                 .sign_request(&self.key_id, method, path, body, now_unix_millis());
-        client::request(&self.socket, method, path, body, &authorization)
+        client::request(&self.socket, method, path, body, &authorization, extra)
     }
 
     /// Sign, send, and insist on a 2xx — with the daemon's own words when it refuses.
     pub fn call(&self, method: &str, path: &str, body: &[u8]) -> Result<String> {
-        let response = self.request(method, path, body)?;
+        self.call_with(method, path, body, &[])
+    }
+
+    /// The same request, with headers the signature does not cover.
+    ///
+    /// `If-Match` is the one that matters: without it an apply is a last-writer-wins overwrite, and the
+    /// CLI would be the tool that makes the dangerous version the convenient one.
+    pub fn call_with(
+        &self,
+        method: &str,
+        path: &str,
+        body: &[u8],
+        extra: &[(&str, &str)],
+    ) -> Result<String> {
+        let response = self.request_with(method, path, body, extra)?;
         if !(200..300).contains(&response.status) {
+            // The daemon answers failures as `{code, reason}`; carrying that through is the difference
+            // between `Error: this deployment is at revision 1, ...` and a debug dump of a struct. The
+            // code matters too — `conflict` tells the caller to re-read, `invalid` to fix the request.
+            if let Ok(body) =
+                serde_json::from_str::<nucleos::wire::api::ErrorBody>(response.body.trim())
+            {
+                return Err(Error::new(body.code, body.reason));
+            }
             return Err(Error::new(
                 nucleos::contract::ErrorCode::Denied,
                 format!(

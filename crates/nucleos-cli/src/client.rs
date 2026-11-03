@@ -31,6 +31,7 @@ pub fn request(
     path: &str,
     body: &[u8],
     authorization: &str,
+    extra: &[(&str, &str)],
 ) -> Result<Response> {
     let mut stream = UnixStream::connect(socket).map_err(|error| {
         Error::unavailable(format!(
@@ -39,11 +40,17 @@ pub fn request(
         ))
     })?;
 
+    // Headers beyond the credential are rare and small: `If-Match` on an apply, nothing else so far.
+    let more: String = extra
+        .iter()
+        .map(|(name, value)| format!("{name}: {value}\r\n"))
+        .collect();
     let request = format!(
         "{method} {path} HTTP/1.1\r\n\
          Host: localhost\r\n\
          Authorization: {authorization}\r\n\
          Content-Length: {}\r\n\
+         {more}\
          Connection: close\r\n\
          \r\n",
         body.len()

@@ -1521,3 +1521,33 @@ cannot be shown to fit" — a correct answer to a question the document should h
 default for that field: it means no prompt fits, so an apply now rejects it as a whole rather than
 installing a model that fails every session at its first turn.
 
+## 97. A signature that ignores the query covers half the request
+
+**Decision.** The administrative signature covers the request target, query string included. The
+verifier uses `uri.path_and_query()`; `uri.path()` drops the query, and that is what it used before.
+
+**The failure.** A captured `GET /v1/config/history?limit=5` could be replayed as `?limit=500` — or
+`from_seq`, or whatever filter a later route adds — because the canonical string was built from the path
+alone and the two requests signed the same bytes. Nobody would have noticed from the code: the client
+signed the URL it sent, the server verified the URL it parsed, and only one of them included the query.
+
+**How it was found.** By writing the CLI's `config history`, which put a query on an admin route for the
+first time. The request answered `401` and the instinct is to blame the client's signing — the bug was
+the server verifying a shorter string.
+
+**The test.** Sign for `?limit=5`, verify against `?limit=500`: refused as a signature failure (not as a
+replay), and the nonce is still unspent, so the request it *was* signed for still works. Asserting the
+second half matters: a consumed nonce would have hidden which check failed.
+
+## 98. A history that reads oldest-first answers a question nobody asked
+
+**Decision.** `SystemStore::history` orders newest first, and every writer names the key that signed.
+
+**Two small lies in one table.** The query ordered by `at_unix_millis, rowid` ascending, so `--limit 3`
+returned the three *oldest* changes a deployment ever had — while the route's own summary said "newest
+first". And `Change.key_id` was written as `String::new()` by the per-endpoint writers even though the
+verifier had just established the id, so an audit could prove a change was authorised and not by whom.
+
+Both were invisible because nothing read the table. The first thing that read it was the CLI, and being
+the first reader is how a schema's assumptions get checked.
+
