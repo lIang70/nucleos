@@ -748,6 +748,39 @@ async fn a_subject_cannot_read_another_subjects_event_stream() {
     assert_eq!(events(bob.token.clone()).await, StatusCode::NOT_FOUND);
 }
 
+/// Every answer carries an id, and two answers do not share one.
+///
+/// The id is the only thing that connects "the request that failed at 14:02" to a line in the log and to
+/// the counters. Without it, an operator has a timestamp and a guess; the request line has the session
+/// and the tenant, but nothing to search by.
+#[tokio::test]
+async fn every_answer_carries_a_request_id() {
+    let (app, _key, _key_id) = governable().await;
+    let mut ids = Vec::new();
+    for _ in 0..3 {
+        let response = router(Arc::clone(&app))
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/sessions/mine/events?from_seq=0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = response
+            .headers()
+            .get("nucleos-request-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("every response names the request")
+            .to_owned();
+        ids.push(id);
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), 3, "ids are per request, not per route");
+}
+
 #[tokio::test]
 async fn a_configured_token_is_required_on_every_route() {
     let (app, token) = guarded().await;

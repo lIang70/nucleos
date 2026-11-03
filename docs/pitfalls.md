@@ -1551,3 +1551,26 @@ verifier had just established the id, so an audit could prove a change was autho
 Both were invisible because nothing read the table. The first thing that read it was the CLI, and being
 the first reader is how a schema's assumptions get checked.
 
+## 99. A timestamp is not a query
+
+**Decision.** Every response carries `nucleos-request-id`, and every request line carries the same id
+plus `tenant`, `subject` and `session`.
+
+**The failure it prevents, at 3am.** The line already had method, route, status and duration — and
+nothing that joins it to anything. "The inference failed at 14:02" is a timestamp and a guess: there is
+no field to search by, no way to tell which session, and no way to correlate the caller's report with the
+line. The counter that ignores refusals is deliberate for the same reason: a refused request is the one
+somebody will ask about, so the id is minted *outside* authentication.
+
+**Two details that are the whole implementation.**
+
+- **The session comes from the URI, not from the handler.** A handler that sets the correlation is a
+  correlation missing from the route somebody added in a hurry, and the sweep test does not cover it.
+- **The principal travels on the response.** `observe` wraps `authenticate`, so by the time `next`
+  returns, the request's extensions are gone — the principal is copied onto the response in the inner
+  layer for the outer one to read. The alternative, reading the header again in the log layer, would
+  re-parse a credential to write a log line.
+
+**What it is not.** Not a trace. The event log remains the trace for anything a session owns; this id
+answers "which request was that" and stops.
+

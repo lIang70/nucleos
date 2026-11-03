@@ -94,6 +94,8 @@ pub struct App {
     sources: tokio::sync::RwLock<crate::sources::SourceSet>,
     /// What this daemon has done since it started.
     metrics: crate::metrics::Metrics,
+    /// Counts requests, for the id a log line and a response header share.
+    requests: std::sync::atomic::AtomicU64,
     /// Who may call, and who each caller is.
     ///
     /// With no tokens configured the socket's permissions are the authentication and every call is
@@ -135,6 +137,7 @@ impl App {
             seal: None,
             root: None,
             metrics: crate::metrics::Metrics::started_now(),
+            requests: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -142,6 +145,18 @@ impl App {
     #[must_use]
     pub fn metrics(&self) -> &crate::metrics::Metrics {
         &self.metrics
+    }
+
+    /// The next request id: monotonic, cheap, and only ever compared with itself.
+    ///
+    /// Not a UUID. What it has to do is pick out one line in a log and match the header the caller saw,
+    /// and a counter does that with no dependency, no randomness and no pretence of being a secret. The
+    /// process id is folded in so two daemons' logs can be interleaved without ambiguity.
+    pub(crate) fn next_request_id(&self) -> String {
+        let sequence = self
+            .requests
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        format!("{:x}{:04x}", std::process::id() as u16, sequence & 0xffff)
     }
 
     /// Authenticate callers against the tokens a deployment has issued.
@@ -393,6 +408,7 @@ impl App {
             seal: None,
             root: None,
             metrics: crate::metrics::Metrics::started_now(),
+            requests: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -932,6 +948,13 @@ async fn observe(
 ) -> Response {
     let started = std::time::Instant::now();
     let method = request.method().to_string();
+    // The id a caller quotes when they report a problem. Generated here, outside authentication, so a
+    // refused request has one too — the refusals are exactly the ones nobody can reproduce later.
+    let request_id = app.next_request_id();
+    // Which session the path names, when it names one. Read from the URI rather than from the handler,
+    // because a correlation a handler has to remember to set is a correlation missing from the route
+    // somebody added in a hurry.
+    let session = session_in(request.uri().path());
     // The template, not the path: `/v1/sessions/{id}` is one route, however many sessions exist.
     let route = request
         .extensions()
@@ -939,18 +962,47 @@ async fn observe(
         .map(|path| path.as_str().to_owned())
         .unwrap_or_else(|| request.uri().path().to_owned());
 
-    let response = next.run(request).await;
+    let mut response = next.run(request).await;
     let millis = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     app.metrics
         .observe(&method, &route, response.status().as_u16());
+
+    // Who, if authentication got that far. `authenticate` puts the principal on the response so this
+    // layer — which wraps it — can see it after the fact.
+    let (tenant, subject) = response.extensions().get::<Principal>().map_or_else(
+        || ("-".to_owned(), "-".to_owned()),
+        |principal| (principal.tenant.clone(), principal.subject.clone()),
+    );
+
     tracing::info!(
         kind = "request",
+        request_id = %request_id,
         method = %method,
         route = %route,
         status = response.status().as_u16(),
         duration_millis = millis,
+        tenant = %tenant,
+        subject = %subject,
+        session = session.as_deref().unwrap_or("-"),
     );
+
+    // The same id on the wire: a client that reports "the inference at 14:02 failed" can quote
+    // something that matches exactly one line.
+    if let Ok(value) = request_id.parse() {
+        response.headers_mut().insert("nucleos-request-id", value);
+    }
     response
+}
+
+/// The session a path names, if it names one.
+///
+/// `/v1/sessions/{id}` and everything under it; nothing else. Deliberately a prefix test rather than a
+/// route match: the route template is `/v1/sessions/{id}/inference`, and what an operator wants is the
+/// id, not the template.
+fn session_in(path: &str) -> Option<String> {
+    let rest = path.strip_prefix("/v1/sessions/")?;
+    let id = rest.split('/').next().unwrap_or("");
+    (!id.is_empty()).then(|| id.to_owned())
 }
 
 /// Refuse a request that does not carry the token, when one is configured.
@@ -986,9 +1038,15 @@ async fn authenticate(
         Ok(principal) => {
             // The identity travels with the request: a handler that read it from the app would be
             // reading the daemon's, which is the same only when there is one caller.
+            //
+            // It is copied onto the response as well, because the layer that writes the request line
+            // wraps this one and cannot see the request's extensions after `next` has run.
             let mut request = request;
-            request.extensions_mut().insert(principal);
-            next.run(request).await
+            request.extensions_mut().insert(principal.clone());
+            let mut response = next.run(request).await;
+            // Copied out, not borrowed: the request is gone by the time the outer layer looks.
+            response.extensions_mut().insert(principal);
+            response
         }
         Err(error) => {
             tracing::warn!(event = "request_refused", reason = %error.reason());
@@ -2146,5 +2204,26 @@ mod tests {
         assert!(error.reason().contains("nucleos init"), "{error:?}");
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod correlation_tests {
+    use super::session_in;
+
+    /// The id a log line carries is the id in the path, and nothing else.
+    #[test]
+    fn the_session_is_the_segment_after_the_prefix() {
+        assert_eq!(
+            session_in("/v1/sessions/s1/inference").as_deref(),
+            Some("s1")
+        );
+        assert_eq!(session_in("/v1/sessions/s1").as_deref(), Some("s1"));
+        assert_eq!(session_in("/v1/sessions/s1/cancel").as_deref(), Some("s1"));
+        // Not a session route, and not a prefix that merely looks like one.
+        assert_eq!(session_in("/v1/sessions"), None);
+        assert_eq!(session_in("/v1/sessions/"), None);
+        assert_eq!(session_in("/v1/processes"), None);
+        assert_eq!(session_in("/v1/sessionsx/s1"), None);
     }
 }
