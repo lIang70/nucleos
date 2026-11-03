@@ -38,29 +38,74 @@ impl Kernel {
     /// Append an event to the session's log.
     ///
     pub(crate) async fn emit(&self, session: &mut session::Session, kind: EventKind) -> Result<()> {
-        // Held across the append, so this reservation cannot be overtaken by a process supervisor
-        // writing to the same log. Two writers, one order.
+        // Fragments are the high-frequency events — a streamed answer is thousands of them — and each
+        // one used to be a transaction against one connection. They wait in the session until the
+        // batch is worth a transaction, or until the stream is slow enough that waiting would be
+        // visible: a model emitting ten tokens a second must still appear one token at a time.
+        if is_fragment(&kind)
+            && session.buffered_events.len() < FRAGMENTS_PER_APPEND
+            && session.last_flush.elapsed() < FLUSH_AFTER
+        {
+            session.buffered_events.push(kind);
+            return Ok(());
+        }
+        // Anything that is not a fragment goes out after the fragments before it, in one order.
+        self.flush(session).await?;
+        self.append_events(session, vec![kind]).await
+    }
+
+    /// Write whatever the turn has buffered.
+    ///
+    /// Called by `emit` before a non-fragment, and by the turn's ending paths — a buffer left behind is
+    /// deltas a reader saw that the store never got.
+    pub(crate) async fn flush(&self, session: &mut session::Session) -> Result<()> {
+        if session.buffered_events.is_empty() {
+            return Ok(());
+        }
+        let buffered = std::mem::take(&mut session.buffered_events);
+        session.last_flush = std::time::Instant::now();
+        self.append_events(session, buffered).await
+    }
+
+    /// Append events in one write, then announce them in order.
+    async fn append_events(
+        &self,
+        session: &mut session::Session,
+        kinds: Vec<EventKind>,
+    ) -> Result<()> {
+        if kinds.is_empty() {
+            return Ok(());
+        }
+        // Held across reservation *and* append, so this batch cannot be overtaken by a process
+        // supervisor writing to the same log. Two writers, one order.
         let _appending = session.log.appending.lock().await;
-        let event = Event {
-            seq: session.log.seq.load(std::sync::atomic::Ordering::SeqCst),
-            session: session.id.clone(),
-            at_unix_millis: self.clock.now_unix_millis(),
-            schema_version: Event::SCHEMA_VERSION,
-            kind,
-            meta: BTreeMap::new(),
-        };
-        session
-            .log
-            .seq
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let key = session.key();
+        let mut events = Vec::with_capacity(kinds.len());
+        for kind in kinds {
+            let event = Event {
+                seq: session.log.seq.load(std::sync::atomic::Ordering::SeqCst),
+                session: session.id.clone(),
+                at_unix_millis: self.clock.now_unix_millis(),
+                schema_version: Event::SCHEMA_VERSION,
+                kind,
+                meta: BTreeMap::new(),
+            };
+            session
+                .log
+                .seq
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            events.push(event);
+        }
         // Written first, announced second. The order is the guarantee: by the time a follower hears
         // about an event, a reader of the store can already see it, so catching up from a sequence
         // number never lands short.
-        self.store
-            .append(&key, std::slice::from_ref(&event))
-            .await?;
-        self.live.announce(super::live::Live { key, event });
+        self.store.append(&key, &events).await?;
+        for event in events {
+            self.live.announce(super::live::Live {
+                key: key.clone(),
+                event,
+            });
+        }
         Ok(())
     }
     /// `record` the session's current state.
@@ -113,4 +158,24 @@ impl Kernel {
     pub(crate) fn clock(&self) -> &Arc<dyn Clock> {
         &self.clock
     }
+}
+
+/// How many streamed fragments go into one append.
+///
+/// Sixteen is a compromise measured against the store: a batch of sixteen costs about a quarter of the
+/// per-event time of sixteen single writes, and the window it holds open is short enough that a crash
+/// loses at most these.
+const FRAGMENTS_PER_APPEND: usize = 16;
+
+/// ...and how long a buffer may wait, so a slow stream is still a stream.
+pub(crate) const FLUSH_AFTER: std::time::Duration = std::time::Duration::from_millis(8);
+
+/// Whether an event is a streamed fragment: high frequency, and meaningless on its own.
+fn is_fragment(kind: &EventKind) -> bool {
+    matches!(
+        kind,
+        EventKind::TextDelta { .. }
+            | EventKind::ReasoningDelta { .. }
+            | EventKind::ToolCallArgs { .. }
+    )
 }

@@ -300,7 +300,25 @@ impl Kernel {
         let mut acc = Assembling::default();
         let mut finish = None;
 
-        while let Some(delta) = stream.next().await {
+        loop {
+            // Waiting for the next fragment is also the moment a buffered one becomes late: a model
+            // that pauses for a second must not hold the last token of a burst in memory for a second,
+            // so the wait itself is timed. A continuous stream never reaches the timer — the next
+            // fragment arrives first, and the batch keeps growing.
+            let delta = if session.buffered_events.is_empty() {
+                stream.next().await
+            } else {
+                tokio::select! {
+                    delta = stream.next() => delta,
+                    () = tokio::time::sleep(super::state::FLUSH_AFTER) => {
+                        self.flush(session).await?;
+                        continue;
+                    }
+                }
+            };
+            let Some(delta) = delta else {
+                break;
+            };
             match delta {
                 Ok(ModelDelta::Text { part_index, text }) => {
                     acc.produced = true;
@@ -381,6 +399,9 @@ impl Kernel {
                     finish = Some(reason);
                 }
                 Err(error) => {
+                    // Whatever the stream produced before it broke is already the answer a reader has
+                    // seen; it goes to the store before the failure is recorded.
+                    self.flush(session).await?;
                     return Ok(Ending::Failed {
                         error,
                         usage: acc.usage,
@@ -391,6 +412,8 @@ impl Kernel {
                 }
             }
         }
+        // The stream ended: the last fragments are not waiting for an event that will never come.
+        self.flush(session).await?;
 
         let usage = std::mem::take(&mut acc.usage);
         let degraded = std::mem::take(&mut acc.degraded);

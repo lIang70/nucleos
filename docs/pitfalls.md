@@ -1660,3 +1660,28 @@ is the honest fix and it makes `credit_tokens` a required field for every caller
 today). That is a wire-contract decision, so it is documented at the field and left to be made
 deliberately rather than smuggled in with a bug fix.
 
+## 103. A buffer that only flushes on the next event holds the last one forever
+
+**Decision.** Streamed fragments (`text_delta`, `reasoning_delta`, `tool_call_args`) are appended in
+batches of up to sixteen, and the batch is written when the model's stream is **silent for 8 ms** — the
+wait for the next fragment is what is timed, not the fragment itself.
+
+**The write it fixes.** One transaction per streamed delta made the provider's token rate the store's
+write rate: 2000 deltas cost 128 ms in a debug build, 40 ms in release, all of it transaction overhead.
+Sixteen at a time is 23 ms and 15 ms — about 2.6× either way.
+
+**The trap, found by a test.** The first version flushed when the next event arrived and the buffer was
+old — which never happens when there is no next event. A model that emitted one token and then thought
+for a second left that token in memory, and the test that waits for a delta before cancelling a turn
+waited forever. Batching keyed on the *next* event cannot flush the *last* one; the wait has to be timed.
+
+**Where the timer lives.** Not a flusher task: `emit` still appends before it announces, so a follower
+that hears about an event can read it, which is the invariant the SSE catch-up depends on. The timer is a
+`select!` arm around `stream.next()`, in the one task that owns the turn. A continuous stream never
+reaches it; a pause reaches it in 8 ms.
+
+**What batching costs.** Up to fifteen fragments — bounded by count, and by 8 ms of silence. A crash in
+that window loses the last few characters of an answer in progress, never a completed message: the ending
+paths flush first, which is why `message_completed` can never be in the store without the text it
+summarises.
+

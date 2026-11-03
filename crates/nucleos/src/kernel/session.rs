@@ -41,6 +41,14 @@ pub struct Session {
     pub(crate) spent_wall_millis: u64,
     /// How many checkpoints this session has written. Bumped only by a successful one.
     pub(crate) version: u64,
+    /// Fragments the turn has produced but not yet written.
+    ///
+    /// A streamed answer is thousands of deltas, and one transaction each made the provider's token
+    /// rate the store's write rate. They are buffered here and written in one append — bounded by
+    /// count and by time, so a slow stream is still streamed.
+    pub(crate) buffered_events: Vec<crate::contract::EventKind>,
+    /// When the buffer was last written, so a slow stream flushes on time rather than on count.
+    pub(crate) last_flush: std::time::Instant,
     /// What this turn has debited so far. Reset at every turn, taken by a cancel.
     ///
     /// A cancelled attempt is dropped mid-stream, so the route never returns an `Ending` to record. The
@@ -276,6 +284,8 @@ impl Session {
             spent_wall_millis: 0,
             version: 0,
             turn_usage: Usage::default(),
+            buffered_events: Vec::new(),
+            last_flush: std::time::Instant::now(),
             log: init.log,
             pending: Vec::new(),
             data: std::collections::BTreeMap::new(),
@@ -420,6 +430,8 @@ impl Session {
             spent_wall_millis: snapshot.spent_wall_millis,
             version: snapshot.version,
             turn_usage: Usage::default(),
+            buffered_events: Vec::new(),
+            last_flush: std::time::Instant::now(),
             // The counter belongs to the log, not to this handle: `load` may be handing out a second
             // handle for a session a supervisor is still writing to, and the head it resolves to is
             // already at the right number.

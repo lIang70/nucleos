@@ -72,6 +72,9 @@ impl Kernel {
             )),
         };
         self.end_turn(&session.key(), &cancel);
+        // Whatever the turn streamed goes to the store before how it ended is recorded: a reader that
+        // sees the ending must not find the last fragments missing.
+        self.flush(session).await?;
 
         let call = match outcome {
             Ok(call) => call,
