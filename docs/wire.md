@@ -1,19 +1,25 @@
 # The wire
 
 The ABI is JSON over HTTP, with server-sent events for streams. The schema is
-`schema/v1/schema.json`, generated from the kernel's own types — the kernel's shape _is_ the
-wire shape, which is the trade this design makes in exchange for not maintaining a second type
-tree.
+`openapi/v1/openapi.json` — its `paths` are the routes and its `components.schemas` are the
+messages, generated from the kernel's own types. The kernel's shape _is_ the wire shape, which is
+the trade this design makes in exchange for not maintaining a second type tree.
 
 > **Status.** This is the wire. The daemon serves it, `proto/` is gone, and the schema is
 > generated from the kernel's own types.
 
 ## 1. One wire, two bindings
 
-| Deployment      | Listener    | Authentication                                 |
-| --------------- | ----------- | ---------------------------------------------- |
-| Local (default) | unix socket | peer credentials — uid and pid from the kernel |
-| Remote (opt-in) | TCP + TLS   | token or mTLS                                  |
+| Deployment      | Listener    | Authentication                                                                                 |
+| --------------- | ----------- | ---------------------------------------------------------------------------------------------- |
+| Local (default) | unix socket | the socket's mode (`0600` in a `0700` directory), plus a bearer token once one has been issued |
+| Remote (opt-in) | TCP + TLS   | a bearer token; TLS is the transport, and there is no plaintext mode                           |
+
+Peer credentials (`LOCAL_PEERCRED`, `getpeereid`) would be the better local check and they need
+`unsafe`, which this workspace forbids. So the check is pushed to the one place that can enforce
+it without a syscall — the filesystem — rather than left to a comment claiming a check that does
+not exist. Issuing the first token is what makes tokens required, and revoking the last one does
+not fall back to "the socket is enough".
 
 The difference is the listener and the authentication, never the protocol. A local caller is not
 speaking a different dialect: `curl --unix-socket /tmp/nucleosd.sock` is a complete client.
@@ -89,9 +95,9 @@ absent when there is no hint — absent, not zero.
   called something else — `#[serde(rename)]` is how a rename stays invisible on the wire.
 - A breaking change is `/v2`, served beside `/v1`.
 
-`nucleos.v1` is a promise, and `schema/v1/schema.json` is where it is written down. The drift test
-fails when the code and the file disagree, which is the only enforcement mechanism this design
-has — protobuf's compiler and `buf breaking` are both gone.
+`nucleos.v1` is a promise, and `openapi/v1/openapi.json` is where it is written down. The drift
+test fails when the code and the file disagree, which is the only enforcement mechanism this
+design has — protobuf's compiler and `buf breaking` are both gone.
 
 ## 6. What this gives up
 

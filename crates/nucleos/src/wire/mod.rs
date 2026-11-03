@@ -11,7 +11,7 @@
 //!
 //! The published artefact is `openapi/v1/openapi.json`: the message definitions under
 //! `components.schemas`, and the routes beside them. Regenerate it with
-//! `NUCLEOS_OPENAPI=1 cargo test -p nucleos --test openapi`.
+//! `NUCLEOS_OPENAPI=1 cargo test -p nucleosd --test openapi`.
 
 pub mod api;
 pub mod openapi;

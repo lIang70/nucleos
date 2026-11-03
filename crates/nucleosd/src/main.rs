@@ -11,9 +11,9 @@
 //!
 //! The kernel itself is a library that knows none of the above.
 //!
-//! Today the daemon serves `Describe`, `Start` and `Run` (replay), plus a HITL verdict through
-//! `Send`. Everything else returns an explicit `UNIMPLEMENTED` with the reason, because a
-//! method that pretends to work is worse than one that says what it is waiting for.
+//! Today the daemon serves the route table in `http.rs`: session lifecycle and turns, the process
+//! ABI, tool sources and generations, the signed administration surface, and the event stream. The
+//! table and the handlers are one row each, so a route cannot be documented and unserved.
 
 use nucleosd::{App, Layout, router, serve, telemetry};
 use std::os::unix::fs::PermissionsExt;

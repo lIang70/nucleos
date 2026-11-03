@@ -282,7 +282,10 @@ a human parks with nothing executed — which is why the edge from `AwaitingTool
 Three hard constraints:
 
 1. **Checkpoints are written only at a turn boundary.** Nothing half-finished is ever
-   persisted, which is what makes recovery a small problem instead of a research problem.
+   persisted, which is what makes recovery a small problem instead of a research problem. A boundary is
+   necessary, not sufficient: the turn-success path checkpoints only every 512 events or 250 ms, because
+   the log already holds that turn and a checkpoint is a cache of it (`pitfalls` 105). Paths that end
+   something — close, park, configure, a failed turn — write one immediately.
 2. **Exactly one writer per session.** A session is driven by one task; state is never
    handed out as `&mut`. No locks are needed on the hot path.
 3. **Stopping is four layers deep.** `finish_reason` → step cap → wall clock → cost
@@ -635,8 +638,16 @@ partial answer. Under-reporting cost is the one direction nobody forgives.
 ```text
 Store:  events[sid] = [(seq, at, Event)]        append-only
         snapshot[sid] = latest materialised state
+        head[sid]     = snapshot without the parts that grow with age
 recover: load(snapshot) → replay(events_since(snapshot.seq))
 ```
+
+Two things beside the snapshot are worth naming, because both exist to keep a hot path away from the
+conversation's size. The checkpoint's `version` is a column rather than a field inside the JSON, so the
+compare-and-swap costs a lookup instead of a parse. And `head` is a second, small row — the same
+checkpoint with `messages` and `ledger` empty — which is what `GET /v1/sessions/{id}` reads; the view
+path is paged by the same fold, so it reports the same session, without ever parsing the history it does
+not render.
 
 That single choice buys four things: **recovery** after a crash, **replay** for tests and
 evaluation (recorded model deltas are fed back, no new calls), **audit** (a `denied` event

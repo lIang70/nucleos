@@ -1,9 +1,10 @@
 # Configuration and administration
 
-**Status: partly built.** Step 1 of §10 exists: the two stores, one root, `--root`/`--socket`, and the
-platform paths. Everything else — `init`, the configuration ABI, the admin surface, signatures — is
-still a proposal, and this document says so where it matters so that a reader is never guessing which
-half is real.
+**Status: built, except where §11 says otherwise.** The two stores under one root, `nucleos init`,
+the signed mutation surface, the configuration document with export/apply/history, and the CLI that
+presents the key all exist. This document is still the design record — it says *why* each piece is
+what it is — but it no longer describes a proposal, and the places that remain open are collected in
+§11 rather than left for a reader to guess.
 
 Built, today:
 
@@ -21,17 +22,23 @@ Built, today:
   — each behind a signature, through `Kernel::check_config`, applied to the running kernel, stored, and
   appended to the deployment's history. Everything added this way survives a restart, and no
   environment variable configures any of it.
-- **Signed requests, and one endpoint to use them on.** `GET /v1/config` is the first
-  administrator-authenticated route, and `nucleos config` is the first command that presents the key
-  `init` created. The canonical form, the header, and the verifier share one definition
-  (`nucleos-auth::signature`), the daemon refuses a replay by nonce, and an unsigned request is `401`
-  rather than `403` — "who are you" is not "not you".
+- **Signed requests, and the routes that use them.** `GET|PUT /v1/config`, `GET /v1/config/history`,
+  `PUT /v1/policy`, the model, source, token and admin-key routes — every one of them is
+  administrator-authenticated, and `nucleos config | models | sources | tokens | admin` is the client
+  that presents the key `init` created. The canonical form, the header, and the verifier share one
+  definition (`nucleos-auth::signature`), the daemon refuses a replay by nonce, and an unsigned
+  request is `401` rather than `403` — "who are you" is not "not you".
+- **One root, one writer.** The daemon takes an advisory lock (`layout::claim`) before it binds a
+  socket, so a second daemon on one root fails at start-up instead of interleaving sequence numbers
+  into a log nobody is watching.
+- **The document is the rollback unit.** `nucleos config export` writes the whole configuration with a
+  revision; `apply --if-match` refuses a stale one with `conflict`; `history` names the key that
+  signed each change.
 
-Today every deployment decision is an environment variable — fifteen of them, read in four places,
-validated at whatever line happens to need them. There is no file, no single check that says "this
-deployment is valid", and no way to change anything without a restart except the tool source. This
-document proposes replacing that with: a **first-run command**, **configuration in the store**, and
-**signed administration**.
+When this document was written, every deployment decision was an environment variable — fifteen of
+them, read in four places, validated at whatever line happened to need them. That is what it
+replaced: a **first-run command**, **configuration in the store**, and **signed administration**. No
+`NUCLEOS_*` variable configures anything today.
 
 ---
 
@@ -545,14 +552,13 @@ Each step is useful on its own, and none of them requires the next.
    refusal, because there is no session to park.
 3. **`nucleos init`** + bootstrap file + recovery password. Until this exists, step 4 has no bootstrap
    credential.
-   *Done, for the local half.* `nucleos init` creates the two stores, asks for a recovery password
+   *Done.* `nucleos init` creates the two stores, asks for a recovery password
    (Argon2id, 64 MiB, three passes — about 1.5 s per hash, which is why nothing on a request path may
    verify one), generates an Ed25519 keypair with the private half in the keychain, files the public
    half in the system store, writes the bootstrap policy, and records where the socket is for a
    client. A second `init` refuses rather than replacing a live installation.
 
-   *Still missing:* the remote half — signed requests, and the ABI that carries them (§8). Until it
-   exists, `init` creates an identity that nothing yet presents.
+   The remote half it used to be missing — signed requests and the ABI that carries them — is step 6.
 4. **Configuration ABI — done.** `admin_keys` enrols another administrator's *public* key and revokes
    one immediately; removing the last key is allowed and answered with a warning, because locking
    yourself out is worse than a weaker fallback and the recovery password exists for exactly that. `/v1/config`, policy, models, sources and tokens.
@@ -561,7 +567,9 @@ Each step is useful on its own, and none of them requires the next.
    prunes session data must not prune its own audit trail, which is the reason the two databases are
    separate. A source additionally publishes a generation, which is why adding one is a tool change
    that does not disturb a session mid-call.
-5. **CLI** — a thin client: send the request, print the event that was recorded.
+5. **CLI — done.** `nucleos init | config | models | sources | tokens | admin | seal`. It signs with
+   the key `init` filed, talks to the socket (or a configured remote), and prints the record the
+   daemon appended rather than a paraphrase of it.
 6. **Ed25519 signatures and recovery — done.** `KeyPair::sign_request` and the daemon's `Verifier`, with a
    canonical form defined once:
 
@@ -592,10 +600,9 @@ Each step is useful on its own, and none of them requires the next.
 4. **Versioning and rollback of policy**: keep the last N versions and allow `nucleos policy rollback`?
    The events already record every version; the question is whether the store keeps the documents.
 5. **What `GET /v1/config` exposes to a tenant caller** — nothing, probably; this is an admin surface.
-6. **Where the daemon's policy comes from when both exist** — a row in the system store and a
-   `NUCLEOS_POLICY` file. Today the store wins and the file is a fallback, because the store is where a
-   later `nucleos policy set` will write; a deployment that manages policy out of band may want the
-   file to win instead, and that would need saying rather than assuming.
+6. **Where the daemon's policy comes from** — settled: the system store, and nothing else.
+   `NUCLEOS_POLICY` is gone; a deployment with no policy row is uninitialised, not unconfigured, and
+   `nucleos init` is what writes the bootstrap document.
 7. **Whether `seal.key` is one file per root or one per host.** Per root keeps instances independent
    and means a copy of one instance's data is useless without its own key; per host is fewer things to
    lose. Currently written as per root, which is also what the paths table implies.

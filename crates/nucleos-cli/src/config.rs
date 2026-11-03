@@ -1,9 +1,9 @@
-//! `nucleos config`: read back what a deployment is running.
+//! `nucleos config`: read, export, apply and audit a deployment's configuration.
 //!
-//! The first command that presents the key `nucleos init` created, and a read deliberately: the
-//! mechanism that proves who is asking arrived before the surface that changes anything, so an
-//! administrator can confirm the policy, the enrolled keys and the generation in force without a
-//! mutation existing yet.
+//! `show` presents the key `nucleos init` created and prints what the daemon is running. `export`
+//! writes the whole document with its revision, `apply` sends one back (optionally `--if-match` a
+//! revision, which turns the write into a compare-and-swap), and `history` lists who changed what
+//! with which key — the record the daemon appended, not a summary of it.
 //!
 //! Where the pieces come from is [`crate::remote`]'s business; what is left here is the client config
 //! `init` writes and the one-line `key=value` format that a person may want to read.

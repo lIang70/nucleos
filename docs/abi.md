@@ -7,29 +7,35 @@ convenient.
 ## 1. Shape
 
 JSON over HTTP, with server-sent events for the two streams. The contract is
-`schema/v1/schema.json`, generated from the kernel's own types — see [`wire.md`](wire.md) for the
-encoding rules and why the schema is not a separate type tree.
+[`openapi/v1/openapi.json`](../openapi/v1/openapi.json), generated from the kernel's own types —
+see [`wire.md`](wire.md) for the encoding rules and why the schema is not a separate type tree.
 
-| Route                                    | Body               | Returns                                                 |
-| ---------------------------------------- | ------------------ | ------------------------------------------------------- |
-| `GET /v1/describe`                       | —                  | `DescribeResponse` — version, models, ABI version       |
-| `POST /v1/agents`                        | `StartRequest`     | `StartResponse` — runs the reference loop to completion |
-| `POST /v1/sessions`                      | `StartRequest`     | `StartResponse` — opens a session, drives nothing       |
-| `GET /v1/sessions/{id}`                  | —                  | `SessionView`                                           |
-| `POST /v1/sessions/{id}/inference`       | `InferenceRequest` | `InferenceResponse`                                     |
-| `POST /v1/sessions/{id}/tools`           | `ToolBatchRequest` | `ToolBatchResponse`                                     |
-| `POST /v1/sessions/{id}/state`           | `StateRequest`     | `204`                                                   |
-| `POST /v1/sessions/{id}/close`           | —                  | `StartResponse`                                         |
-| `POST /v1/sessions/{id}/verdict`         | `VerdictRequest`   | `StartResponse` — runs the loop on                      |
-| `GET /v1/sessions/{id}/events?from_seq=` | —                  | `text/event-stream` of `Event`                          |
+The routes fall into the same two groups the design always had: **session control**, which is
+per-session and hot, and **node administration**, which is node-wide and rare. Merging them would
+make every session call carry node-wide authority.
+
+| Group              | Routes                                                                                                                                                                                                                                                                                                           | Answers                                                                                                                 |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Describe           | `GET /v1/describe`                                                                                                                                                                                                                                                                                               | `DescribeResponse` — version, models, ABI version                                                                       |
+| Agent loop         | `POST /v1/agents`                                                                                                                                                                                                                                                                                                | `StartResponse` — runs the reference loop to completion                                                                 |
+| Sessions           | `POST /v1/sessions`, `GET /v1/sessions`, `GET /v1/sessions/{id}`                                                                                                                                                                                                                                                 | `StartResponse` — opens a session and drives nothing; `SessionListResponse`; `SessionView`                              |
+| Turn               | `POST /v1/sessions/{id}/inference`, `POST /v1/sessions/{id}/tools`, `POST /v1/sessions/{id}/state`                                                                                                                                                                                                               | `InferenceResponse` (JSON or SSE), `ToolBatchResponse`, `204`                                                           |
+| Session control    | `POST /v1/sessions/{id}/cancel`, `POST /v1/sessions/{id}/configure`, `POST /v1/sessions/{id}/verdict`, `POST /v1/sessions/{id}/close`, `DELETE /v1/sessions/{id}`                                                                                                                                                | `CancelResponse`, `ConfigureResponse`, `StartResponse`, `DeletedResponse`                                               |
+| Events             | `GET /v1/sessions/{id}/events?from_seq=`                                                                                                                                                                                                                                                                         | `text/event-stream` of `Event`                                                                                          |
+| Processes          | `POST /v1/processes`, `GET /v1/processes`, `POST /v1/sessions/{id}/stdin`, `POST /v1/sessions/{id}/signal`, `POST /v1/sessions/{id}/wait`                                                                                                                                                                        | `ProcessStartResponse`, `ProcessListResponse`, `204`, `ExecOutput`                                                      |
+| Models             | `GET /v1/models`, `POST /v1/models`, `DELETE /v1/models/{name}`                                                                                                                                                                                                                                                  | `ModelListResponse`, `ModelView`                                                                                        |
+| Sources and tools  | `GET /v1/sources`, `POST /v1/sources`, `DELETE /v1/sources/{name}`, `POST /v1/tools/reload`, `POST /v1/tools/retire`                                                                                                                                                                                             | `SourceListResponse`, `SourceView`, `ReloadResponse`, `RetireResponse`                                                  |
+| Policy and tenancy | `PUT /v1/policy`, `PUT /v1/tenants/{tenant}/limits`, `PUT /v1/tenants/{tenant}/policy`                                                                                                                                                                                                                           | `PutResponse`, `TenantLimitsView`                                                                                       |
+| Administration     | `GET /v1/config`, `PUT /v1/config`, `GET /v1/config/history`, `GET /v1/admin/keys`, `POST /v1/admin/keys`, `DELETE /v1/admin/keys/{id}`, `GET /v1/tokens`, `POST /v1/tokens`, `DELETE /v1/tokens/{id}`                                                                                                           | `ConfigResponse`, `AppliedDeployment`, `ChangeListResponse`, `AdminKeyListResponse`, `TokenIssued`, `TokenListResponse` |
+| Metrics            | `GET /v1/metrics`                                                                                                                                                                                                                                                                                                | `MetricsResponse`                                                                                                       |
 
 The machine-readable form of this table is [`openapi/v1/openapi.json`](../openapi/v1/openapi.json):
-`components.schemas` is the JSON Schema this repository already generates, and `paths` is the same
-ten routes with their status codes. It is committed and a test fails when it drifts:
+`components.schemas` is the JSON Schema this repository already generates, and `paths` is every
+route above with its status codes and parameters. It is committed and a test fails when it drifts:
 
 ```bash
-NUCLEOS_OPENAPI=1 cargo test -p nucleos --test openapi   # regenerate
-cargo test -p nucleos --test openapi                     # fail if stale
+NUCLEOS_OPENAPI=1 cargo test -p nucleosd --test openapi   # regenerate
+cargo test -p nucleosd --test openapi                     # fail if stale
 ```
 
 Two layers, deliberately:
@@ -45,36 +51,24 @@ get, and whether the answer enters history is decided by the next `state` call. 
 a verification turn possible without polluting the transcript.
 
 ```text
-Describe   capabilities and the current generation
-Start      create a session, pin it to a generation
-Run        stream events, resumable from any seq
-Send       user input, steering, and human-in-the-loop verdicts
-Credit     extend the session's budget
-Cancel     request an orderly stop
-Close      terminate and release resources
-List       sessions on this node
-
-Register   add or update a tool source, producing a new generation
-Deregister remove a tool source
-Sources    list sources, generations, and health
-Reload     apply pending source changes as one generation swap
-
+Session control   describe · open · inference/tools/state · cancel · configure · close · list
+Source management sources add/remove · tools reload · tools retire
 ```
 
-Session control and source management are separate groups on purpose: one is per-session
-and hot, the other is node-wide and rare. Merging them would make every session call carry
-node-wide authority.
+The names describe the operations; the table above is the wire. `/v1/processes` and the
+process routes are part of session control: a process session is a session whose turn is a
+child process, and it is supervised by the kernel rather than by the caller.
 
 ### 1.1 The published artefact
 
 One document: [`openapi/v1/openapi.json`](../openapi/v1/openapi.json). Its `components.schemas`
-is every message the ABI carries, generated from the kernel's own types; its `paths` is the ten
-routes above. An SDK generates from it and never copies it — a copy is a version that drifts, and
-the drift is discovered by a client failing in production.
+is every message the ABI carries, generated from the kernel's own types; its `paths` is every
+route in the table above. An SDK generates from it and never copies it — a copy is a version that
+drifts, and the drift is discovered by a client failing in production.
 
 ```bash
-NUCLEOS_OPENAPI=1 cargo test -p nucleos --test openapi   # regenerate
-cargo test -p nucleos --test openapi                     # fail if stale
+NUCLEOS_OPENAPI=1 cargo test -p nucleosd --test openapi   # regenerate
+cargo test -p nucleosd --test openapi                     # fail if stale
 ```
 
 The default run only reads, so CI fails instead of quietly rewriting the file.
@@ -91,53 +85,60 @@ Two things it cannot express, both stated rather than hidden:
 
 ```text
 StartRequest {
-  spec:      route (model chain + retries), generation params, system prompt,
-             initial input, tool allow-list
-  budget:    tokens / cost / steps / wall clock
-  metadata:  caller-defined labels, opaque to the kernel
-  resume:    optional session id — restore and continue instead of creating
+  session:        caller-chosen id; a retried request with the same id resumes
+  resume:         continue an existing session instead of creating one
+  initial:        messages to seed the conversation with
+  budget:         tokens / cost / steps / wall clock — carried in the checkpoint
+  credit_tokens:  tokens granted up front; zero is not "no ceiling"
+  sandbox:        workspace, sandbox policy, permissions
+  config:         the mutable configuration to start from (same shape `configure` takes)
 }
 ```
 
-`Start` returns `{session, generation, state}`. The `generation` is the tool-source
-generation the session is pinned to; it is not negotiable later, only migratable.
+`Start` returns `{session, state, stop, next_seq}`. The generation is not in the response:
+`GET /v1/describe` reports the one in force, and a session that migrates records
+`generation_migrated`.
 
-`Start` also carries the caller's **capabilities** — `render_images`, `max_part_bytes`,
-`supports_progress`. The daemon downgrades rather than fails: a client that cannot render an
-image receives a `FilePart` reference instead of inline bytes. Both sides declare and
-neither assumes, because a daemon that guesses the client's abilities is wrong exactly for
-the client that needed the guess.
-
-Sessions are addressed by a caller-chosen id when `resume` is set. That makes client
-retries idempotent: a `Start` that was retried after a timeout resumes the existing
-session instead of creating a second one.
+Sessions are addressed by a caller-chosen id. That makes client retries idempotent: a `Start` that
+was retried after a timeout resumes the existing session instead of creating a second one.
 
 Session identity is the pair **(tenant, session)**. The tenant comes from the authenticated
 principal and never from a request field; two tenants may each own a session called `abc`
 and neither can address the other's.
 
-## 3. `Run` is resumable, not a subscription
+## 3. Two views of a session, and neither owns it
 
-```text
-RunRequest { session, from_seq }
-→ stream Event
-```
+A stream is a view of the log, never the owner of the work:
 
-The server replays history from `from_seq` and then continues live. A client that
-disconnects and reconnects loses nothing.
+- **Follow one turn as it runs** — `POST /v1/sessions/{id}/inference` with
+  `Accept: text/event-stream` (§4.0.0). Frames are whole `Event`s and the last one is
+  `message_completed`, so a client that reads only the last frame gets exactly what the
+  non-streaming call returns.
+- **Replay from a cursor** — `GET /v1/sessions/{id}/events?from_seq=N`. Reads a page and closes;
+  an `EventSource` reconnects with `Last-Event-ID`, which is the same number as `seq`.
 
-This is the single most valuable property of the ABI: a long-running session is not owned
-by a request. Network distance, proxy timeouts and client restarts cannot lose work,
-because the work lives in the event log and the stream is only a view of it.
+A client that disconnects and reconnects loses nothing: the work lives in the event log.
+This is the single most valuable property of the ABI — a long-running session is not owned
+by a request, so network distance, proxy timeouts and client restarts cannot lose work.
+
+The replay is **paged**, not "everything since the beginning": a reconnect costs one page, and
+the first frame does not wait for the last piece of history.
 
 ## 4. Events
 
 ```text
 Event {
-  seq:     uint64   // monotonic within a session, starts at 0
-  session: string
-  at:      Timestamp
-  kind:    oneof {
+  seq:              uint64   // monotonic within a session, starts at 0
+  session:          string
+  at_unix_millis:   uint64
+  schema_version:   uint32
+  kind:             oneof { … }   // flattened into the event, tag once
+  meta:             map<string,string>
+}
+```
+
+The union below is the part the rules turn on, not the whole of it — the schema is the complete list,
+and a kind this build does not recognise is carried rather than refused.
     state               StateChanged        // created/running/awaiting_*/…
     text_delta          TextDelta           // part_index + text
     reasoning_delta     ReasoningDelta      // part_index + text and/or signature
@@ -340,30 +341,46 @@ counted after the body is built, so it cannot appear in its own response.
 
 `POST /v1/tools/reload` reconnects the configured source and publishes a new generation; see 4.2.
 
-## 5. Credit
+## 5. Budget is credit, granted at `Start`
 
-`Credit` extends budget; `Run` carries an initial credit grant. Each `usage` event debits
-it. On exhaustion the session transitions to `Cancelling`, writes a checkpoint, emits
-`budget_exhausted`, and ends.
+`Start` carries `credit_tokens` and `budget` (tokens / cost / steps / wall clock). Each `usage`
+event debits the credit; on exhaustion the session drains, writes a checkpoint, emits
+`budget_exhausted`, and stops.
+
+There is **no route that extends it**. The limits are part of what the session is and travel in the
+checkpoint, so a request cannot forget them or widen them — and a caller that wants more starts a
+new session. §11 records the missing extension as a gap rather than an oversight.
 
 Backpressure and cost control are the same mechanism, which is why there is no separate
-rate-limit surface: a caller that cannot keep up stops granting credit.
+rate-limit surface: the caller decides how much to grant at `Start`.
+
+`credit_tokens: 0` is not "no ceiling": it closes the session on its first turn. Set it.
 
 ## 6. Generations and reload
 
-Tool sources are declared, never inlined. `Register` takes a source descriptor:
+Tool sources are declared, never inlined. `POST /v1/sources` takes:
 
 ```text
-ToolSource {
-  name:      string
-  transport: oneof { stdio {command, args, env} | http {url, auth} }
-  allow:     repeated string     // tool name filters
-  isolation: none | process | vm        # derived by the daemon, not declared by the source
+SourceRequest {
+  name:     string
+  command:  string        // the MCP server to spawn
+  args:     repeated string
+  env:      map<string,string>
 }
 ```
 
-The daemon connects, calls MCP `tools/list`, and snapshots the advertised specs into a new
-generation. `Reload` commits the pending set as one atomic swap. Two properties matter:
+The daemon connects over stdio, calls MCP `tools/list`, stores the command, and **publishes a
+generation**. Removing a source publishes another. There is no pending set and no transactional
+swap between several adds: each add or remove is one generation, which is why a failed connection
+fails the request (the caller is waiting) while a source that will not start at boot is a warning
+and a missing tool (`architecture.md` §8).
+
+Three things a source does **not** carry today, stated rather than implied: an HTTP transport
+(stdio only), a per-source tool allow-list (the ceiling is per-session `config.tools`), and the
+derived isolation descriptor (`SourceView` reports the command and the tools it currently
+advertises). A source asserting its own isolation was removed earlier for being an unchecked claim.
+
+`Reload` reconnects and publishes what the servers advertise now. Two properties matter:
 
 - **Reload is explicit.** Nothing watches the filesystem. A caller decides when the
   generation changes, so a half-written config never becomes a generation.
@@ -379,25 +396,35 @@ ReloadResponse {
 ```
 
 Migration happens at turn boundaries only, and only when the old and new tool sets are
-compatible — same tool names, structurally equal input schemas (new optional properties
-allowed), identical isolation descriptor. Anything else pins the session to its
-generation until it ends.
+compatible — same tool names, and structurally equal input schemas (new optional properties
+allowed). Anything else pins the session to its generation until it ends.
+
+The second check is `schema_narrows`: every request the pinned schema accepted must still be
+accepted by the new one. A rename, a removed property and a newly required one all fail it.
+
+What the check does **not** yet carry is an isolation descriptor. `architecture.md` §8 argues
+for one — a tool that keeps its name and schema but now runs in-process where it used to run in a
+sandboxed child is a silent downgrade every other check passes — but `ToolSpec` and `Generation`
+hold nothing of the kind today, so a daemon computes none and the term is absent rather than
+implemented as a constant `true`. Adding it is additive: one optional field and one comparison.
 
 ## 7. Errors
 
 ```text
-enum Code {
-  UNSPECIFIED = 0; INVALID = 1; NOT_FOUND = 2; DENIED = 3;
-  BUDGET = 4; TIMEOUT = 5; UNAVAILABLE = 6; INTERNAL = 7;
-}
+invalid · not_found · denied · budget · timeout · conflict · cancelled · unavailable · internal
 ```
+
+No numeric values: the code is a `snake_case` string, so a reader without the schema can tell what
+it is and an enum cannot be renumbered by accident. `conflict` is the compare-and-swap answer —
+re-read and retry — and `cancelled` is distinct from `timeout` because nothing went wrong.
 
 Every response that can fail returns `code`, a human-readable `reason`, and a `retryable`
 flag — never a bare string, and never an error that has to be parsed. A string error code
 is the most expensive kind of debt: the first caller who compares strings freezes it.
 
-`retryable` is a statement about the same request, not about the world. `UNAVAILABLE` is
-retryable; `BUDGET` is retryable only after `Credit`.
+`retryable` is a statement about the same request, not about the world. `unavailable` and
+`timeout` are retryable; `budget` is not, because the limits are set at `Start` and carried in the
+checkpoint — there is no route that raises them, so retrying the same request cannot succeed.
 
 Two details make an error actionable rather than merely typed:
 
@@ -406,9 +433,9 @@ Two details make an error actionable rather than merely typed:
 - `details`, a machine-readable map — `{"needed_tokens": "40000"}` on `BUDGET` is the
   difference between a caller that can fix it and one that can only report it.
 
-`List` pages by **keyset token**, not by offset: sessions are created and retired constantly,
-so an offset skips or repeats rows. `next_page_token` empty means the last page; a client
-stops on empty, never on a short page.
+`GET /v1/sessions` pages by **keyset token**, not by offset: sessions are created and retired
+constantly, so an offset skips or repeats rows. `next_page_token` empty means the last page; a
+client stops on empty, never on a short page.
 
 ## 8. Versioning
 
@@ -423,14 +450,14 @@ stops on empty, never on a short page.
 
 ## 9. Mapping to MCP
 
-| nucleos              | MCP                                                                             |
-| -------------------- | ------------------------------------------------------------------------------- |
-| tool source          | server (stdio or streamable HTTP)                                               |
-| `Tools` (allow-list) | `tools/list` snapshot                                                           |
-| `ToolCallStarted`    | `tools/call`                                                                    |
-| `ToolFinished`       | `tools/call` result: `content` blocks → `Content.parts`, `isError` → `is_error` |
-| cancel a tool call   | `notifications/cancelled`                                                       |
-| isolation `process`  | the server runs as a child process, so the daemon derives `process`             |
+| nucleos              | MCP                                                                                       |
+| -------------------- | ----------------------------------------------------------------------------------------- |
+| tool source          | server (stdio; HTTP is not carried yet)                                                   |
+| `Tools` (allow-list) | `tools/list` snapshot                                                                     |
+| `ToolCallStarted`    | `tools/call`                                                                              |
+| `ToolFinished`       | `tools/call` result: `content` blocks → `Content.parts`, `isError` → `is_error`           |
+| cancel a tool call   | `notifications/cancelled`                                                                 |
+| source isolation     | a spawned child process; the source does not declare it, and no descriptor is carried yet |
 
 Deliberately unsupported in v1: MCP **sampling** and **elicitation**. The daemon does not
 advertise those client capabilities, so a server that needs them must fall back. Adding
@@ -442,31 +469,30 @@ methods.
 Every one of these has a defensible alternative. The point is to pick one now, because the
 alternative gets chosen accidentally by the first implementation.
 
-| Case                                              | Behaviour                                                                                                                                     |
-| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Run` on a terminal session                       | Replays from `from_seq` to the last event, then ends the stream. A client never has to know the session already finished.                     |
-| Two concurrent `Run` streams on one session       | Allowed. Each cursor is independent; a stream is a _view_, and no stream can advance or alter state.                                          |
-| `Run` with `from_seq` beyond the last event       | `INVALID`, not clamped. Silently skipping events hides a client bug until it costs somebody an incident.                                      |
-| `Start` with `resume` on an unknown id            | `NOT_FOUND`. It does not create a session with that id — otherwise a typo becomes a new session and the real one is orphaned.                 |
-| `Register` with a name that already exists        | Replaces it in the pending generation. Idempotent by name, so a retried `Register` cannot create a duplicate source.                          |
-| `Reload` with no pending changes                  | No-op. Returns the current generation with no failure and no new generation number.                                                           |
-| `Send` while `AWAITING_TOOL`                      | Accepted and ordered; applied at the next turn boundary. Rejecting it makes callers retry into a race.                                        |
-| `Close` on a running session                      | Cancels, waits for the turn to resolve, checkpoints, then closes. A `Close` never discards a turn in flight.                                  |
-| `Credit` on a terminal session                    | `INVALID`. A finished session cannot be revived by paying more.                                                                               |
-| `Cancel` twice                                    | Idempotent; the second call reports the state the first one produced.                                                                         |
-| An event kind the client does not know            | Ignore it and keep the cursor. `type` is additive; a client that fails on an unknown kind breaks on every future feature.                     |
-| A `PermissionOption` id the kernel did not offer  | `INVALID`. The verdict names an option that was presented, or it is a client bug.                                                             |
-| Nobody answers an `AwaitingHuman`                 | Apply `default_if_unanswered`, which is a refusal. Silence is never approval.                                                                 |
-| `List` with a `page_token` from an older page set | The token stays valid; it is a key, not an index. `INVALID` only if it cannot be decoded at all.                                              |
-| `Run` before `Start`                              | `NOT_FOUND`. A stream is a view of a session, and there is nothing to view yet.                                                               |
-| `Describe` on an empty daemon                     | Succeeds with `generation = 0` and no models. A health check must not need a session.                                                         |
-| `Deregister` a source a pinned session still uses | Allowed. The source stays alive until the last session on its generation ends; new sessions simply never see it.                              |
-| `Register` while a `Reload` is in flight          | Serialized. Reloads run one at a time and a registration lands in the pending set, so a caller never has to guess which generation it joined. |
-| `Run` open across a `Reload`                      | Allowed. The migration happens at the next turn boundary and is announced as `generation_migrated` in the same stream.                        |
+| Case                                                          | Behaviour                                                                                                                                                                                                          |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `inference` on a terminal session                             | `invalid`, naming the stop reason. A closed session is not revived; its log still replays through `GET /v1/sessions/{id}/events`.                                                                                  |
+| Two concurrent turns on one session                           | The kernel does not refuse it, and `cancel` addresses the most recently started turn. One writer per session is a rule the caller keeps, not a lock the kernel holds — the log stays dense either way.             |
+| `GET /events` with `from_seq` beyond the last event           | An empty stream. A cursor is a position, not an assertion about the log, so there is nothing to correct and nothing to clamp.                                                                                      |
+| `Start` with `resume` on an unknown id                        | `not_found`. It does not create a session with that id — otherwise a typo becomes a new session and the real one is orphaned.                                                                                      |
+| `POST /v1/sources` with a name that already exists            | Replaces the source under that name and publishes a new generation. Idempotent by name, so a retried add cannot create a duplicate source.                                                                         |
+| `POST /v1/tools/reload` when nothing changed                  | Publishes a generation anyway: `added` and `removed` are empty and the number moves. Reload is not conditional.                                                                                                    |
+| `state` while a turn is running                               | Applied immediately — messages are appended and checkpointed — so the next turn sees them. There is no queue to be ordered against.                                                                                |
+| `close` on a running session                                  | Marks the session closed and checkpoints. It does **not** cancel a turn already running: `cancel` is the route for that, and it leaves the session open.                                                           |
+| `cancel` twice                                                | The second answers `cancelled: false`. Not an error, and not a second log entry: there is no turn left to stop.                                                                                                    |
+| An event kind the client does not know                        | Ignore it and keep the cursor. The union is additive, and the kernel itself carries an unknown kind rather than refusing the row.                                                                                  |
+| A `PermissionOption` id the kernel did not offer              | `invalid`. The verdict names an option that was presented, or it is a client bug.                                                                                                                                  |
+| Nobody answers an `AwaitingHuman`                             | The event carries `default_if_unanswered` (a refusal), and there is no sweeper that applies it: a parked session stays parked until a verdict or a close. Silence is never approval.                               |
+| `GET /v1/sessions` with a `page_token` from an older page set | The token stays valid; it is a key, not an index. `invalid` only if it cannot be decoded at all.                                                                                                                   |
+| `GET /events` before the session exists                       | `not_found`. A stream is a view of a session, and there is nothing to view yet.                                                                                                                                    |
+| `describe` on an empty daemon                                 | Succeeds with `generation = 0` and no models. A health check must not need a session.                                                                                                                              |
+| Removing a source a pinned session still uses                 | Allowed. The session holds its tool set, so the connection outlives the row; new sessions simply never see it.                                                                                                     |
+| Adding a source while a reload is in flight                   | Serialized by one lock on the source set, so the generation a caller gets back is the one it published.                                                                                                            |
+| A stream open across a reload                                 | Handled at the next turn boundary, which is the only moment the set may change, and recorded as `generation_migrated`.                                                                                             |
 
-One case is deliberately left undefined: a `Send` that arrives after `Cancelling` began.
-The session drains to the boundary and ends; whether the input was consumed is observable
-in the event log, and the caller must read it rather than assume.
+One case is deliberately left undefined: a request that races a `close`. The session drains and
+ends; whether the request was consumed is observable in the log, and the caller must read it rather
+than assume.
 
 ### 10.1 Ordering
 
@@ -484,16 +510,16 @@ A stream that can be wrong about order is a stream nobody can build a UI on, so:
 
 ## 11. Not served, and why
 
-| Not an endpoint                  | Why                                                                                                                                    |
-| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| Stateless model invocation       | This is an agent OS, not a gateway. A host that wants a raw model call links the library; see [`architecture.md`](architecture.md) §7. |
-| Embeddings                       | A tool: an embedding model belongs with the index and the ranking that use it.                                                         |
-| Speech to text, text to speech   | A tool. Voice output also needs an artifact store the kernel does not have.                                                            |
-| Tool-source registration, reload | Tool sources are declared in the daemon's configuration; discovery lands with the MCP client.                                          |
-| Credit, cancel, list             | They need an operator surface; `close` exists because a syscall can do it statelessly.                                                 |
+| Not an endpoint                | Why                                                                                                                                                       |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Stateless model invocation     | This is an agent OS, not a gateway. A host that wants a raw model call links the library; see [`architecture.md`](architecture.md) §7.                    |
+| Embeddings                     | A tool: an embedding model belongs with the index and the ranking that use it.                                                                            |
+| Speech to text, text to speech | A tool. Voice output also needs an artifact store the kernel does not have.                                                                               |
+| Raising credit                 | A session's limits are fixed at `Start` and carried in the checkpoint; raising them is a syscall that does not exist yet, not an oversight in this table. |
 
 An endpoint that exists and returns 501 is a contract nobody can rely on, so these are absent
-rather than declared.
+rather than declared. Session cancel and list, and source registration and reload, are served —
+see the table in §1.
 
 ## 12. Deferred
 

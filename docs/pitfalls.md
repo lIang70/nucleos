@@ -1708,3 +1708,22 @@ depending on `Accept`. The document said `application/json` only, so a generated
 the stream it was designed around. `Reply::JsonOrStream` publishes both media types on one operation,
 because it is one operation: same request, same authentication, same commit point.
 
+## 105. A checkpoint is a cache, so it is not written after every turn
+
+**Decision.** The turn-success path writes a checkpoint only when the log has moved 512 events or 250 ms
+have passed since the last one. Every path that *ends* something — `close`, `park`, `configure`, a failed
+turn, a `state` append — still writes one immediately.
+
+**Why.** A checkpoint is a cache of the log, and `load` already folds the tail. Rewriting a snapshot that
+carries the conversation and the attempt ledger after every turn made the per-turn cost grow with the
+session's age: measured on a 1,200-message session, 2.2 ms of a turn was the snapshot and 2.0 ms was the
+append's own. After the throttle the turn costs 0.08 ms and the append 0.7 ms; what growth is left is the
+snapshot's own content, which is the next thing to fix rather than this one.
+
+**What must stay immediate, and why it is not an exception.** `state` has no event of its own: appended
+messages are durable *because* of its checkpoint, so throttling it would answer `204` for something that
+did not survive. And a fold restores what it can — `message_completed` carries the step index, so a reload
+does not hand back a step the budget already charged.
+
+**Failure it prevents.** A runtime whose cost per turn is proportional to the conversation: one that gets
+slower the longer it is used, and never says why.
