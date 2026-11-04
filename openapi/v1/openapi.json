@@ -1362,6 +1362,13 @@
               "model": {
                 "description": "The model the route resolved to first.",
                 "type": "string"
+              },
+              "step": {
+                "default": 0,
+                "description": "Which step of the session this is, 1-based.\n\nCarried because the step counter is a budget: a turn that fails after it began still spent\none, and a reload that could not see it would hand the step back — making `max_steps`\nenforceable per process rather than per session.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
               }
             },
             "required": [

@@ -46,6 +46,8 @@ impl Kernel {
                     .map(|(name, _)| name.clone())
                     .unwrap_or_default(),
                 generation: session.generation.0,
+                // The step this turn is, so a turn that fails after it began still charges one.
+                step: session.steps.saturating_add(1),
             },
         )
         .await?;

@@ -48,6 +48,7 @@ fn every_kind_round_trips() {
         EventKind::TurnStarted {
             model: "primary".to_owned(),
             generation: 3,
+            step: 1,
         },
         EventKind::BudgetExhausted {
             reason: nucleos::contract::StopReason::Tokens,

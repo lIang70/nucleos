@@ -212,3 +212,90 @@ async fn a_failed_step_counts_against_the_step_budget() {
     let error = kernel.inference(&mut session, &[]).await.unwrap_err();
     assert_eq!(error.code(), ErrorCode::Budget);
 }
+
+/// A turn that failed after streaming is billed once, not twice, and survives a reload.
+///
+/// Replay sees one attempt twice: as the `usage` reports it streamed and as the `attempt_failed` that
+/// ended it. Appending both would double the bill and leave two entries for one attempt, and the next
+/// checkpoint would persist the wrong number.
+#[tokio::test]
+async fn an_attempt_that_streamed_then_failed_is_billed_once() {
+    /// Bills, then breaks the stream.
+    struct BillsThenBreaks;
+
+    #[async_trait]
+    impl Model for BillsThenBreaks {
+        fn capability(&self) -> Capability {
+            Capability {
+                tools: true,
+                tool_choice_required: true,
+                structured_output: true,
+                streaming: true,
+                context_window: 128_000,
+                max_output_tokens: 4_096,
+            }
+        }
+        fn count_tokens(&self, request: &ModelRequest) -> nucleos::error::Result<u64> {
+            Ok(request.text_len().div_ceil(4).max(1))
+        }
+        async fn invoke(&self, _request: ModelRequest) -> nucleos::error::Result<ModelStream> {
+            let deltas: Vec<nucleos::error::Result<ModelDelta>> = vec![
+                Ok(ModelDelta::Text {
+                    part_index: 0,
+                    text: "partial".to_owned(),
+                }),
+                Ok(ModelDelta::Usage(SPENT)),
+                Err(nucleos::error::Error::unavailable("the stream broke")),
+            ];
+            Ok(Box::pin(tokio_stream::iter(deltas)))
+        }
+    }
+
+    let (kernel, _) = kernel(Arc::new(BillsThenBreaks));
+    let kernel = Arc::new(kernel);
+    let mut session = kernel
+        .open(
+            &principal(),
+            SessionId::new("s1"),
+            SessionSpec {
+                credit_tokens: Some(1_000_000),
+                budget: Budget {
+                    max_steps: Some(1),
+                    ..Budget::default()
+                },
+                ..SessionSpec::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    // The turn fails after it began and after it reported a cost.
+    let error = kernel.inference(&mut session, &[]).await.unwrap_err();
+    assert_eq!(error.code(), ErrorCode::Unavailable);
+    assert_eq!(
+        session.ledger().total.input_tokens,
+        SPENT.input_tokens,
+        "one report, billed once"
+    );
+    let attempts = session.ledger().attempts.len();
+
+    // The same numbers after a reload: the fold must not add the attempt a second time.
+    let reloaded = kernel.load(&principal(), session.id()).await.unwrap();
+    assert_eq!(
+        reloaded.ledger().total,
+        session.ledger().total,
+        "replay doubled the bill"
+    );
+    assert_eq!(
+        reloaded.ledger().attempts.len(),
+        attempts,
+        "replay duplicated the attempt"
+    );
+
+    // And the failed turn still spent its step, so the next call is refused on the budget.
+    assert_eq!(
+        reloaded.inference_calls(),
+        session.inference_calls(),
+        "a failed turn's step came back on reload"
+    );
+}

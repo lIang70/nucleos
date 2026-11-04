@@ -47,7 +47,10 @@ struct Assembling {
     text: BTreeMap<u32, String>,
     reasoning: BTreeMap<u32, ReasoningAccum>,
     calls: BTreeMap<u32, CallAccum>,
-    usage: Usage,
+    /// The first report defines the accumulator, later ones add to it — the same rule the ledger
+    /// follows, and for the same reason: adding a first report to a total that was never a report
+    /// turns every reported cost into an unknown one.
+    usage: Option<Usage>,
     degraded: Vec<Degraded>,
     produced: bool,
 }
@@ -373,7 +376,10 @@ impl Kernel {
                         .await?;
                 }
                 Ok(ModelDelta::Usage(usage)) => {
-                    acc.usage.add(&usage);
+                    match &mut acc.usage {
+                        None => acc.usage = Some(usage.clone()),
+                        Some(total) => total.add(&usage),
+                    }
                     self.debit(session, &usage);
                     self.emit(
                         session,
@@ -404,7 +410,7 @@ impl Kernel {
                     self.flush(session).await?;
                     return Ok(Ending::Failed {
                         error,
-                        usage: acc.usage,
+                        usage: acc.usage.unwrap_or_default(),
                         produced: acc.produced,
                         degraded: acc.degraded,
                         phase: AttemptPhase::Execute,
@@ -415,7 +421,7 @@ impl Kernel {
         // The stream ended: the last fragments are not waiting for an event that will never come.
         self.flush(session).await?;
 
-        let usage = std::mem::take(&mut acc.usage);
+        let usage = acc.usage.take().unwrap_or_default();
         let degraded = std::mem::take(&mut acc.degraded);
         Ok(Ending::Answered {
             message: acc.finish(),

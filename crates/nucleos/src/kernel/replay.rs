@@ -87,10 +87,12 @@ pub(crate) fn fold(session: &mut Session, event: &Event) -> Applied {
             if let Some(credit) = session.credit_tokens {
                 session.credit_tokens = Some(credit.saturating_sub(usage.total_tokens()));
             }
-            session.ledger.total.add(usage);
 
             // A stream reports usage more than once for one attempt, so the ledger is keyed by the
-            // attempt: folding each report into its own entry would turn one bill into eight.
+            // attempt: folding each report into its own entry would turn one bill into eight. The
+            // total is derived from the entries rather than accumulated beside them, because the
+            // `attempt_failed` that may follow carries a better version of the same attempt and must
+            // replace it, not be added to it.
             match session
                 .ledger
                 .attempts
@@ -109,10 +111,13 @@ pub(crate) fn fold(session: &mut Session, event: &Event) -> Applied {
                     degraded: Vec::new(),
                 }),
             }
+            session.ledger.recompute();
             Applied::State
         }
         EventKind::AttemptFailed { attempt } => {
-            session.ledger.record(attempt.clone());
+            // By index, replacing whatever the streamed `usage` reports built: this is the same
+            // attempt with a better ending, not a second one.
+            session.ledger.adopt(attempt.clone());
             Applied::State
         }
         EventKind::MessageCompleted {
@@ -187,9 +192,13 @@ pub(crate) fn fold(session: &mut Session, event: &Event) -> Applied {
         // The parked call is in the snapshot, and a park writes its own checkpoint, so a parked
         // session cannot be one whose tail needs the pending call rebuilt.
         EventKind::AwaitingHuman { .. } => Applied::Narrative,
-        EventKind::ToolCallStarted { .. }
-        | EventKind::ToolCallArgs { .. }
-        | EventKind::TurnStarted { .. } => {
+        EventKind::TurnStarted { step, .. } => {
+            // A turn that began charged a step, whether or not it produced a message. Without this a
+            // failed turn's step came back on reload, and `max_steps` could be spent forever.
+            session.steps = session.steps.max(*step);
+            Applied::AbandonedTurn
+        }
+        EventKind::ToolCallStarted { .. } | EventKind::ToolCallArgs { .. } => {
             // A call that started and never finished, or a turn that began and never ended: the turn
             // it belonged to is the one that was abandoned, so this is evidence of that rather than
             // state of its own. `turn_started` is on the list because a crash before the first delta
@@ -305,6 +314,7 @@ mod tests {
         assert!(!completes_a_unit(&EventKind::TurnStarted {
             model: "primary".to_owned(),
             generation: 1,
+            step: 1,
         }));
         for ending in [
             EventKind::MessageCompleted {

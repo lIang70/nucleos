@@ -670,6 +670,13 @@ pub enum EventKind {
         model: String,
         /// The generation this turn runs under.
         generation: u64,
+        /// Which step of the session this is, 1-based.
+        ///
+        /// Carried because the step counter is a budget: a turn that fails after it began still spent
+        /// one, and a reload that could not see it would hand the step back — making `max_steps`
+        /// enforceable per process rather than per session.
+        #[serde(default)]
+        step: u64,
     },
     /// The turn ended without producing a message and without a failed attempt to point at.
     ///
@@ -1218,6 +1225,43 @@ impl Ledger {
             self.total.add(&attempt.usage);
         }
         self.attempts.push(attempt);
+    }
+
+    /// Fold one attempt in by index, replacing what a streamed usage report built.
+    ///
+    /// Replay sees an attempt twice: once as the `usage` reports it streamed, once as the
+    /// `attempt_failed` that ended it. Appending both would bill the tokens twice and leave two
+    /// entries for one attempt, which is the opposite of what the ledger is for. The later report is
+    /// the better one — it knows how the attempt ended — so it replaces the entry rather than adding.
+    pub fn adopt(&mut self, attempt: Attempt) {
+        match self
+            .attempts
+            .iter_mut()
+            .find(|existing| existing.index == attempt.index)
+        {
+            Some(existing) => *existing = attempt,
+            None => self.attempts.push(attempt),
+        }
+        self.attempts.sort_by_key(|attempt| attempt.index);
+        self.recompute();
+    }
+
+    /// The total, derived from the attempts rather than accumulated beside them.
+    ///
+    /// Two accumulators that must agree is one accumulator too many: replay can insert an attempt that
+    /// was never added to the total, and the bill would then disagree with its own entries.
+    pub fn recompute(&mut self) {
+        let mut total: Option<Usage> = None;
+        for attempt in &self.attempts {
+            match &mut total {
+                // The first attempt defines the accumulator rather than being added to one, so an
+                // unreported counter stays unreported instead of being added to a zero that was
+                // never a report.
+                None => total = Some(attempt.usage.clone()),
+                Some(total) => total.add(&attempt.usage),
+            }
+        }
+        self.total = total.unwrap_or_default();
     }
 
     /// How many attempts were made.
