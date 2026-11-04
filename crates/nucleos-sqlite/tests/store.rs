@@ -196,7 +196,7 @@ async fn a_session_survives_the_process_that_wrote_it() {
                 SessionId::new("s1"),
                 nucleos::kernel::SessionSpec {
                     // The store test is about durability, not about the budget gate.
-                    credit_tokens: 1_000_000,
+                    credit_tokens: Some(1_000_000),
                     ..nucleos::kernel::SessionSpec::default()
                 },
             )
@@ -271,7 +271,7 @@ fn snapshot_for(session: &SessionId) -> nucleos::contract::Snapshot {
         usage: nucleos::contract::Usage::default(),
         ledger: Default::default(),
         inference_calls: 0,
-        credit_tokens: 0,
+        credit_tokens: Some(0),
         budget: Default::default(),
         spent_wall_millis: 0,
         pending: Vec::new(),

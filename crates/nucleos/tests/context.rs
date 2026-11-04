@@ -46,7 +46,7 @@ fn capability(window: u32, max_output: u32) -> Capability {
 /// credit would stop before the window was ever looked at.
 fn funded() -> SessionSpec {
     SessionSpec {
-        credit_tokens: 1_000_000,
+        credit_tokens: Some(1_000_000),
         ..SessionSpec::default()
     }
 }
@@ -176,7 +176,10 @@ async fn a_session_with_no_credit_never_reaches_the_model() {
         .open(
             &principal(),
             SessionId::new("s1"),
-            SessionSpec::default(), // no grant: nothing may run
+            SessionSpec {
+                credit_tokens: Some(0),
+                ..SessionSpec::default()
+            }, // a zero grant: nothing may run
         )
         .await
         .unwrap();
@@ -204,7 +207,14 @@ async fn a_session_with_no_credit_never_reaches_the_model() {
 async fn a_second_call_after_exhaustion_does_not_write_a_second_stop() {
     let (kernel, store) = build(FakeModel::text(["unused"]));
     let mut session = kernel
-        .open(&principal(), SessionId::new("s1"), SessionSpec::default())
+        .open(
+            &principal(),
+            SessionId::new("s1"),
+            SessionSpec {
+                credit_tokens: Some(0),
+                ..SessionSpec::default()
+            },
+        )
         .await
         .unwrap();
 
@@ -263,7 +273,14 @@ async fn a_tool_batch_is_gated_too() {
         .build()
         .unwrap();
     let mut session = kernel
-        .open(&principal(), SessionId::new("s1"), SessionSpec::default())
+        .open(
+            &principal(),
+            SessionId::new("s1"),
+            SessionSpec {
+                credit_tokens: Some(0),
+                ..SessionSpec::default()
+            },
+        )
         .await
         .unwrap();
 

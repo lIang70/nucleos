@@ -75,7 +75,7 @@ fn kernel(steps: u64) -> (Kernel, Arc<SqliteStore>) {
 
 fn spec() -> SessionSpec {
     SessionSpec {
-        credit_tokens: 10_000,
+        credit_tokens: Some(10_000),
         ..SessionSpec::default()
     }
 }

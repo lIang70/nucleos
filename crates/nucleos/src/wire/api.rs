@@ -28,14 +28,12 @@ pub struct StartRequest {
     /// What the session may consume.
     #[serde(default)]
     pub budget: Budget,
-    /// Tokens granted up front.
+    /// Tokens granted up front. `None` means no limit, which is the default.
     ///
-    /// **Zero is not "no ceiling".** `spend` closes the session on its first turn when the credit is
-    /// zero, so a request that omits this field opens a session that cannot answer once — and the stop
-    /// reason will be about tokens it never had. Set it. Making it required is a wire contract change
-    /// (every caller and every fixture would have to state a number), so it is documented here first.
-    #[serde(default)]
-    pub credit_tokens: u64,
+    /// Omitting this field opens a session with no token ceiling. Setting it to zero opens one that
+    /// stops on its first turn — a limit of zero, not "no limit".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credit_tokens: Option<u64>,
     /// Where commands run, and what they may touch.
     #[serde(default)]
     pub sandbox: SandboxSettings,

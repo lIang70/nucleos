@@ -93,7 +93,7 @@ async fn cancelling_stops_the_turn_and_leaves_the_session_open() {
             &principal(),
             SessionId::new("s1"),
             SessionSpec {
-                credit_tokens: 1_000_000,
+                credit_tokens: Some(1_000_000),
                 ..SessionSpec::default()
             },
         )
@@ -171,7 +171,7 @@ async fn cancelling_a_session_that_is_not_running_says_nothing_happened() {
             &principal(),
             SessionId::new("s1"),
             SessionSpec {
-                credit_tokens: 1_000,
+                credit_tokens: Some(1_000),
                 ..SessionSpec::default()
             },
         )

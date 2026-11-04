@@ -445,6 +445,8 @@ impl Kernel {
     fn debit(&self, session: &mut Session, usage: &Usage) {
         session.usage.add(usage);
         session.turn_usage.add(usage);
-        session.credit_tokens = session.credit_tokens.saturating_sub(usage.total_tokens());
+        if let Some(credit) = session.credit_tokens {
+            session.credit_tokens = Some(credit.saturating_sub(usage.total_tokens()));
+        }
     }
 }

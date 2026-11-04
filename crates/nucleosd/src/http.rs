@@ -1876,7 +1876,7 @@ async fn start_process(
             max_wall_millis: request.timeout_millis,
             ..Default::default()
         },
-        credit_tokens: 0,
+        credit_tokens: Some(0),
         ..SessionSpec::default()
     };
 

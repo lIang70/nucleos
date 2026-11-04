@@ -101,7 +101,7 @@ async fn write_a_turn_of_deltas() {
             &principal(),
             id.clone(),
             SessionSpec {
-                credit_tokens: 10_000_000,
+                credit_tokens: Some(10_000_000),
                 ..SessionSpec::default()
             },
         )
@@ -136,7 +136,7 @@ async fn read_the_partial_of_a_long_session() {
             &principal(),
             id.clone(),
             SessionSpec {
-                credit_tokens: 10_000_000,
+                credit_tokens: Some(10_000_000),
                 ..SessionSpec::default()
             },
         )
@@ -269,7 +269,7 @@ async fn a_turn_costs_the_same_at_the_start_and_the_end() {
             &principal(),
             id,
             SessionSpec {
-                credit_tokens: 100_000_000,
+                credit_tokens: Some(100_000_000),
                 ..SessionSpec::default()
             },
         )
@@ -342,7 +342,7 @@ async fn a_view_does_not_parse_the_conversation() {
             &principal(),
             id.clone(),
             SessionSpec {
-                credit_tokens: 10_000_000,
+                credit_tokens: Some(10_000_000),
                 ..SessionSpec::default()
             },
         )

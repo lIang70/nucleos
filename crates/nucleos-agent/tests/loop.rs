@@ -41,7 +41,7 @@ fn spec() -> SessionSpec {
             }),
             ..ConfigPatch::default()
         },
-        credit_tokens: 1_000_000,
+        credit_tokens: Some(1_000_000),
         ..SessionSpec::default()
     }
 }
@@ -302,7 +302,7 @@ async fn no_credit_means_no_model_call() -> Result<()> {
         &principal(),
         id.clone(),
         SessionSpec {
-            credit_tokens: 0,
+            credit_tokens: Some(0),
             ..spec()
         },
     )

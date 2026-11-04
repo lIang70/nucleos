@@ -631,6 +631,17 @@ pub enum EventKind {
         /// Which one.
         reason: StopReason,
     },
+    /// Credit was granted to a session.
+    ///
+    /// An event rather than a silent mutation: a replay that did not see this would think the session
+    /// ran out of money when it did not, and a session that was revived would look like one that never
+    /// stopped.
+    Credited {
+        /// How much was granted. `None` means the limit was removed.
+        amount: Option<u64>,
+        /// The balance after the grant. `None` means unlimited.
+        remaining: Option<u64>,
+    },
     /// Something failed.
     Failed {
         /// A stable code for programs.
@@ -780,6 +791,7 @@ impl EventKind {
             Self::AttemptFailed { .. } => "nucleos.v1.attempt_failed",
             Self::AwaitingHuman { .. } => "nucleos.v1.awaiting_human",
             Self::BudgetExhausted { .. } => "nucleos.v1.budget_exhausted",
+            Self::Credited { .. } => "nucleos.v1.credited",
             Self::Failed { .. } => "nucleos.v1.failed",
             Self::GenerationMigrated { .. } => "nucleos.v1.generation_migrated",
             Self::TurnStarted { .. } => "nucleos.v1.turn_started",
@@ -1021,11 +1033,11 @@ pub struct Snapshot {
     /// somebody is reconciling.
     #[serde(default)]
     pub ledger: Ledger,
-    /// Tokens granted and not yet spent.
+    /// Tokens granted and not yet spent. `None` means no limit.
     ///
     /// In the checkpoint because every syscall may be served by a different process: a budget
     /// that resets on reload is not a budget.
-    pub credit_tokens: u64,
+    pub credit_tokens: Option<u64>,
     /// Calls waiting on a human. A batch can have more than one.
     #[serde(default)]
     pub pending: Vec<PendingCall>,

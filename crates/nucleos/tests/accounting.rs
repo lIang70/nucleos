@@ -111,7 +111,7 @@ fn kernel(model: Arc<dyn Model>) -> (Kernel, Arc<SqliteStore>) {
 
 fn spec() -> SessionSpec {
     SessionSpec {
-        credit_tokens: 1_000_000,
+        credit_tokens: Some(1_000_000),
         ..SessionSpec::default()
     }
 }
@@ -186,7 +186,7 @@ async fn a_failed_step_counts_against_the_step_budget() {
             &principal(),
             SessionId::new("s1"),
             SessionSpec {
-                credit_tokens: 1_000_000,
+                credit_tokens: Some(1_000_000),
                 budget: Budget {
                     max_steps: Some(1),
                     ..Budget::default()

@@ -90,7 +90,7 @@ async fn answering_a_parked_call_removes_it() {
             &principal(),
             id.clone(),
             SessionSpec {
-                credit_tokens: 1_000,
+                credit_tokens: Some(1_000),
                 ..SessionSpec::default()
             },
         )
@@ -129,7 +129,7 @@ async fn a_retried_verdict_finds_nothing_to_answer() {
             &principal(),
             id.clone(),
             SessionSpec {
-                credit_tokens: 1_000,
+                credit_tokens: Some(1_000),
                 ..SessionSpec::default()
             },
         )

@@ -69,8 +69,8 @@ pub struct SessionSpec {
     pub workspace: Option<String>,
     /// Messages to seed the conversation with.
     pub initial: Vec<Message>,
-    /// Tokens granted up front.
-    pub credit_tokens: u64,
+    /// Tokens granted up front. `None` means no limit, which is the default.
+    pub credit_tokens: Option<u64>,
     /// What the session may consume. A limit, not content: raising it is `Credit`, not `configure`.
     pub budget: crate::contract::Budget,
     /// The mutable configuration to start from.

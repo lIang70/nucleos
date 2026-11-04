@@ -47,7 +47,7 @@ async fn a_step_budget_survives_the_reload_every_request_does() {
             &principal(),
             id.clone(),
             SessionSpec {
-                credit_tokens: 1_000_000,
+                credit_tokens: Some(1_000_000),
                 budget: Budget {
                     max_steps: Some(1),
                     ..Budget::default()
@@ -83,7 +83,7 @@ async fn wall_millis_are_charged_to_running_and_not_to_waiting() {
             &principal(),
             id.clone(),
             SessionSpec {
-                credit_tokens: 1_000_000,
+                credit_tokens: Some(1_000_000),
                 budget: Budget {
                     max_wall_millis: Some(5_000),
                     ..Budget::default()

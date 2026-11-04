@@ -102,7 +102,7 @@ async fn the_policy_is_session_state_and_survives_a_checkpoint() -> nucleos::Res
     let spec = SessionSpec {
         workspace: Some("/work".to_owned()),
         sandbox: SandboxPolicy::read_only(),
-        credit_tokens: 1_000,
+        credit_tokens: Some(1_000),
         ..SessionSpec::default()
     };
     kernel.open(&principal(), id.clone(), spec).await?;
@@ -175,7 +175,7 @@ async fn run_with(
             SessionSpec {
                 workspace: workspace.map(ToString::to_string),
                 sandbox: policy,
-                credit_tokens: 1_000,
+                credit_tokens: Some(1_000),
                 process: Some(nucleos::contract::ProcessSpec {
                     argv: argv.iter().map(|part| (*part).to_string()).collect(),
                     cwd: None,
@@ -625,7 +625,7 @@ async fn a_session_may_narrow_its_sandbox_and_may_not_widen_it() {
                     extra_writable_roots: vec!["/srv/cache".to_owned()],
                     network_access: true,
                 },
-                credit_tokens: 1_000,
+                credit_tokens: Some(1_000),
                 ..SessionSpec::default()
             },
         )
@@ -695,7 +695,7 @@ async fn narrowing_is_enforced_not_just_recorded() {
                     extra_writable_roots: Vec::new(),
                     network_access: false,
                 },
-                credit_tokens: 1_000,
+                credit_tokens: Some(1_000),
                 process: Some(nucleos::contract::ProcessSpec {
                     argv: vec!["/bin/sh".to_owned(), "-c".to_owned(), "true".to_owned()],
                     cwd: None,
@@ -728,7 +728,7 @@ async fn narrowing_is_enforced_not_just_recorded() {
             SessionSpec {
                 workspace: Some(directory.to_str().unwrap().to_owned()),
                 sandbox: session.sandbox().clone(),
-                credit_tokens: 1_000,
+                credit_tokens: Some(1_000),
                 process: Some(nucleos::contract::ProcessSpec {
                     argv: vec![
                         "/bin/sh".to_owned(),

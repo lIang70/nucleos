@@ -34,7 +34,7 @@ pub struct Session {
     pub(crate) steps: u64,
     pub(crate) ledger: Ledger,
     /// Tokens the caller has granted and not yet spent.
-    pub(crate) credit_tokens: u64,
+    pub(crate) credit_tokens: Option<u64>,
     pub(crate) budget: Budget,
     pub(crate) started_unix_millis: u64,
     /// Wall-clock time already charged to the budget, across previous requests.
@@ -121,7 +121,7 @@ pub(crate) struct New {
     pub(crate) tools: Arc<super::generation::ToolSet>,
     pub(crate) log: Arc<super::log::LogHead>,
     pub(crate) budget: Budget,
-    pub(crate) credit_tokens: u64,
+    pub(crate) credit_tokens: Option<u64>,
     pub(crate) now_unix_millis: u64,
 }
 
@@ -366,7 +366,7 @@ impl Session {
         {
             return Some(StopReason::Tokens);
         }
-        if self.credit_tokens == 0 {
+        if self.credit_tokens.is_some_and(|credit| credit == 0) {
             return Some(StopReason::Tokens);
         }
         if let Some(max) = self.budget.max_micros_usd
@@ -503,7 +503,7 @@ mod tests {
             tools: std::sync::Arc::new(crate::kernel::generation::ToolSet::default()),
             log: crate::kernel::log::LogHead::new(0),
             budget: Budget::default(),
-            credit_tokens: 100,
+            credit_tokens: Some(100),
             now_unix_millis: 0,
         })
     }

@@ -700,7 +700,7 @@ async fn a_subject_cannot_read_another_subjects_event_stream() {
             },
             nucleos::contract::SessionId::new("s1"),
             nucleos::kernel::SessionSpec {
-                credit_tokens: 1_000,
+                credit_tokens: Some(1_000),
                 ..Default::default()
             },
         )
@@ -2263,7 +2263,7 @@ async fn a_page_is_not_shortened_after_the_store_chose_it() {
     );
 
     let spec = || nucleos::kernel::SessionSpec {
-        credit_tokens: 1_000,
+        credit_tokens: Some(1_000),
         ..Default::default()
     };
     kernel

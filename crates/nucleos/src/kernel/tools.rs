@@ -339,7 +339,9 @@ impl Kernel {
         // free. The ledger's rule is the same one model usage follows.
         if let Some(usage) = &output.usage {
             session.usage.add(usage);
-            session.credit_tokens = session.credit_tokens.saturating_sub(usage.total_tokens());
+            if let Some(credit) = session.credit_tokens {
+                session.credit_tokens = Some(credit.saturating_sub(usage.total_tokens()));
+            }
         }
         let result = crate::contract::ToolResult {
             call_id: call.id.clone(),

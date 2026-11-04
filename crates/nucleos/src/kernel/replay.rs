@@ -84,7 +84,9 @@ pub(crate) fn fold(session: &mut Session, event: &Event) -> Applied {
             // The money was spent whether or not the turn finished. Rebuilding the session without
             // it would hand back credit that is already gone.
             session.usage.add(usage);
-            session.credit_tokens = session.credit_tokens.saturating_sub(usage.total_tokens());
+            if let Some(credit) = session.credit_tokens {
+                session.credit_tokens = Some(credit.saturating_sub(usage.total_tokens()));
+            }
             session.ledger.total.add(usage);
 
             // A stream reports usage more than once for one attempt, so the ledger is keyed by the
@@ -127,7 +129,9 @@ pub(crate) fn fold(session: &mut Session, event: &Event) -> Applied {
         EventKind::ToolFinished { result, usage, .. } => {
             if let Some(usage) = usage {
                 session.usage.add(usage);
-                session.credit_tokens = session.credit_tokens.saturating_sub(usage.total_tokens());
+                if let Some(credit) = session.credit_tokens {
+                    session.credit_tokens = Some(credit.saturating_sub(usage.total_tokens()));
+                }
             }
             session.messages.push(Message {
                 role: Role::Tool,
@@ -151,6 +155,25 @@ pub(crate) fn fold(session: &mut Session, event: &Event) -> Applied {
         }
         EventKind::BudgetExhausted { reason } => {
             session.stop = Some(*reason);
+            Applied::State
+        }
+        EventKind::Credited { remaining, .. } => {
+            // A grant is a state change: the balance is what the event says it is, and a session that
+            // stopped on a budget is open again. Other stop reasons are not revived — a completed or
+            // cancelled session is done, not out of money.
+            session.credit_tokens = *remaining;
+            if session.stop.is_some_and(|stop| {
+                matches!(
+                    stop,
+                    crate::contract::StopReason::Tokens
+                        | crate::contract::StopReason::Cost
+                        | crate::contract::StopReason::Steps
+                        | crate::contract::StopReason::Wall
+                )
+            }) {
+                session.state = crate::contract::SessionState::Open;
+                session.stop = None;
+            }
             Applied::State
         }
         EventKind::TurnFailed { .. } => Applied::Narrative,

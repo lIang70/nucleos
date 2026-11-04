@@ -90,7 +90,7 @@ fn build() -> (Kernel, Arc<SqliteStore>) {
 
 fn spec() -> SessionSpec {
     SessionSpec {
-        credit_tokens: 1_000_000,
+        credit_tokens: Some(1_000_000),
         config: ConfigPatch {
             // Every tool visible, so the tests are about generations and not about discovery.
             tool_policy: Some(nucleos::contract::ToolPolicy {
@@ -343,7 +343,7 @@ async fn a_restored_session_reports_the_generation_it_is_actually_holding() {
             &principal(),
             id.clone(),
             SessionSpec {
-                credit_tokens: 1_000,
+                credit_tokens: Some(1_000),
                 ..SessionSpec::default()
             },
         )

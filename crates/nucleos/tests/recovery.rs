@@ -50,7 +50,7 @@ fn kernel(store: &Arc<SqliteStore>) -> Kernel {
 
 fn spec() -> SessionSpec {
     SessionSpec {
-        credit_tokens: 10_000,
+        credit_tokens: Some(10_000),
         ..SessionSpec::default()
     }
 }
@@ -448,7 +448,7 @@ async fn a_turn_that_ended_in_writing_is_not_re_load_ed_as_abandoned() {
             &principal(),
             id.clone(),
             SessionSpec {
-                credit_tokens: 1_000,
+                credit_tokens: Some(1_000),
                 ..SessionSpec::default()
             },
         )

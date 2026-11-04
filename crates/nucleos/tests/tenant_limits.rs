@@ -62,7 +62,7 @@ fn kernel() -> (Kernel, Arc<SqliteStore>) {
 
 fn spec() -> SessionSpec {
     SessionSpec {
-        credit_tokens: 1_000_000,
+        credit_tokens: Some(1_000_000),
         config: ConfigPatch {
             // Everything visible, so the test is about the tenant limit rather than about exposure.
             tool_policy: Some(ToolPolicy {

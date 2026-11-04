@@ -554,7 +554,7 @@ async fn a_resumed_process_session_can_still_answer_what_it_did() -> nucleos::Re
                 id.clone(),
                 SessionSpec {
                     sandbox: SandboxPolicy::DangerFullAccess,
-                    credit_tokens: 1_000,
+                    credit_tokens: Some(1_000),
                     process: Some(ProcessSpec {
                         argv: vec![
                             "/bin/sh".to_owned(),
@@ -612,7 +612,7 @@ async fn a_process_with_no_recorded_exit_says_so_instead_of_inventing_one() -> n
             SessionSpec {
                 kind: SessionKind::Process,
                 sandbox: SandboxPolicy::DangerFullAccess,
-                credit_tokens: 1_000,
+                credit_tokens: Some(1_000),
                 process: Some(ProcessSpec {
                     argv: vec!["/usr/bin/sleep".to_owned(), "10".to_owned()],
                     cwd: None,

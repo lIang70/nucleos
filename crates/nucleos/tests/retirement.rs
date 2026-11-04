@@ -61,7 +61,7 @@ fn kernel() -> Kernel {
 /// Enough credit that a test about generations never fails about budgets.
 fn spec() -> SessionSpec {
     SessionSpec {
-        credit_tokens: 1_000_000,
+        credit_tokens: Some(1_000_000),
         ..SessionSpec::default()
     }
 }

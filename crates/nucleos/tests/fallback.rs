@@ -95,7 +95,7 @@ async fn a_prompt_that_cannot_fit_the_first_model_reaches_the_second() {
             &principal(),
             SessionId::new("s1"),
             SessionSpec {
-                credit_tokens: 1_000_000,
+                credit_tokens: Some(1_000_000),
                 ..SessionSpec::default()
             },
         )

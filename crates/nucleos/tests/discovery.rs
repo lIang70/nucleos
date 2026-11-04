@@ -82,7 +82,7 @@ fn kernel(count: usize) -> (Kernel, Arc<SqliteStore>) {
 /// credit would be testing the gate instead of discovery.
 fn funded() -> SessionSpec {
     SessionSpec {
-        credit_tokens: 1_000_000,
+        credit_tokens: Some(1_000_000),
         ..SessionSpec::default()
     }
 }
