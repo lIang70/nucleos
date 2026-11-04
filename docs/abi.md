@@ -20,7 +20,7 @@ make every session call carry node-wide authority.
 | Agent loop         | `POST /v1/agents`                                                                                                                                                                                                                                                                                                | `StartResponse` — runs the reference loop to completion                                                                 |
 | Sessions           | `POST /v1/sessions`, `GET /v1/sessions`, `GET /v1/sessions/{id}`                                                                                                                                                                                                                                                 | `StartResponse` — opens a session and drives nothing; `SessionListResponse`; `SessionView`                              |
 | Turn               | `POST /v1/sessions/{id}/inference`, `POST /v1/sessions/{id}/tools`, `POST /v1/sessions/{id}/state`                                                                                                                                                                                                               | `InferenceResponse` (JSON or SSE), `ToolBatchResponse`, `204`                                                           |
-| Session control    | `POST /v1/sessions/{id}/cancel`, `POST /v1/sessions/{id}/configure`, `POST /v1/sessions/{id}/verdict`, `POST /v1/sessions/{id}/close`, `DELETE /v1/sessions/{id}`                                                                                                                                                | `CancelResponse`, `ConfigureResponse`, `StartResponse`, `DeletedResponse`                                               |
+| Session control    | `POST /v1/sessions/{id}/cancel`, `POST /v1/sessions/{id}/credit`, `POST /v1/sessions/{id}/configure`, `POST /v1/sessions/{id}/verdict`, `POST /v1/sessions/{id}/close`, `DELETE /v1/sessions/{id}`, `POST /v1/sessions/prune`                                                                                                                                                | `CancelResponse`, `ConfigureResponse`, `StartResponse`, `DeletedResponse`                                               |
 | Events             | `GET /v1/sessions/{id}/events?from_seq=`                                                                                                                                                                                                                                                                         | `text/event-stream` of `Event`                                                                                          |
 | Processes          | `POST /v1/processes`, `GET /v1/processes`, `POST /v1/sessions/{id}/stdin`, `POST /v1/sessions/{id}/signal`, `POST /v1/sessions/{id}/wait`                                                                                                                                                                        | `ProcessStartResponse`, `ProcessListResponse`, `204`, `ExecOutput`                                                      |
 | Models             | `GET /v1/models`, `POST /v1/models`, `DELETE /v1/models/{name}`                                                                                                                                                                                                                                                  | `ModelListResponse`, `ModelView`                                                                                        |
@@ -361,6 +361,23 @@ rate-limit surface: the caller decides how much to grant at `Start`.
 
 `credit_tokens: 0` is not "no ceiling": it closes the session on its first turn. Omitting the field
 means no limit.
+
+## 5.1 Retention
+
+`POST /v1/sessions/prune` removes **closed** sessions whose last activity is before a deadline.
+`dry_run` **defaults to true**: a request that does not say otherwise gets a report and deletes
+nothing, with up to fifty of the matching sessions named so the operator can check first. Exactly one
+of `before_unix_millis` and `older_than_millis` is required; `limit` bounds one pass (default and cap
+1,000); `tenant` narrows it to one tenant, absent means all.
+
+An open session is never pruned, however old it is — a parked session is waiting on a human, not
+garbage. A session whose last activity is unknown is kept: retention deletes what it can date, never
+what it cannot. Whole sessions only, so every survivor's `seq` stays dense and its resume cursor keeps
+working.
+
+The deployment document's `retention` field configures the same thing automatically:
+`closed_session_ttl_millis` and `sweep_interval_millis`. Both absent means keep everything and never
+sweep, which is the default. An interval with no TTL is refused.
 
 ## 6. Generations and reload
 

@@ -1244,6 +1244,7 @@ async fn config(
         sources: document.sources.clone(),
         tenants: document.tenants.clone(),
         tenant_policies: tenants,
+        retention: document.retention.clone(),
         schema_version: system
             .schema_version()
             .await

@@ -667,6 +667,14 @@ compare-and-swap costs a lookup instead of a parse. What is left of the body is 
 exactly what `GET /v1/sessions/{id}` needs, so the view reads one small row and never touches the
 conversation it does not return.
 
+Retention is the other half of "the log is truth": it is kept for as long as it is useful, not
+forever. `POST /v1/sessions/prune` (and the optional sweeper) removes **closed** sessions whose last
+activity is older than a deadline — whole sessions, never a span of a log, so every survivor's `seq`
+stays dense and its resume cursor keeps working. An open session is never pruned, and a session whose
+last activity is unknown is kept. The listing table carries `last_activity_unix_millis` (written by
+`append`) and `closed` (written by `write_snapshot`), so the pass is an indexed query rather than a
+read of every snapshot. The default is keep everything.
+
 That single choice buys four things: **recovery** after a crash, **replay** for tests and
 evaluation (recorded model deltas are fed back, no new calls), **audit** (a `denied` event
 is evidence), and **resumption** (`Run(from_seq)` needs no extra machinery).

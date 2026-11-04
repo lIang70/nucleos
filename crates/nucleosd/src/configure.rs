@@ -45,6 +45,10 @@ pub const SEALED_KEY_PREFIX: &str = "config/keys/model/";
 /// Where model definitions live in the system store.
 pub const MODELS_KEY: &str = "config/models";
 
+/// Where the retention policy lives: one small document, read by the sweeper on every pass so a
+/// configuration change needs no restart and no extra wiring.
+pub const RETENTION_KEY: &str = "config/retention";
+
 /// Replace the system policy.
 pub async fn put_policy(
     State(app): State<Arc<App>>,
@@ -814,7 +818,26 @@ pub async fn document(system: &SystemStore) -> Result<nucleos::wire::api::Deploy
             })
             .collect(),
         tenants,
+        retention: configured_retention(system).await?,
     })
+}
+
+/// The retention policy in force, if one is configured.
+///
+/// Read from the store on every call rather than cached: the sweeper asks once per pass, and a policy
+/// that only changes on restart is a policy an operator cannot tighten during an incident.
+pub async fn configured_retention(
+    system: &SystemStore,
+) -> Result<Option<nucleos::wire::api::Retention>> {
+    system
+        .get(RETENTION_KEY)
+        .await?
+        .map(|raw| {
+            serde_json::from_str(&raw).map_err(|error| {
+                Error::internal(format!("stored retention policy is unreadable: {error}"))
+            })
+        })
+        .transpose()
 }
 
 /// What an apply did.
@@ -906,11 +929,33 @@ pub async fn apply(
             )));
         }
     }
+    if let Some(retention) = &document.retention {
+        // An interval with no TTL is a sweeper with nothing to do, and a zero of either is a mistake
+        // that reads as "delete everything, constantly" rather than as a policy.
+        if retention.sweep_interval_millis.is_some()
+            && retention.closed_session_ttl_millis.is_none()
+        {
+            return Err(Error::invalid(
+                "retention: `sweep_interval_millis` needs `closed_session_ttl_millis`",
+            ));
+        }
+        if retention.closed_session_ttl_millis == Some(0)
+            || retention.sweep_interval_millis == Some(0)
+        {
+            return Err(Error::invalid(
+                "retention: a TTL or an interval of zero is not a policy; omit the field instead",
+            ));
+        }
+    }
     let mut source_names = std::collections::BTreeSet::new();
     for source in &document.sources {
-        if source.name.trim().is_empty() || source.command.trim().is_empty() {
+        // A source names a command *or* a url. Requiring a command unconditionally would make every
+        // HTTP source unappliable, which is the same mistake the per-endpoint route did not make.
+        if source.name.trim().is_empty()
+            || (source.command.trim().is_empty() && source.url.is_none())
+        {
             return Err(Error::invalid(format!(
-                "source {:?} needs a name and a command",
+                "source {:?} needs a name and either a command or a url",
                 source.name
             )));
         }
@@ -968,6 +1013,13 @@ pub async fn apply(
                 })?,
             ));
         }
+    }
+    if let Some(retention) = &document.retention {
+        entries.push((
+            RETENTION_KEY.to_owned(),
+            serde_json::to_string(retention)
+                .map_err(|error| Error::internal(format!("retention is not storable: {error}")))?,
+        ));
     }
     entries.push(("config/revision".to_owned(), revision.to_string()));
     system.replace(entries).await?;

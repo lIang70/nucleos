@@ -467,6 +467,17 @@
               "null"
             ]
           },
+          "retention": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Retention"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The retention policy in force, if one is configured."
+          },
           "revision": {
             "default": 0,
             "description": "How many times a configuration document has been applied.",
@@ -686,7 +697,7 @@
         "type": "object"
       },
       "Deployment": {
-        "description": "The whole configuration, as one document.\n\nThe point is that it is a *document*: a deployment can be exported, edited, diffed, committed to\nwhatever a team uses, and applied back. Before this, configuration was five write endpoints over a\nkey-value table, which meant the only way to answer \"what was it before\" was `sqlite3 system.db`.\n\nWhat it deliberately does not contain: the sealed model credentials and the token table. Ciphertext\nsealed with a key that lives outside the data directory is not exportable in any useful sense, and a\ntoken is issued once and shown once. Those are recovered by other means, and the document says so by\ncarrying `has_sealed_key` rather than the key.",
+        "description": "The whole configuration, as one document.\nThe whole configuration, as one document.",
         "properties": {
           "document_version": {
             "description": "The shape of this document, so a build can refuse one it does not understand.",
@@ -708,6 +719,17 @@
               "string",
               "null"
             ]
+          },
+          "retention": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Retention"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How long closed sessions are kept, and whether the daemon sweeps for them itself. Absent means\nkeep everything, which is the default."
           },
           "revision": {
             "default": 0,
@@ -2917,6 +2939,30 @@
           "generation",
           "tools"
         ],
+        "type": "object"
+      },
+      "Retention": {
+        "description": "The whole configuration, as one document.\n\nThe point is that it is a *document*: a deployment can be exported, edited, diffed, committed to\nwhatever a team uses, and applied back. Before this, configuration was five write endpoints over a\nkey-value table, which meant the only way to answer \"what was it before\" was `sqlite3 system.db`.\n\nWhat it deliberately does not contain: the sealed model credentials and the token table. Ciphertext\nsealed with a key that lives outside the data directory is not exportable in any useful sense, and a\ntoken is issued once and shown once. Those are recovered by other means, and the document says so by\ncarrying `has_sealed_key` rather than the key.\nHow long closed sessions are kept, and whether the daemon sweeps for them itself.",
+        "properties": {
+          "closed_session_ttl_millis": {
+            "description": "How long a closed session may be idle before it is removed, in milliseconds. Absent means\nforever.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "sweep_interval_millis": {
+            "description": "How often the daemon sweeps for old closed sessions. Absent means no automatic sweeps: the\nmanual `POST /v1/sessions/prune` route still works.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
         "type": "object"
       },
       "RetireResponse": {

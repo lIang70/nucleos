@@ -2451,3 +2451,32 @@ async fn prune_reports_first_then_removes_only_closed_sessions() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(view["state"], "open");
 }
+
+/// Retention is part of the configuration document: it exports, it applies, and it is validated.
+#[tokio::test]
+async fn retention_round_trips_through_the_configuration_document() {
+    let (app, key, key_id) = governable().await;
+    let document = r#"{
+        "document_version": 1,
+        "policy": "{\"default\":\"allow\",\"rules\":[]}",
+        "models": [], "sources": [], "tenants": {},
+        "retention": {"closed_session_ttl_millis": 3600000, "sweep_interval_millis": 60000}
+    }"#;
+    let (status, applied) = signed(&app, &key, &key_id, "PUT", "/v1/config", document).await;
+    assert_eq!(status, StatusCode::OK, "{applied}");
+
+    let (status, config) = signed(&app, &key, &key_id, "GET", "/v1/config", "").await;
+    assert_eq!(status, StatusCode::OK, "{config}");
+    assert_eq!(config["retention"]["closed_session_ttl_millis"], 3_600_000);
+    assert_eq!(config["retention"]["sweep_interval_millis"], 60_000);
+
+    // An interval with no TTL is a sweeper with nothing to do: refused, not stored.
+    let invalid = r#"{
+        "document_version": 1,
+        "policy": "{\"default\":\"allow\",\"rules\":[]}",
+        "models": [], "sources": [], "tenants": {},
+        "retention": {"sweep_interval_millis": 60000}
+    }"#;
+    let (status, error) = signed(&app, &key, &key_id, "PUT", "/v1/config", invalid).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+}

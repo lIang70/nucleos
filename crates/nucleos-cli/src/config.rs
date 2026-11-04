@@ -204,6 +204,7 @@ fn document_from(raw: &str) -> Result<nucleos::wire::api::Deployment> {
         models: answer.models,
         sources: answer.sources,
         tenants: answer.tenants,
+        retention: answer.retention,
     })
 }
 

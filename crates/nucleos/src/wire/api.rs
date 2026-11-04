@@ -576,6 +576,21 @@ pub struct ChangeListResponse {
 /// sealed with a key that lives outside the data directory is not exportable in any useful sense, and a
 /// token is issued once and shown once. Those are recovered by other means, and the document says so by
 /// carrying `has_sealed_key` rather than the key.
+/// How long closed sessions are kept, and whether the daemon sweeps for them itself.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct Retention {
+    /// How long a closed session may be idle before it is removed, in milliseconds. Absent means
+    /// forever.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_session_ttl_millis: Option<u64>,
+    /// How often the daemon sweeps for old closed sessions. Absent means no automatic sweeps: the
+    /// manual `POST /v1/sessions/prune` route still works.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sweep_interval_millis: Option<u64>,
+}
+
+/// The whole configuration, as one document.
+/// The whole configuration, as one document.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct Deployment {
     /// The shape of this document, so a build can refuse one it does not understand.
@@ -595,6 +610,10 @@ pub struct Deployment {
     /// Tenants that wrote something of their own.
     #[serde(default)]
     pub tenants: std::collections::BTreeMap<String, TenantDocument>,
+    /// How long closed sessions are kept, and whether the daemon sweeps for them itself. Absent means
+    /// keep everything, which is the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention: Option<Retention>,
 }
 
 /// One tenant's part of the deployment document.
@@ -646,6 +665,9 @@ pub struct ConfigResponse {
     /// Tenants that wrote a policy or a ceiling of their own.
     #[serde(default)]
     pub tenants: std::collections::BTreeMap<String, TenantDocument>,
+    /// The retention policy in force, if one is configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention: Option<Retention>,
     /// How many bytes of body the signature covered.
     ///
     /// Zero for every read, which is the point: it shows the verifier ran over the request that was

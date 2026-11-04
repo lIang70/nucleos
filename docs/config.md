@@ -533,6 +533,23 @@ that survives until the next restart.
 same administrator its own next change, one line after being allowed the previous one — which is what
 "read per call" has to mean if tightening during an incident is going to work at all.
 
+### 8.2 Retention is configuration too
+
+The deployment document carries an optional `retention` object:
+
+```jsonc
+"retention": {
+  "closed_session_ttl_millis": 2592000000,  // 30 days idle; absent = keep forever
+  "sweep_interval_millis": 3600000          // sweep hourly; absent = no automatic sweeps
+}
+```
+
+Both absent is the default: keep everything, and only `POST /v1/sessions/prune` removes anything. An
+interval with no TTL is refused at apply time — a sweeper with nothing to do is a configuration
+mistake, not a policy. The sweeper reads this document on every pass, so tightening retention takes
+effect on the next pass without a restart, and the change is signed and in the history like every
+other one.
+
 ## 9. What is *not* signable or changeable
 
 - **store path, socket, log format** — the identity of the process (§3.1).
