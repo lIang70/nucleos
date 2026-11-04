@@ -550,7 +550,7 @@ A stream that can be wrong about order is a stream nobody can build a UI on, so:
 | Stateless model invocation     | This is an agent OS, not a gateway. A host that wants a raw model call links the library; see [`architecture.md`](architecture.md) §7.                    |
 | Embeddings                     | A tool: an embedding model belongs with the index and the ranking that use it.                                                                            |
 | Speech to text, text to speech | A tool. Voice output also needs an artifact store the kernel does not have.                                                                               |
-| Raising the `Budget` ceilings  | Those are fixed at `Start` and carried in the checkpoint; a grant moves the balance, not the ceiling. |
+| Raising the `Budget` ceilings  | Those are fixed at `Start` and carried in the checkpoint; a grant moves the balance, not the ceiling.                                                     |
 
 An endpoint that exists and returns 501 is a contract nobody can rely on, so these are absent
 rather than declared. Session cancel and list, and source registration and reload, are served —
