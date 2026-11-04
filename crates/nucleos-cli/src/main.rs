@@ -49,6 +49,7 @@ usage: nucleos <command> [options]
   tokens remove <id>   revoke one, effective on the next request
   sources list         the MCP servers this deployment runs
   sources add          run one            (--name --command [--arg …] [--env K=V …])
+                      or reach one       (--name --url https://host/mcp)
   sources remove <name> stop one, publishing a generation without its tools
   admin recover        enrol a new administrator key using the recovery password
   seal rotate          re-seal stored credentials under a new key (stop the daemon first)
@@ -402,6 +403,7 @@ fn sources(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Syn
             "--key-file" => overrides.key_file = Some(PathBuf::from(value("--key-file")?)),
             "--name" => request.name = value("--name")?,
             "--command" => request.command = value("--command")?,
+            "--url" => request.url = Some(value("--url")?),
             "--arg" => request.args.push(value("--arg")?),
             "--env" => {
                 let pair = value("--env")?;

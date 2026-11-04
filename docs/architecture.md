@@ -431,11 +431,10 @@ Compatibility is decided by schema structure, not by a version number somebody t
 own `tool_search` is excluded from the comparison: it is rebuilt per generation and is never the
 reason a migration is refused.
 
-One term is argued for and **not yet carried**: a derived isolation descriptor, so that a tool
-keeping its name and schema but moving from a sandboxed child to in-process execution reads as
-incompatible. `ToolSpec` and `Generation` hold nothing of the kind today, so the comparison is names
-and schemas; adding the field and the check is additive and is the one place this function is
-weaker than the paragraph above would like.
+The third term is the derived isolation descriptor, carried on `ToolSpec`: a tool keeping its name
+and schema but moving from a spawned child to an HTTP endpoint reads as incompatible. `None` is not
+a wildcard — a generation that knows must not migrate onto one that does not say — so an adapter
+that has not been taught to derive one stays pinned rather than quietly downgrading.
 
 **What is built.** `Kernel::publish(tools)` adds a generation and pins new sessions to it; a session
 resolves tools through the generation it is pinned to, not the newest one, which is the whole point:

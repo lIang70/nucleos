@@ -33,11 +33,17 @@ use std::sync::Arc;
 pub const SOURCES_KEY: &str = "config/sources";
 
 /// One MCP server, as the store keeps it.
+///
+/// A source is either a command this daemon runs or a URL somebody else runs, and which one is a
+/// field rather than a guess: a stored row that names neither is refused at load, and a row that
+/// names both says which is the truth. `url` wins when both are present, because that is the field a
+/// newer row adds.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SourceSpec {
     /// The name a listing and a removal use.
     pub name: String,
-    /// The command that starts it.
+    /// The command that starts it. Empty for an HTTP source.
+    #[serde(default)]
     pub command: String,
     /// Its arguments.
     #[serde(default)]
@@ -45,6 +51,39 @@ pub struct SourceSpec {
     /// Extra environment.
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// The endpoint, for a source this daemon does not spawn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+impl SourceSpec {
+    /// The transport this row describes, or why it describes none.
+    ///
+    /// Public because it is the rule, not the plumbing: a stored row that names no way to reach its
+    /// server is a deployment error, and the test that says so should not have to go through a
+    /// connection attempt to find out.
+    pub fn transport(&self) -> Result<nucleos_mcp::Transport> {
+        if let Some(url) = &self.url {
+            if !url.starts_with("http://") && !url.starts_with("https://") {
+                return Err(Error::invalid(format!(
+                    "source {:?}: a url must be http or https, not {url:?}",
+                    self.name
+                )));
+            }
+            return Ok(nucleos_mcp::Transport::http(url.clone()));
+        }
+        if self.command.trim().is_empty() {
+            return Err(Error::invalid(format!(
+                "source {:?} names neither a command nor a url",
+                self.name
+            )));
+        }
+        Ok(nucleos_mcp::Transport::Stdio {
+            command: self.command.clone(),
+            args: self.args.clone(),
+            env: self.env.clone(),
+        })
+    }
 }
 
 /// A source that is connected right now.
@@ -78,6 +117,7 @@ impl SourceSet {
                 name: entry.spec.name.clone(),
                 command: entry.spec.command.clone(),
                 args: entry.spec.args.clone(),
+                url: entry.spec.url.clone(),
                 tools: entry.tools.iter().map(|tool| tool.spec().name).collect(),
             })
             .collect()
@@ -127,6 +167,7 @@ impl SourceSet {
             name: entry.spec.name.clone(),
             command: entry.spec.command.clone(),
             args: entry.spec.args.clone(),
+            url: entry.spec.url.clone(),
             tools: entry.tools.iter().map(|tool| tool.spec().name).collect(),
         };
         self.entries
@@ -194,9 +235,11 @@ impl SourceSet {
 
 /// Start one server and take what it advertises.
 async fn connect(spec: &SourceSpec) -> Result<Connected> {
-    let mut source =
-        nucleos_mcp::McpSource::new(&spec.name, &spec.command).with_args(spec.args.iter().cloned());
-    source.env = spec.env.clone();
+    let source = nucleos_mcp::McpSource {
+        name: spec.name.clone(),
+        transport: spec.transport()?,
+        call_timeout: Some(std::time::Duration::from_secs(60)),
+    };
     let tools: Vec<Arc<dyn Tool>> = source
         .connect()
         .await?
@@ -238,6 +281,7 @@ pub async fn post_source(
         command: request.command,
         args: request.args,
         env: request.env,
+        url: request.url,
     };
     let view = app
         .sources()

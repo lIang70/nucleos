@@ -23,4 +23,4 @@ pub use rmcp;
 pub mod content;
 pub mod source;
 
-pub use source::{McpSource, McpTool};
+pub use source::{McpSource, McpTool, Transport};

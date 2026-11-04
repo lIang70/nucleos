@@ -809,6 +809,7 @@ pub async fn document(system: &SystemStore) -> Result<nucleos::wire::api::Deploy
                 name: spec.name,
                 command: spec.command,
                 args: spec.args,
+                url: spec.url,
                 tools: Vec::new(),
             })
             .collect(),
@@ -947,6 +948,7 @@ pub async fn apply(
             command: source.command.clone(),
             args: source.args.clone(),
             env: std::collections::BTreeMap::new(),
+            url: source.url.clone(),
         })
         .collect();
     entries.push((

@@ -101,9 +101,7 @@ fn dying_fixture(marker: &str) -> McpSource {
     let mut source = McpSource::new("echo", "python3")
         .with_args(["-u", path.to_str().unwrap()])
         .with_timeout(Duration::from_secs(20));
-    source
-        .env
-        .insert("ECHO_DIE_ON".to_owned(), marker.to_owned());
+    source = source.with_env([("ECHO_DIE_ON", marker)]);
     source
 }
 
@@ -166,12 +164,10 @@ async fn a_source_that_comes_back_changed_is_refused_rather_than_adopted() {
             ),
         ])
         .with_timeout(Duration::from_secs(20));
-    source
-        .env
-        .insert("ECHO_DIE_ON".to_owned(), "dying".to_owned());
-    source
-        .env
-        .insert("ECHO_SPAWN_LOG".to_owned(), log.display().to_string());
+    source = source.with_env([
+        ("ECHO_DIE_ON", "dying"),
+        ("ECHO_SPAWN_LOG", &log.display().to_string()),
+    ]);
 
     let tools = source.connect().await.unwrap();
     assert_eq!(tools.len(), 1);
@@ -214,12 +210,10 @@ async fn a_source_that_cannot_restart_is_not_spawned_once_per_call() {
             ),
         ])
         .with_timeout(Duration::from_secs(20));
-    source
-        .env
-        .insert("ECHO_DIE_ON".to_owned(), "dying".to_owned());
-    source
-        .env
-        .insert("ECHO_SPAWN_LOG".to_owned(), log.display().to_string());
+    source = source.with_env([
+        ("ECHO_DIE_ON", "dying"),
+        ("ECHO_SPAWN_LOG", &log.display().to_string()),
+    ]);
 
     let tools = source.connect().await.unwrap();
     let tool = &tools[0];
@@ -342,4 +336,81 @@ fn a_result_with_no_content_says_so_rather_than_being_empty() {
     assert!(!is_error);
     assert!(!content.is_empty());
     assert!(content.text().contains("no content"));
+}
+
+/// The transport decides the isolation, because it is a fact about the connection.
+///
+/// The two halves have to agree: `source_descriptors` is what the daemon records for a stored row,
+/// and this is what the kernel is told. A mismatch would let a source move between a child process and
+/// an HTTP endpoint without the generation noticing, which is the downgrade the isolation term exists
+/// to catch.
+#[test]
+fn a_transport_reports_its_own_isolation() {
+    use nucleos_mcp::Transport;
+
+    assert_eq!(
+        Transport::stdio("python3").isolation(),
+        nucleos::contract::Isolation::Process
+    );
+    assert_eq!(
+        Transport::http("https://example.test/mcp").isolation(),
+        nucleos::contract::Isolation::Http
+    );
+}
+
+/// The shape the daemon stores decides which transport is used, and an ambiguous row is refused
+/// rather than guessed at.
+#[test]
+fn a_stored_source_names_exactly_one_way_to_reach_it() {
+    use nucleos_mcp::Transport;
+    use nucleosd::sources::SourceSpec;
+
+    let stdio = SourceSpec {
+        name: "local".to_owned(),
+        command: "python3".to_owned(),
+        args: vec!["server.py".to_owned()],
+        env: Default::default(),
+        url: None,
+    };
+    assert!(matches!(
+        stdio.transport().unwrap(),
+        Transport::Stdio { command, .. } if command == "python3"
+    ));
+
+    let http = SourceSpec {
+        name: "remote".to_owned(),
+        url: Some("https://example.test/mcp".to_owned()),
+        ..SourceSpec::default()
+    };
+    assert!(matches!(
+        http.transport().unwrap(),
+        Transport::Http { url, .. } if url == "https://example.test/mcp"
+    ));
+
+    // Neither: a row that says nothing about how to reach it is a row that fails at load, naming
+    // the source, rather than a spawn of an empty command later.
+    let neither = SourceSpec::default();
+    let error = neither.transport().unwrap_err();
+    assert!(
+        error.reason().contains("neither a command nor a url"),
+        "{error}"
+    );
+
+    // Both: `url` wins, because it is the field a newer row adds and the two cannot both be true.
+    let both = SourceSpec {
+        name: "both".to_owned(),
+        command: "python3".to_owned(),
+        url: Some("https://example.test/mcp".to_owned()),
+        ..SourceSpec::default()
+    };
+    assert!(matches!(both.transport().unwrap(), Transport::Http { .. }));
+
+    // A url that is not http(s) is refused: a source reached by a scheme this build cannot speak is
+    // a connection that fails with a parse error somewhere less useful.
+    let odd = SourceSpec {
+        name: "odd".to_owned(),
+        url: Some("ftp://example.test/mcp".to_owned()),
+        ..SourceSpec::default()
+    };
+    assert!(odd.transport().is_err());
 }

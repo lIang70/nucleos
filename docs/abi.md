@@ -363,11 +363,17 @@ Tool sources are declared, never inlined. `POST /v1/sources` takes:
 ```text
 SourceRequest {
   name:     string
-  command:  string        // the MCP server to spawn
+  command:  string        // the MCP server to spawn (stdio)
   args:     repeated string
   env:      map<string,string>
+  url:      string?       // an HTTP endpoint instead of a command
 }
 ```
+
+`url` wins when both are present: it is the field a newer row adds, and the two cannot both be true.
+A row that names neither is refused at load with the source's name. The transport decides the
+**isolation** recorded for the tools it advertises: `process` for a spawned child, `http` for an
+endpoint.
 
 The daemon connects over stdio, calls MCP `tools/list`, stores the command, and **publishes a
 generation**. Removing a source publishes another. There is no pending set and no transactional
@@ -375,10 +381,11 @@ swap between several adds: each add or remove is one generation, which is why a 
 fails the request (the caller is waiting) while a source that will not start at boot is a warning
 and a missing tool (`architecture.md` §8).
 
-Three things a source does **not** carry today, stated rather than implied: an HTTP transport
-(stdio only), a per-source tool allow-list (the ceiling is per-session `config.tools`), and the
-derived isolation descriptor (`SourceView` reports the command and the tools it currently
-advertises). A source asserting its own isolation was removed earlier for being an unchecked claim.
+Two things a source does **not** carry today, stated rather than implied: a per-source tool
+allow-list (the ceiling is per-session `config.tools`), and the derived isolation descriptor on the
+wire (`SourceView` reports the command or the url and the tools it currently advertises; the
+descriptor itself is on `ToolSpec`). A source asserting its own isolation was removed earlier for
+being an unchecked claim.
 
 `Reload` reconnects and publishes what the servers advertise now. Two properties matter:
 
@@ -402,11 +409,11 @@ allowed). Anything else pins the session to its generation until it ends.
 The second check is `schema_narrows`: every request the pinned schema accepted must still be
 accepted by the new one. A rename, a removed property and a newly required one all fail it.
 
-What the check does **not** yet carry is an isolation descriptor. `architecture.md` §8 argues
-for one — a tool that keeps its name and schema but now runs in-process where it used to run in a
-sandboxed child is a silent downgrade every other check passes — but `ToolSpec` and `Generation`
-hold nothing of the kind today, so a daemon computes none and the term is absent rather than
-implemented as a constant `true`. Adding it is additive: one optional field and one comparison.
+The third term is the **isolation descriptor**, carried on `ToolSpec`: `process` for a spawned
+child, `http` for an endpoint, `in_process` for a built-in. It is derived by whoever connected the
+tool, because it is a fact about the connection and not a claim the tool gets to make. A tool that
+keeps its name and schema but now runs somewhere else is incompatible, and the session stays pinned.
+`None` is not a wildcard: a generation that knows must not migrate onto one that does not say.
 
 ## 7. Errors
 
@@ -457,7 +464,7 @@ client stops on empty, never on a short page.
 | `ToolCallStarted`    | `tools/call`                                                                              |
 | `ToolFinished`       | `tools/call` result: `content` blocks → `Content.parts`, `isError` → `is_error`           |
 | cancel a tool call   | `notifications/cancelled`                                                                 |
-| source isolation     | a spawned child process; the source does not declare it, and no descriptor is carried yet |
+| source isolation     | derived from the transport: `process` for a child, `http` for an endpoint                 |
 
 Deliberately unsupported in v1: MCP **sampling** and **elicitation**. The daemon does not
 advertise those client capabilities, so a server that needs them must fall back. Adding

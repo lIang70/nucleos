@@ -22,7 +22,8 @@ use nucleos::error::{Error, Result};
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, Tool as McpDeclaration};
 use rmcp::service::{RoleClient, RunningService};
-use rmcp::transport::TokioChildProcess;
+use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -46,17 +47,78 @@ struct Link {
     retry_after: Option<tokio::time::Instant>,
 }
 
+/// How a source is reached.
+///
+/// Two shapes, and the difference is not cosmetic: a child process is one this daemon spawns and
+/// supervises, an HTTP endpoint is one somebody else runs. That is why it becomes part of the tool
+/// declaration's isolation — a generation migrates only when the tools are the same tools, and a
+/// tool that moved between those two worlds did not stay the same tool.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Transport {
+    /// A child process, spoken to over its stdin and stdout.
+    Stdio {
+        /// The command that starts it.
+        command: String,
+        /// Its arguments.
+        args: Vec<String>,
+        /// Extra environment.
+        env: BTreeMap<String, String>,
+    },
+    /// A streamable-HTTP MCP endpoint.
+    Http {
+        /// The URL the server answers at.
+        url: String,
+        /// A bearer token, when the endpoint needs one.
+        auth: Option<String>,
+    },
+}
+
+impl Transport {
+    /// A stdio source.
+    #[must_use]
+    pub fn stdio(command: impl Into<String>) -> Self {
+        Self::Stdio {
+            command: command.into(),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+        }
+    }
+
+    /// An HTTP endpoint.
+    #[must_use]
+    pub fn http(url: impl Into<String>) -> Self {
+        Self::Http {
+            url: url.into(),
+            auth: None,
+        }
+    }
+
+    /// How the kernel records it, once a connection exists.
+    #[must_use]
+    pub fn isolation(&self) -> nucleos::contract::Isolation {
+        match self {
+            Self::Stdio { .. } => nucleos::contract::Isolation::Process,
+            Self::Http { .. } => nucleos::contract::Isolation::Http,
+        }
+    }
+}
+
+impl std::fmt::Display for Transport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stdio { command, .. } => write!(f, "stdio {command}"),
+            Self::Http { url, .. } => write!(f, "http {url}"),
+        }
+    }
+}
+
 /// How to reach one MCP server.
 #[derive(Debug, Clone)]
 pub struct McpSource {
     /// A name for logs and for `Describe`.
     pub name: String,
-    /// The command that starts it.
-    pub command: String,
-    /// Its arguments.
-    pub args: Vec<String>,
-    /// Extra environment.
-    pub env: BTreeMap<String, String>,
+    /// How it is reached.
+    pub transport: Transport,
     /// A ceiling on one call, when the session has none of its own.
     pub call_timeout: Option<Duration>,
 }
@@ -67,17 +129,51 @@ impl McpSource {
     pub fn new(name: impl Into<String>, command: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            command: command.into(),
-            args: Vec::new(),
-            env: BTreeMap::new(),
+            transport: Transport::stdio(command),
             call_timeout: Some(Duration::from_secs(60)),
         }
     }
 
-    /// Arguments for the command.
+    /// A source reached over HTTP.
+    #[must_use]
+    pub fn http(name: impl Into<String>, url: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            transport: Transport::http(url),
+            call_timeout: Some(Duration::from_secs(60)),
+        }
+    }
+
+    /// Arguments for the command. Ignored by an HTTP transport, which has no command line.
     #[must_use]
     pub fn with_args(mut self, args: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        self.args = args.into_iter().map(Into::into).collect();
+        if let Transport::Stdio { args: existing, .. } = &mut self.transport {
+            *existing = args.into_iter().map(Into::into).collect();
+        }
+        self
+    }
+
+    /// Extra environment for a stdio source. Ignored by an HTTP transport.
+    #[must_use]
+    pub fn with_env(
+        mut self,
+        env: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        if let Transport::Stdio { env: existing, .. } = &mut self.transport {
+            existing.extend(
+                env.into_iter()
+                    .map(|(key, value)| (key.into(), value.into())),
+            );
+        }
+        self
+    }
+
+    /// A bearer token, for an endpoint that needs one.
+    #[must_use]
+    pub fn with_auth(mut self, token: impl Into<String>) -> Self {
+        if let Transport::Http { auth, .. } = &mut self.transport {
+            *auth = Some(token.into());
+        }
         self
     }
 
@@ -111,28 +207,75 @@ impl McpSource {
             .collect())
     }
 
-    /// Start the child, serve the protocol, and ask what it offers.
+    /// Connect, serve the protocol, and ask what the server offers.
     ///
     /// Everything that can go wrong with a source happens here, so there is one place that knows a
-    /// source is down.
+    /// source is down — and one place that says how it was reached.
     async fn spawn(&self) -> Result<(Arc<Server>, Vec<ToolSpec>)> {
-        let mut command = tokio::process::Command::new(&self.command);
-        command.args(&self.args).envs(&self.env);
+        let server: Arc<Server> = match &self.transport {
+            Transport::Stdio { command, args, env } => {
+                let mut child = tokio::process::Command::new(command);
+                child.args(args).envs(env);
 
-        // The transport owns the child: cancelling a call and killing the server are its job, and a
-        // second owner for the pipe is how a client and a transport start disagreeing.
-        let transport = TokioChildProcess::new(command).map_err(|error| {
-            Error::unavailable(format!(
-                "cannot start {:?} for source {:?}: {error}",
-                self.command, self.name
-            ))
-        })?;
-        let server: Arc<Server> = Arc::new(().serve(transport).await.map_err(|error| {
-            Error::unavailable(format!(
-                "source {:?} refused to initialise: {error}",
-                self.name
-            ))
-        })?);
+                // The transport owns the child: cancelling a call and killing the server are its job,
+                // and a second owner for the pipe is how a client and a transport start disagreeing.
+                let transport = TokioChildProcess::new(child).map_err(|error| {
+                    Error::unavailable(format!(
+                        "cannot start {command:?} for source {:?}: {error}",
+                        self.name
+                    ))
+                })?;
+                Arc::new(().serve(transport).await.map_err(|error| {
+                    Error::unavailable(format!(
+                        "source {:?} refused to initialise: {error}",
+                        self.name
+                    ))
+                })?)
+            }
+            Transport::Http { url, auth } => {
+                // A client of our own only when there is a token to send: the default one is a
+                // connection pool the library builds, and a header nobody set is a request the
+                // library would send without it.
+                let transport = match auth {
+                    None => StreamableHttpClientTransport::from_uri(url.clone()),
+                    Some(token) => {
+                        let mut headers = reqwest::header::HeaderMap::new();
+                        let mut value = reqwest::header::HeaderValue::from_str(&format!(
+                            "Bearer {token}"
+                        ))
+                        .map_err(|error| {
+                            Error::invalid(format!(
+                                "source {:?}: the auth token is not a valid header value: {error}",
+                                self.name
+                            ))
+                        })?;
+                        // Never printed, never logged: a credential in a log line is a credential in
+                        // a log line.
+                        value.set_sensitive(true);
+                        headers.insert(reqwest::header::AUTHORIZATION, value);
+                        let client = reqwest::Client::builder()
+                            .default_headers(headers)
+                            .build()
+                            .map_err(|error| {
+                                Error::unavailable(format!(
+                                    "source {:?}: cannot build an HTTP client: {error}",
+                                    self.name
+                                ))
+                            })?;
+                        StreamableHttpClientTransport::with_client(
+                            client,
+                            StreamableHttpClientTransportConfig::with_uri(url.clone()),
+                        )
+                    }
+                };
+                Arc::new(().serve(transport).await.map_err(|error| {
+                    Error::unavailable(format!(
+                        "source {:?} at {url} refused to initialise: {error}",
+                        self.name
+                    ))
+                })?)
+            }
+        };
 
         let mut specs = Vec::new();
         let mut cursor = None;
@@ -147,7 +290,7 @@ impl McpSource {
             })?;
 
             for declaration in &page.tools {
-                specs.push(spec_of(declaration));
+                specs.push(spec_of(declaration, self.transport.isolation()));
             }
 
             match page.next_cursor {
@@ -285,7 +428,7 @@ fn is_fatal(error: &rmcp::service::ServiceError) -> bool {
 }
 
 /// The kernel's view of one declaration.
-fn spec_of(declaration: &McpDeclaration) -> ToolSpec {
+fn spec_of(declaration: &McpDeclaration, isolation: nucleos::contract::Isolation) -> ToolSpec {
     ToolSpec {
         name: declaration.name.to_string(),
         description: declaration
@@ -296,7 +439,7 @@ fn spec_of(declaration: &McpDeclaration) -> ToolSpec {
         // Kept as text: the kernel compares schemas structurally and never interprets them.
         input_schema_json: serde_json::Value::Object((*declaration.input_schema).clone())
             .to_string(),
-        isolation: Some(nucleos::contract::Isolation::InProcess),
+        isolation: Some(isolation),
     }
 }
 

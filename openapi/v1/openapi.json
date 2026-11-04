@@ -3182,7 +3182,8 @@
             "type": "array"
           },
           "command": {
-            "description": "The command that starts it.",
+            "default": "",
+            "description": "The command that starts it. Ignored when `url` is set.",
             "type": "string"
           },
           "env": {
@@ -3196,11 +3197,17 @@
           "name": {
             "description": "The name a listing and a removal use.",
             "type": "string"
+          },
+          "url": {
+            "description": "An HTTP endpoint, for a source this daemon does not spawn. Takes precedence over `command`.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
-          "name",
-          "command"
+          "name"
         ],
         "type": "object"
       },
@@ -3216,7 +3223,8 @@
             "type": "array"
           },
           "command": {
-            "description": "The command that starts it.",
+            "default": "",
+            "description": "The command that starts it. Empty for an HTTP source.",
             "type": "string"
           },
           "name": {
@@ -3230,11 +3238,17 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "url": {
+            "description": "The endpoint, when this daemon does not spawn it.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
-          "name",
-          "command"
+          "name"
         ],
         "type": "object"
       },

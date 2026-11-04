@@ -36,10 +36,12 @@ pub fn list(overrides: &Overrides) -> Result<String> {
     }
     let mut out = String::new();
     for source in list.sources {
+        // What the daemon reaches, not what the row happens to store: an HTTP source has no command.
+        let where_it_is = source.url.clone().unwrap_or_else(|| source.command.clone());
         out.push_str(&format!(
             "{:<10} {:<28} {}\n",
             source.name,
-            source.command,
+            where_it_is,
             source.tools.join(", ")
         ));
     }

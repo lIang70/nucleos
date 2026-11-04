@@ -84,10 +84,9 @@ rename or a newly required property is not).
 **Why.** A version number is a human claim, and humans get it wrong. A schema diff is
 machine-checkable and cannot lie about itself.
 
-**What is missing.** The isolation descriptor this entry used to name is not carried by `ToolSpec`
-or `Generation`, so the comparison is names and schemas only. A tool that keeps both but moves from
-a sandboxed child to in-process execution is therefore compatible today, and that is a known gap
-rather than a guarantee.
+**The third term.** `ToolSpec.isolation` carries it: `process`, `http`, `in_process`, derived by
+whoever connected the tool. A tool that keeps both but moves from a spawned child to an HTTP
+endpoint is incompatible, and the session stays pinned. `None` is not a wildcard.
 
 ## 9. The kernel does not know the transport
 

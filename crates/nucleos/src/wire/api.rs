@@ -291,7 +291,8 @@ pub struct AdminKeyListResponse {
 pub struct SourceRequest {
     /// The name a listing and a removal use.
     pub name: String,
-    /// The command that starts it.
+    /// The command that starts it. Ignored when `url` is set.
+    #[serde(default)]
     pub command: String,
     /// Its arguments.
     #[serde(default)]
@@ -299,6 +300,9 @@ pub struct SourceRequest {
     /// Extra environment, for a server that needs one.
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// An HTTP endpoint, for a source this daemon does not spawn. Takes precedence over `command`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 /// A source, as the daemon reports it.
@@ -306,11 +310,15 @@ pub struct SourceRequest {
 pub struct SourceView {
     /// Its name.
     pub name: String,
-    /// The command that starts it.
+    /// The command that starts it. Empty for an HTTP source.
+    #[serde(default)]
     pub command: String,
     /// Its arguments.
     #[serde(default)]
     pub args: Vec<String>,
+    /// The endpoint, when this daemon does not spawn it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
     /// The tools it currently advertises.
     #[serde(default)]
     pub tools: Vec<String>,
