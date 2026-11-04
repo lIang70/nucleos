@@ -56,6 +56,35 @@ pub struct SessionQuery {
     pub after: Option<SessionId>,
 }
 
+/// What a retention pass should remove.
+///
+/// Only closed sessions are ever candidates: an open session is somebody's work in progress, and a
+/// parked one is waiting on a human, not garbage.
+#[derive(Debug, Clone)]
+pub struct PruneQuery {
+    /// Only this tenant's sessions. Absent means every tenant, which is an operator's question rather
+    /// than a caller's.
+    pub tenant: Option<String>,
+    /// Delete sessions whose last activity is strictly before this, in unix milliseconds.
+    pub before_unix_millis: u64,
+    /// How many sessions one pass may remove. A bound, so a retention pass is a batch rather than an
+    /// unbounded delete on a live store.
+    pub limit: usize,
+    /// Report what would go without removing it. The default for any manual call.
+    pub dry_run: bool,
+}
+
+/// What a retention pass did, or would do.
+#[derive(Debug, Clone, Default)]
+pub struct PruneReport {
+    /// How many sessions matched.
+    pub sessions: u64,
+    /// How many events they held.
+    pub events: u64,
+    /// Which sessions, so the caller can forget any in-memory heads and an operator can see what went.
+    pub candidates: Vec<SessionKey>,
+}
+
 /// One page, and where the next one starts.
 #[derive(Debug, Clone, Default)]
 pub struct SessionPage {
@@ -142,6 +171,13 @@ pub trait Store: Send + Sync {
         from_seq: u64,
         limit: usize,
     ) -> Result<Vec<Event>>;
+
+    /// Remove closed sessions whose last activity is before a deadline.
+    ///
+    /// Whole sessions, never a span of a log: `seq` stays dense for every session that survives, and a
+    /// survivor's resume cursor keeps working. A session whose last activity is unknown is kept —
+    /// retention may delete what it can date, never what it cannot.
+    async fn prune_closed(&self, query: &PruneQuery) -> Result<PruneReport>;
 
     /// A bounded page read **backwards**, oldest first within the page.
     ///

@@ -706,3 +706,133 @@ async fn readers_and_the_writer_proceed_together() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A closed session whose last activity is old is pruned; an open one of the same age is not.
+#[tokio::test]
+async fn retention_removes_only_closed_sessions_that_are_old() {
+    let store = SqliteStore::in_memory().unwrap();
+    let closed = SessionId::new("closed");
+    let open = SessionId::new("open");
+    let recent = SessionId::new("recent");
+
+    for (id, at) in [(&closed, 1_000u64), (&open, 1_000), (&recent, 9_000)] {
+        store
+            .append(
+                &key(id),
+                &[nucleos::contract::Event {
+                    seq: 0,
+                    session: id.clone(),
+                    at_unix_millis: at,
+                    schema_version: 1,
+                    kind: EventKind::StateChanged {
+                        state: SessionState::Open,
+                        stop: None,
+                    },
+                    meta: Default::default(),
+                }],
+            )
+            .await
+            .unwrap();
+    }
+    for (id, state) in [
+        (&closed, SessionState::Closed),
+        (&open, SessionState::Open),
+        (&recent, SessionState::Closed),
+    ] {
+        let mut snapshot = snapshot_for(id);
+        snapshot.seq = 0;
+        snapshot.version = 1;
+        snapshot.state = state;
+        snapshot.messages = vec![message()];
+        store.write_snapshot(snapshot).await.unwrap();
+    }
+
+    // Dry run first: it reports, and removes nothing.
+    let query = nucleos::adapter::PruneQuery {
+        tenant: None,
+        before_unix_millis: 5_000,
+        limit: 100,
+        dry_run: true,
+    };
+    let report = store.prune_closed(&query).await.unwrap();
+    assert_eq!(
+        report.sessions, 1,
+        "only the old closed session: {report:?}"
+    );
+    assert_eq!(report.events, 1);
+    assert_eq!(report.candidates[0].id, closed);
+    assert!(
+        store.snapshot(&key(&closed)).await.unwrap().is_some(),
+        "a dry run deleted something"
+    );
+
+    // For real: the old closed session goes, the open one and the recent one stay.
+    let report = store
+        .prune_closed(&nucleos::adapter::PruneQuery {
+            dry_run: false,
+            ..query
+        })
+        .await
+        .unwrap();
+    assert_eq!(report.sessions, 1);
+    assert!(store.snapshot(&key(&closed)).await.unwrap().is_none());
+    assert!(store.snapshot(&key(&open)).await.unwrap().is_some());
+    assert!(store.snapshot(&key(&recent)).await.unwrap().is_some());
+    assert!(
+        store
+            .events_since(&key(&closed), 0)
+            .await
+            .unwrap()
+            .is_empty(),
+        "the log went with the session"
+    );
+}
+
+/// A session whose activity is unknown is kept: retention deletes what it can date, not what it cannot.
+#[tokio::test]
+async fn retention_keeps_a_session_it_cannot_date() {
+    let dir = temp_dir("retention-unknown");
+    let path = dir.join("sessions.db");
+    {
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "create table events (
+                     tenant text not null, session text not null, seq integer not null, body text not null,
+                     primary key (tenant, session, seq)
+                 ) without rowid;
+                 create table snapshots (
+                     tenant text not null, session text not null, seq integer not null, body text not null,
+                     primary key (tenant, session)
+                 ) without rowid;
+                 create table sessions (
+                     tenant text not null, session text not null, kind text, subject text,
+                     primary key (tenant, session)
+                 ) without rowid;
+                 insert into sessions (tenant, session, kind) values ('acme', 'old', null);",
+            )
+            .unwrap();
+        // A closed checkpoint, so the row is only excluded because its activity is unknown.
+        let mut snapshot = snapshot_for(&SessionId::new("old"));
+        snapshot.state = SessionState::Closed;
+        let body = serde_json::to_string(&snapshot).unwrap();
+        connection
+            .execute(
+                "insert into snapshots (tenant, session, seq, body) values ('acme', 'old', 0, ?1)",
+                [&body],
+            )
+            .unwrap();
+    }
+    let store = SqliteStore::open(&path).unwrap();
+    let report = store
+        .prune_closed(&nucleos::adapter::PruneQuery {
+            tenant: None,
+            before_unix_millis: u64::MAX,
+            limit: 100,
+            dry_run: true,
+        })
+        .await
+        .unwrap();
+    assert_eq!(report.sessions, 0, "an undated session is never pruned");
+    let _ = std::fs::remove_dir_all(&dir);
+}

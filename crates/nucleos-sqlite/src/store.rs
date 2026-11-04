@@ -91,6 +91,13 @@ impl SqliteStore {
                      session text    not null,
                      kind    text,
                      subject text,
+                     -- Last activity, for retention. Null means unknown, and a session we
+                     -- cannot date is never pruned: retention deletes what it can date, not what it
+                     -- cannot.
+                     last_activity_unix_millis integer,
+                     -- Whether the checkpoint says this session is closed. Only closed sessions are
+                     -- ever pruned; an open one is work in progress, however old it is.
+                     closed  integer not null default 0,
                      primary key (tenant, session)
                  ) without rowid;
                  create index if not exists sessions_by_kind on sessions (tenant, kind, session);
@@ -128,6 +135,45 @@ impl SqliteStore {
                 .execute_batch("alter table sessions add column subject text")
                 .map_err(failed)?;
         }
+        // The same additive migration for retention's two columns. Activity is backfilled from each
+        // session's last event, and `closed` from its checkpoint; a row we cannot date stays NULL and
+        // is therefore never pruned.
+        let session_columns: Vec<String> = connection
+            .prepare("pragma table_info(sessions)")
+            .and_then(|mut statement| {
+                statement
+                    .query_map([], |row| row.get::<_, String>(1))
+                    .and_then(|names| names.collect::<std::result::Result<_, _>>())
+            })
+            .map_err(failed)?;
+        for (column, ddl) in [
+            (
+                "last_activity_unix_millis",
+                "alter table sessions add column last_activity_unix_millis integer",
+            ),
+            (
+                "closed",
+                "alter table sessions add column closed integer not null default 0",
+            ),
+        ] {
+            if !session_columns.iter().any(|name| name == column) {
+                connection.execute_batch(ddl).map_err(failed)?;
+            }
+        }
+        connection
+            .execute_batch(
+                "update sessions set last_activity_unix_millis = (
+                     select json_extract(e.body, '$.at_unix_millis') from events e
+                     where e.tenant = sessions.tenant and e.session = sessions.session
+                     order by e.seq desc limit 1
+                 ) where last_activity_unix_millis is null;
+                 update sessions set closed = 1 where exists (
+                     select 1 from snapshots s
+                     where s.tenant = sessions.tenant and s.session = sessions.session
+                       and json_extract(s.body, '$.state') = 'closed'
+                 );",
+            )
+            .map_err(failed)?;
         // A database written by a newer build is refused before anything below runs: a migration that
         // rewrites rows into a shape it does not understand is how a downgrade corrupts a durable
         // record. The check is repeated in `check_version`, which is the one that records a version.
@@ -281,14 +327,28 @@ impl Store for SqliteStore {
                 expected = expected.saturating_add(1);
             }
 
-            // The session exists from its first event; its kind waits for a checkpoint.
-            transaction
-                .execute(
-                    "insert into sessions (tenant, session, kind) values (?1, ?2, null)
-                     on conflict (tenant, session) do nothing",
-                    params![tenant, session.as_str()],
-                )
-                .map_err(failed)?;
+            // The session exists from its first event; its kind waits for a checkpoint. Activity is
+            // recorded here because retention is about *when it was last used*, not when it was
+            // created — and this is the only write that knows that without reading the log back.
+            let latest = events.iter().map(|event| event.at_unix_millis).max();
+            if let Some(latest) = latest {
+                transaction
+                    .execute(
+                        "insert into sessions (tenant, session, kind, last_activity_unix_millis)
+                         values (?1, ?2, null, ?3)
+                         on conflict (tenant, session) do update set
+                           last_activity_unix_millis = max(
+                             coalesce(sessions.last_activity_unix_millis, 0),
+                             excluded.last_activity_unix_millis
+                           )",
+                        params![
+                            tenant,
+                            session.as_str(),
+                            i64::try_from(latest).unwrap_or(i64::MAX)
+                        ],
+                    )
+                    .map_err(failed)?;
+            }
             transaction.commit().map_err(failed)
         })
         .await
@@ -510,18 +570,50 @@ impl Store for SqliteStore {
                 .map_err(failed)?;
             transaction
                 .execute(
-                    "insert into sessions (tenant, session, kind, subject) values (?1, ?2, ?3, ?4)
+                    "insert into sessions (tenant, session, kind, subject, closed)
+                     values (?1, ?2, ?3, ?4, ?5)
                      on conflict (tenant, session) do update set kind = excluded.kind,
-                                                                 subject = excluded.subject",
+                                                                 subject = excluded.subject,
+                                                                 closed = excluded.closed",
                     params![
                         snapshot.principal.tenant,
                         snapshot.session.as_str(),
                         kind_name(snapshot.kind),
                         snapshot.principal.subject.clone(),
+                        snapshot.state == nucleos::contract::SessionState::Closed
                     ],
                 )
                 .map_err(failed)?;
             transaction.commit().map_err(failed)
+        })
+        .await
+    }
+
+    async fn prune_closed(
+        &self,
+        query: &nucleos::adapter::PruneQuery,
+    ) -> Result<nucleos::adapter::PruneReport> {
+        let query = query.clone();
+        if query.dry_run {
+            return self
+                .read(move |connection| candidates(connection, &query))
+                .await;
+        }
+        self.run(move |connection| {
+            let transaction = connection.transaction().map_err(failed)?;
+            let report = candidates(&transaction, &query)?;
+            for key in &report.candidates {
+                for table in ["events", "snapshots", "messages", "attempts", "sessions"] {
+                    transaction
+                        .execute(
+                            &format!("delete from {table} where tenant = ?1 and session = ?2"),
+                            params![key.tenant, key.id.as_str()],
+                        )
+                        .map_err(failed)?;
+                }
+            }
+            transaction.commit().map_err(failed)?;
+            Ok(report)
         })
         .await
     }
@@ -668,6 +760,57 @@ fn failed(error: rusqlite::Error) -> Error {
 /// 3 — the conversation and the attempt ledger as rows of their own, so a checkpoint is proportional to
 /// what changed rather than to the session's age, and the body is the head a view reads.
 pub const SCHEMA_VERSION: u32 = 3;
+
+/// Which closed sessions a retention pass would remove, and what they hold.
+///
+/// The count is per candidate rather than one `group by`: the limit is small by design, and this
+/// keeps the selection and the deletion looking at exactly the same rows.
+fn candidates(
+    connection: &Connection,
+    query: &nucleos::adapter::PruneQuery,
+) -> Result<nucleos::adapter::PruneReport> {
+    let mut statement = connection
+        .prepare(
+            "select s.tenant, s.session,
+                    (select count(*) from events e
+                     where e.tenant = s.tenant and e.session = s.session)
+             from sessions s
+             where s.closed = 1
+               and s.last_activity_unix_millis is not null
+               and s.last_activity_unix_millis < ?1
+               and (?2 is null or s.tenant = ?2)
+             order by s.last_activity_unix_millis asc, s.tenant, s.session
+             limit ?3",
+        )
+        .map_err(failed)?;
+    let rows = statement
+        .query_map(
+            params![
+                i64::try_from(query.before_unix_millis).unwrap_or(i64::MAX),
+                query.tenant,
+                i64::try_from(query.limit).unwrap_or(i64::MAX)
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .map_err(failed)?;
+    let mut report = nucleos::adapter::PruneReport::default();
+    for row in rows {
+        let (tenant, id, events) = row.map_err(failed)?;
+        report.sessions += 1;
+        report.events += u64::try_from(events).unwrap_or(0);
+        report.candidates.push(nucleos::adapter::SessionKey::new(
+            tenant,
+            nucleos::contract::SessionId::new(id),
+        ));
+    }
+    Ok(report)
+}
 
 /// One column of a checkpoint, in the order it was written.
 fn rows_in<T: serde::de::DeserializeOwned>(
