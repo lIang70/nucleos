@@ -683,6 +683,12 @@ pub struct MetricsResponse {
     /// Sessions that ended because a budget ran out.
     #[serde(default)]
     pub budget_stops: u64,
+    /// Sessions removed by retention.
+    #[serde(default)]
+    pub pruned_sessions: u64,
+    /// Events that went with them.
+    #[serde(default)]
+    pub pruned_events: u64,
     /// How long the daemon has been counting.
     #[serde(default)]
     pub uptime_millis: u64,
@@ -877,6 +883,44 @@ pub struct SessionView {
     /// reason from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub partial: Option<crate::contract::PartialTurn>,
+}
+
+/// What a retention pass should remove.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PruneRequest {
+    /// Delete sessions idle for at least this long. Exactly one of this and `before_unix_millis`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub older_than_millis: Option<u64>,
+    /// Delete sessions whose last activity is before this instant. Exactly one of the two.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_unix_millis: Option<u64>,
+    /// Only this tenant. Absent means every tenant, which is an operator's question.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
+    /// How many sessions one pass may remove. Bounded so a pass is a batch, not an unbounded delete.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    /// Report without deleting. **The default**: a destructive call has to say so explicitly.
+    #[serde(default = "default_dry_run")]
+    pub dry_run: bool,
+}
+
+fn default_dry_run() -> bool {
+    true
+}
+
+/// What a retention pass did, or would do.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PruneResponse {
+    /// How many sessions matched.
+    pub sessions: u64,
+    /// How many events they held.
+    pub events: u64,
+    /// Whether anything was actually deleted.
+    pub dry_run: bool,
+    /// Up to fifty of the sessions, so an operator can see what went before running it for real.
+    #[serde(default)]
+    pub sample: Vec<String>,
 }
 
 /// A grant of credit to a session.

@@ -949,6 +949,18 @@ pub const ROUTES: &[Route] = &[
         meta: openapi::Route {
             parameters: &[],
             method: "post",
+            path: "/v1/sessions/prune",
+            operation: "pruneSessions",
+            summary: "Remove closed sessions idle past a deadline. `dry_run` defaults to true.",
+            request: Some("PruneRequest"),
+            reply: openapi::Reply::Json("PruneResponse"),
+        },
+        build: || post(crate::retention::prune),
+    },
+    Route {
+        meta: openapi::Route {
+            parameters: &[],
+            method: "post",
             path: "/v1/sessions/{id}/credit",
             operation: "creditSession",
             summary: "Grant more credit, and revive a session that stopped on a budget.",

@@ -9,6 +9,7 @@ pub mod configure;
 pub mod http;
 pub mod layout;
 pub mod metrics;
+pub mod retention;
 pub mod serve;
 pub mod sources;
 pub mod telemetry;

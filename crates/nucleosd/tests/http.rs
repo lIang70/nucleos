@@ -2395,3 +2395,59 @@ async fn cancelling_another_subjects_session_is_not_found() {
     // is a directory of other people's sessions.
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
+
+/// Retention removes a closed session and leaves an open one, and the default call only reports.
+#[tokio::test]
+async fn prune_reports_first_then_removes_only_closed_sessions() {
+    let (app, key, key_id) = governable().await;
+    for id in ["s1", "s2"] {
+        let (status, opened) = request(
+            &app,
+            "POST",
+            "/v1/sessions",
+            "",
+            &format!(r#"{{"session":"{id}","credit_tokens":1000000}}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{opened}");
+    }
+    let (status, _) = request(&app, "POST", "/v1/sessions/s1/close", "", "{}").await;
+    assert_eq!(status, StatusCode::OK);
+
+    // No `dry_run` field: the default is to report, and to remove nothing.
+    let (status, report) = signed(
+        &app,
+        &key,
+        &key_id,
+        "POST",
+        "/v1/sessions/prune",
+        r#"{"before_unix_millis":4102444800000}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{report}");
+    assert_eq!(report["sessions"], 1, "{report}");
+    assert_eq!(report["dry_run"], true);
+    assert_eq!(report["sample"], serde_json::json!(["s1"]));
+    let (status, _) = request(&app, "GET", "/v1/sessions/s1", "", "").await;
+    assert_eq!(status, StatusCode::OK, "a dry run deleted something");
+
+    // For real: the closed session goes, the open one stays.
+    let (status, report) = signed(
+        &app,
+        &key,
+        &key_id,
+        "POST",
+        "/v1/sessions/prune",
+        r#"{"before_unix_millis":4102444800000,"dry_run":false}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{report}");
+    assert_eq!(report["sessions"], 1);
+    assert_eq!(report["dry_run"], false);
+
+    let (status, _) = request(&app, "GET", "/v1/sessions/s1", "", "").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, view) = request(&app, "GET", "/v1/sessions/s2", "", "").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(view["state"], "open");
+}

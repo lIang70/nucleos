@@ -533,6 +533,23 @@ impl Kernel {
         Ok(removed)
     }
 
+    /// Remove closed sessions whose last activity is before a deadline, and forget their log heads.
+    ///
+    /// The store answers what is old and finished; the kernel forgets the in-memory head for each one,
+    /// so a later `open` of the same id starts a new log rather than continuing a deleted one.
+    pub async fn prune_closed(
+        &self,
+        query: &crate::adapter::PruneQuery,
+    ) -> Result<crate::adapter::PruneReport> {
+        let report = self.store.prune_closed(query).await?;
+        if !query.dry_run {
+            for key in &report.candidates {
+                self.forget_log(key);
+            }
+        }
+        Ok(report)
+    }
+
     /// One bounded page of a session's events.
     ///
     /// What the SSE handler loops over: a page at a time, so the first frame does not wait for the

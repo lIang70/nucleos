@@ -39,6 +39,10 @@ pub struct Metrics {
     reloads: AtomicU64,
     /// Sessions that ended because a budget ran out.
     budget_stops: AtomicU64,
+    /// Sessions removed by retention.
+    pruned_sessions: AtomicU64,
+    /// Events that went with them.
+    pruned_events: AtomicU64,
     /// When the daemon started counting, in unix milliseconds.
     since_unix_millis: AtomicU64,
 }
@@ -98,6 +102,12 @@ impl Metrics {
         self.budget_stops.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// A retention pass removed this many sessions and their events.
+    pub fn retention_pruned(&self, sessions: u64, events: u64) {
+        self.pruned_sessions.fetch_add(sessions, Ordering::Relaxed);
+        self.pruned_events.fetch_add(events, Ordering::Relaxed);
+    }
+
     /// The counters, as the wire reports them.
     #[must_use]
     pub fn snapshot(&self) -> MetricsResponse {
@@ -113,6 +123,8 @@ impl Metrics {
             sessions: self.sessions.load(Ordering::Relaxed),
             reloads: self.reloads.load(Ordering::Relaxed),
             budget_stops: self.budget_stops.load(Ordering::Relaxed),
+            pruned_sessions: self.pruned_sessions.load(Ordering::Relaxed),
+            pruned_events: self.pruned_events.load(Ordering::Relaxed),
             uptime_millis: now.saturating_sub(self.since_unix_millis.load(Ordering::Relaxed)),
         }
     }

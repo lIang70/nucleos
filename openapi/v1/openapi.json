@@ -2042,6 +2042,20 @@
             "minimum": 0,
             "type": "integer"
           },
+          "pruned_events": {
+            "default": 0,
+            "description": "Events that went with them.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pruned_sessions": {
+            "default": 0,
+            "description": "Sessions removed by retention.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
           "reloads": {
             "default": 0,
             "description": "Tool sources reloaded.",
@@ -2692,6 +2706,86 @@
             "type": "object"
           }
         ]
+      },
+      "PruneRequest": {
+        "description": "What a retention pass should remove.",
+        "properties": {
+          "before_unix_millis": {
+            "description": "Delete sessions whose last activity is before this instant. Exactly one of the two.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "dry_run": {
+            "default": true,
+            "description": "Report without deleting. **The default**: a destructive call has to say so explicitly.",
+            "type": "boolean"
+          },
+          "limit": {
+            "description": "How many sessions one pass may remove. Bounded so a pass is a batch, not an unbounded delete.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "older_than_millis": {
+            "description": "Delete sessions idle for at least this long. Exactly one of this and `before_unix_millis`.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tenant": {
+            "description": "Only this tenant. Absent means every tenant, which is an operator's question.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "PruneResponse": {
+        "description": "What a retention pass did, or would do.",
+        "properties": {
+          "dry_run": {
+            "description": "Whether anything was actually deleted.",
+            "type": "boolean"
+          },
+          "events": {
+            "description": "How many events they held.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sample": {
+            "default": [],
+            "description": "Up to fifty of the sessions, so an operator can see what went before running it for real.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "sessions": {
+            "description": "How many sessions matched.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sessions",
+          "events",
+          "dry_run"
+        ],
+        "type": "object"
       },
       "Purpose": {
         "description": "Why a model call is happening.\n\nThe kernel makes calls of its own — a compaction summary is one — so the purpose has to be\nfirst-class: a budget whose summarisation spend is indistinguishable from answer spend is a\nbudget nobody can explain after the fact.",
@@ -5507,6 +5601,94 @@
           }
         },
         "summary": "Open a session. Drives nothing: the caller decides each turn."
+      }
+    },
+    "/v1/sessions/prune": {
+      "post": {
+        "operationId": "pruneSessions",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PruneRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PruneResponse"
+                }
+              }
+            },
+            "description": "The result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "Remove closed sessions idle past a deadline. `dry_run` defaults to true."
       }
     },
     "/v1/sessions/{id}": {
