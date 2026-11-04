@@ -76,6 +76,7 @@ impl Tool for Search {
                 "required": ["query"]
             }"#
             .to_owned(),
+            isolation: Some(crate::contract::Isolation::InProcess),
         }
     }
 
@@ -158,6 +159,7 @@ mod tests {
             name: name.to_owned(),
             description: description.to_owned(),
             input_schema_json: "{}".to_owned(),
+            isolation: Some(crate::contract::Isolation::InProcess),
         }
     }
 

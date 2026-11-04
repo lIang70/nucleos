@@ -27,8 +27,10 @@ impl Tool for Named {
             name: self.name.to_owned(),
             description: format!("{} tool", self.name),
             input_schema_json: self.schema.to_owned(),
+            isolation: Some(nucleos::contract::Isolation::InProcess),
         }
     }
+
     async fn invoke(&self, _args: &str, _cx: &ToolCtx<'_>) -> ToolOutput {
         ToolOutput::text(self.name)
     }

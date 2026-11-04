@@ -58,6 +58,7 @@ fn tool() -> ToolSpec {
         input_schema_json:
             r#"{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}"#
                 .to_owned(),
+        isolation: Some(nucleos::contract::Isolation::InProcess),
     }
 }
 

@@ -898,6 +898,30 @@ pub struct ToolSpec {
     pub description: String,
     /// A JSON Schema object, kept as text so the kernel never interprets it.
     pub input_schema_json: String,
+    /// How the tool is reached, derived by whoever connected it.
+    ///
+    /// Part of the generation's compatibility check: a tool that keeps its name and schema but now
+    /// runs in-process where it used to run in a sandboxed child is a silent downgrade every other
+    /// check passes. `None` means the caller did not say, which is not the same as "any" — a
+    /// generation that knows must not migrate onto one that does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isolation: Option<Isolation>,
+}
+
+/// How a tool is reached, as a fact about the connection rather than a claim about the tool.
+///
+/// Derived by the daemon from how it reached the source — a spawned child, an HTTP endpoint, an
+/// in-process closure — because that is a fact the daemon owns. A source asserting its own isolation
+/// would be an unchecked claim dressed as a verified one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Isolation {
+    /// A spawned child process, which the daemon supervises.
+    Process,
+    /// A remote HTTP endpoint. The process boundary is somebody else's, and so is the isolation.
+    Http,
+    /// In the kernel's own process: a built-in, or a test double.
+    InProcess,
 }
 
 /// What a model can do.

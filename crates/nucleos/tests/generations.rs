@@ -10,7 +10,7 @@
 use async_trait::async_trait;
 use nucleos::adapter::{AllowAll, Store, Tool, ToolCtx, ToolOutput};
 use nucleos::contract::{
-    ConfigPatch, EventKind, Principal, Routing, SessionId, StopReason, ToolSpec,
+    ConfigPatch, EventKind, Isolation, Principal, Routing, SessionId, StopReason, ToolSpec,
 };
 use nucleos::kernel::{Kernel, SessionSpec};
 use nucleos_sqlite::SqliteStore;
@@ -34,6 +34,7 @@ struct Inert {
     name: String,
     schema: String,
     answer: String,
+    isolation: Isolation,
 }
 
 #[async_trait]
@@ -43,6 +44,7 @@ impl Tool for Inert {
             name: self.name.clone(),
             description: format!("The {} tool.", self.name),
             input_schema_json: self.schema.clone(),
+            isolation: Some(self.isolation),
         }
     }
     async fn invoke(&self, _args: &str, _cx: &ToolCtx<'_>) -> ToolOutput {
@@ -51,10 +53,17 @@ impl Tool for Inert {
 }
 
 fn tool(name: &str, schema: &str, answer: &str) -> Arc<dyn Tool> {
+    shipped(name, schema, answer, Isolation::Process)
+}
+
+/// The same tool, reached some other way: what a source that moved from a child process to an HTTP
+/// endpoint looks like from the kernel's side.
+fn shipped(name: &str, schema: &str, answer: &str, isolation: Isolation) -> Arc<dyn Tool> {
     Arc::new(Inert {
         name: name.to_owned(),
         schema: schema.to_owned(),
         answer: answer.to_owned(),
+        isolation,
     })
 }
 
@@ -187,6 +196,39 @@ async fn a_compatible_change_migrates_at_the_next_turn_and_is_recorded() {
         .await
         .unwrap();
     assert_eq!(output.content.text(), "from generation 2");
+}
+
+/// A tool that keeps its name and schema but is reached a different way is not the same tool.
+///
+/// This is the term the compatibility check used to be missing: a source that moved from a child
+/// process to an HTTP endpoint accepts the same requests and returns the same shapes, so names and
+/// schemas say nothing. What changed is where the code runs, and a prompt built against "somebody
+/// else's process" must not silently become "somebody else's server".
+#[tokio::test]
+async fn a_tool_reached_differently_does_not_migrate() {
+    let (kernel, _store) = build();
+    let mut session = kernel
+        .open(&principal(), SessionId::new("s1"), spec())
+        .await
+        .unwrap();
+    let first = session.generation();
+
+    // Identical name, identical schema, different transport.
+    kernel
+        .publish(vec![shipped(
+            "read_file",
+            TAKE_PATH_AND_OFFSET,
+            "from an http source",
+            Isolation::Http,
+        )])
+        .unwrap();
+
+    kernel.inference(&mut session, &[]).await.unwrap();
+    assert_eq!(
+        session.generation(),
+        first,
+        "a different isolation is an incompatible change"
+    );
 }
 
 #[tokio::test]

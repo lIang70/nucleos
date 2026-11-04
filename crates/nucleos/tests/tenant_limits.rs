@@ -25,8 +25,10 @@ impl Tool for Inert {
             name: self.0.to_owned(),
             description: format!("The {} tool.", self.0),
             input_schema_json: r#"{"type":"object"}"#.to_owned(),
+            isolation: Some(nucleos::contract::Isolation::InProcess),
         }
     }
+
     async fn invoke(&self, _args: &str, _cx: &ToolCtx<'_>) -> ToolOutput {
         ToolOutput::text("ok")
     }

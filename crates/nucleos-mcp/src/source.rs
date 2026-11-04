@@ -296,6 +296,7 @@ fn spec_of(declaration: &McpDeclaration) -> ToolSpec {
         // Kept as text: the kernel compares schemas structurally and never interprets them.
         input_schema_json: serde_json::Value::Object((*declaration.input_schema).clone())
             .to_string(),
+        isolation: Some(nucleos::contract::Isolation::InProcess),
     }
 }
 

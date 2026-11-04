@@ -36,6 +36,7 @@ fn inert(name: &str, description: &str) -> Arc<dyn Tool> {
             name: name.to_owned(),
             description: description.to_owned(),
             input_schema_json: r#"{"type":"object"}"#.to_owned(),
+            isolation: Some(nucleos::contract::Isolation::InProcess),
         },
     })
 }
@@ -560,6 +561,7 @@ async fn one_enormous_schema_does_not_evict_the_smaller_tools_behind_it() {
                 r#"{{"type":"object","description":"{}"}}"#,
                 "x".repeat(4096)
             ),
+            isolation: Some(nucleos::contract::Isolation::InProcess),
         },
     });
     let kernel = Kernel::builder()

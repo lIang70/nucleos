@@ -194,6 +194,12 @@ pub(crate) fn compatible(pinned: &ToolSet, next: &ToolSet) -> bool {
         let (Some(before), Some(after)) = (pinned.get(&name), next.get(&name)) else {
             return false;
         };
+        // The isolation is part of the answer, not a detail: a tool that keeps its name and schema
+        // but now runs somewhere else is not the same tool. `None` is not a wildcard — a generation
+        // that knows must not migrate onto one that does not say.
+        if before.spec().isolation != after.spec().isolation {
+            return false;
+        }
         schema_narrows(
             &before.spec().input_schema_json,
             &after.spec().input_schema_json,
@@ -322,6 +328,7 @@ mod tests {
                 name: self.name.clone(),
                 description: format!("{} tool", self.name),
                 input_schema_json: self.schema.clone(),
+                isolation: Some(crate::contract::Isolation::InProcess),
             }
         }
         async fn invoke(&self, _args: &str, _cx: &ToolCtx<'_>) -> ToolOutput {

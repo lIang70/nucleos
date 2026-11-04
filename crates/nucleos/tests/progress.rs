@@ -43,6 +43,7 @@ impl Tool for Reporting {
             name: "slow".to_owned(),
             description: "Takes a while, and says how far it has got.".to_owned(),
             input_schema_json: r#"{"type":"object"}"#.to_owned(),
+            isolation: Some(nucleos::contract::Isolation::InProcess),
         }
     }
 
@@ -205,6 +206,7 @@ impl Tool for Silent {
             name: "slow".to_owned(),
             description: "Takes a while and says nothing.".to_owned(),
             input_schema_json: r#"{"type":"object"}"#.to_owned(),
+            isolation: Some(nucleos::contract::Isolation::InProcess),
         }
     }
 

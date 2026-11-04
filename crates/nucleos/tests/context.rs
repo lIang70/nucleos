@@ -241,6 +241,7 @@ async fn a_tool_batch_is_gated_too() {
                 name: "any".to_owned(),
                 description: "Does nothing.".to_owned(),
                 input_schema_json: "{}".to_owned(),
+                isolation: Some(nucleos::contract::Isolation::InProcess),
             }
         }
         async fn invoke(&self, _args: &str, _cx: &ToolCtx<'_>) -> ToolOutput {

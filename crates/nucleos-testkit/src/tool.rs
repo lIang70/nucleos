@@ -21,6 +21,7 @@ impl FakeTool {
                 description: format!("the {name} tool"),
                 name,
                 input_schema_json: "{\"type\":\"object\"}".to_owned(),
+                isolation: Some(nucleos::contract::Isolation::InProcess),
             },
             output: ToolOutput::text(answer),
         }

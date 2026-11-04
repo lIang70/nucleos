@@ -27,8 +27,10 @@ impl Tool for Echo {
             name: "echo".to_owned(),
             description: "echoes".to_owned(),
             input_schema_json: r#"{"type":"object","properties":{"text":{}}}"#.to_owned(),
+            isolation: Some(nucleos::contract::Isolation::InProcess),
         }
     }
+
     async fn invoke(&self, args: &str, _cx: &ToolCtx<'_>) -> ToolOutput {
         ToolOutput::text(args)
     }

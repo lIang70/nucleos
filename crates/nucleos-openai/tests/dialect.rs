@@ -265,6 +265,7 @@ fn a_tool_is_flat_and_strict_only_when_asked() {
             name: "read_file".to_owned(),
             description: "reads".to_owned(),
             input_schema_json: r#"{"type":"object"}"#.to_owned(),
+            isolation: Some(nucleos::contract::Isolation::InProcess),
         }],
         ..request()
     };
