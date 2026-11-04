@@ -57,7 +57,7 @@ pub async fn rotate(options: &Options) -> Result<Done> {
     }
 
     let system = SystemStore::open(options.root.join("system.db"))?;
-    let rows = system.with_prefix(SEALED_KEY_PREFIX)?;
+    let rows = system.with_prefix(SEALED_KEY_PREFIX).await?;
 
     // Phase 1: open everything, or write nothing.
     let current = SealKey::resolve(&options.current)?;
@@ -95,7 +95,8 @@ pub async fn rotate(options: &Options) -> Result<Done> {
     // value the new key cannot open is a deployment that loses its models on the next boot.
     for (key, model, _) in &plaintexts {
         let stored = system
-            .get(key)?
+            .get(key)
+            .await?
             .ok_or_else(|| Error::internal(format!("{model:?} vanished during rotation")))?;
         next.open(&stored).map_err(|error| {
             Error::internal(format!(
@@ -198,6 +199,7 @@ mod tests {
         for name in ["primary", "cheap"] {
             let stored = system
                 .get(&format!("{SEALED_KEY_PREFIX}{name}"))
+                .await
                 .unwrap()
                 .unwrap();
             assert!(after.key.open(&stored).is_ok(), "{name}");
@@ -238,6 +240,7 @@ mod tests {
         let system = SystemStore::open(root.join("system.db")).unwrap();
         let stored = system
             .get(&format!("{SEALED_KEY_PREFIX}primary"))
+            .await
             .unwrap()
             .unwrap();
         assert!(

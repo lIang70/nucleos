@@ -161,7 +161,7 @@ impl Verifier {
     }
 
     async fn keys(&self) -> Result<Vec<PublicKey>> {
-        let Some(raw) = self.system.get(ADMIN_KEYS_KEY)? else {
+        let Some(raw) = self.system.get(ADMIN_KEYS_KEY).await? else {
             return Err(Error::denied(
                 "no administrator key is enrolled; run `nucleos init`",
             ));

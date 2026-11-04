@@ -1,23 +1,25 @@
 //! The SQLite store.
 
+use crate::pool::{Pool, configure};
 use async_trait::async_trait;
 use nucleos::adapter::{SessionKey, SessionPage, SessionQuery, Store};
 use nucleos::contract::{Event, SessionId, SessionKind, Snapshot};
 use nucleos::error::{Error, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// A store backed by one SQLite database file.
 #[derive(Debug, Clone)]
 pub struct SqliteStore {
-    connection: Arc<Mutex<Connection>>,
+    pool: Arc<Pool>,
 }
 
 impl SqliteStore {
     /// Open, or create, a database at `path`.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        Self::from_connection(Connection::open(path).map_err(failed)?)
+        let path = path.as_ref();
+        Self::from_connection(Connection::open(path).map_err(failed)?, Some(path))
     }
 
     /// A database in memory.
@@ -26,20 +28,12 @@ impl SqliteStore {
     /// second implementation that agrees with it by accident. Each call is an independent database,
     /// which is what a test wants.
     pub fn in_memory() -> Result<Self> {
-        Self::from_connection(Connection::open_in_memory().map_err(failed)?)
+        Self::from_connection(Connection::open_in_memory().map_err(failed)?, None)
     }
 
-    fn from_connection(mut connection: Connection) -> Result<Self> {
+    fn from_connection(mut connection: Connection, path: Option<&Path>) -> Result<Self> {
         // WAL is ignored for in-memory databases, which is fine: there is nothing to recover.
-        connection
-            .pragma_update(None, "journal_mode", "wal")
-            .map_err(failed)?;
-        connection
-            .pragma_update(None, "synchronous", "normal")
-            .map_err(failed)?;
-        connection
-            .pragma_update(None, "foreign_keys", "on")
-            .map_err(failed)?;
+        configure(&connection)?;
         connection
             .execute_batch(
                 // Every key is (tenant, session), not the session alone. Session identifiers are
@@ -183,7 +177,16 @@ impl SqliteStore {
             .map_err(failed)?;
         split_checkpoints(&mut connection)?;
         let store = Self {
-            connection: Arc::new(Mutex::new(connection)),
+            pool: Arc::new(match path {
+                // An in-memory store has no WAL to read through, and a second connection to
+                // `:memory:` would be a different database. One connection, as it has always been.
+                None => Pool::single(connection),
+                Some(path) => Pool::file(connection, path, |path| {
+                    let reader = Connection::open(path).map_err(failed)?;
+                    configure(&reader)?;
+                    Ok(reader)
+                })?,
+            }),
         };
         store.check_version()?;
         Ok(store)
@@ -195,17 +198,19 @@ impl SqliteStore {
         T: Send + 'static,
         F: FnOnce(&mut Connection) -> Result<T> + Send + 'static,
     {
-        let connection = Arc::clone(&self.connection);
-        // A panic in the closure poisons the mutex; `into_inner` recovers the connection rather
-        // than turning one bad call into a store that refuses everything afterwards.
-        tokio::task::spawn_blocking(move || {
-            let mut guard = connection
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            work(&mut guard)
-        })
-        .await
-        .map_err(|error| Error::internal(format!("the store task failed: {error}")))?
+        self.pool.write(work).await
+    }
+
+    /// Run a read on the blocking pool, on a reader of its own.
+    ///
+    /// A view that polls while another session checkpoints is the case this exists for: WAL lets the
+    /// two proceed together, and one connection behind a mutex was what stopped them.
+    async fn read<T, F>(&self, work: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Connection) -> Result<T> + Send + 'static,
+    {
+        self.pool.read(work).await
     }
 }
 
@@ -291,7 +296,7 @@ impl Store for SqliteStore {
 
     async fn sessions(&self, query: &SessionQuery) -> Result<SessionPage> {
         let query = query.clone();
-        self.run(move |connection| {
+        self.read(move |connection| {
             // One row past the page, so "is there more" costs nothing extra.
             let limit = i64::try_from(query.limit.saturating_add(1)).unwrap_or(i64::MAX);
             let after = query.after.as_ref().map(SessionId::as_str).unwrap_or("");
@@ -329,8 +334,13 @@ impl Store for SqliteStore {
 
     async fn snapshot(&self, session: &SessionKey) -> Result<Option<Snapshot>> {
         let (tenant, session) = (session.tenant.clone(), session.id.clone());
-        self.run(move |connection| {
-            let row: Option<(String, i64)> = connection
+        self.read(move |connection| {
+            // One read transaction over the body and its rows, opened *before* the body is read.
+            // Without it the two reads are two snapshots of the database: a checkpoint committed
+            // between them leaves the body from one version and the messages from the next, which is
+            // a session that never existed.
+            let reading = connection.unchecked_transaction().map_err(failed)?;
+            let row: Option<(String, i64)> = reading
                 .query_row(
                     "select body, version from snapshots where tenant = ?1 and session = ?2",
                     params![tenant, session.as_str()],
@@ -347,8 +357,9 @@ impl Store for SqliteStore {
             snapshot.version = u64::try_from(version).unwrap_or(u64::MAX);
             // The two vectors the body leaves out, reassembled in the order they were written. The
             // checkpoint is not a document any more; it is a row plus its rows.
-            snapshot.messages = rows_in(connection, &tenant, session.as_str(), "messages")?;
-            snapshot.ledger.attempts = rows_in(connection, &tenant, session.as_str(), "attempts")?;
+            snapshot.messages = rows_in(&reading, &tenant, session.as_str(), "messages")?;
+            snapshot.ledger.attempts = rows_in(&reading, &tenant, session.as_str(), "attempts")?;
+            reading.commit().map_err(failed)?;
             Ok(Some(snapshot))
         })
         .await
@@ -358,7 +369,7 @@ impl Store for SqliteStore {
         // The body no longer carries the conversation or the ledger, so the head is the body: one
         // small row, and nothing parsed that grows with the session's age.
         let (tenant, session) = (session.tenant.clone(), session.id.clone());
-        self.run(move |connection| {
+        self.read(move |connection| {
             let row: Option<(String, i64)> = connection
                 .query_row(
                     "select body, version from snapshots where tenant = ?1 and session = ?2",
@@ -546,7 +557,7 @@ impl Store for SqliteStore {
         limit: usize,
     ) -> Result<Vec<Event>> {
         let (tenant, id) = (session.tenant.clone(), session.id.clone());
-        self.run(move |connection| {
+        self.read(move |connection| {
             let mut statement = connection
                 .prepare(
                     "select body from events where tenant = ?1 and session = ?2 and seq >= ?3
@@ -577,7 +588,7 @@ impl Store for SqliteStore {
         limit: usize,
     ) -> Result<Vec<Event>> {
         let (tenant, id) = (session.tenant.clone(), session.id.clone());
-        self.run(move |connection| {
+        self.read(move |connection| {
             let mut statement = connection
                 .prepare(
                     "select body from events where tenant = ?1 and session = ?2 and seq < ?3
@@ -607,7 +618,7 @@ impl Store for SqliteStore {
 
     async fn events_since(&self, session: &SessionKey, seq: u64) -> Result<Vec<Event>> {
         let (tenant, session) = (session.tenant.clone(), session.id.clone());
-        self.run(move |connection| {
+        self.read(move |connection| {
             let mut statement = connection
                 .prepare(
                     "select body from events where tenant = ?1 and session = ?2 and seq >= ?3 \
@@ -795,10 +806,7 @@ impl SqliteStore {
     /// daemon, do not downgrade the store" is a sentence an operator can act on; a parse error at the
     /// first `load` is not.
     fn check_version(&self) -> Result<()> {
-        let connection = self
-            .connection
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let connection = self.pool.writer();
         let stored: Option<String> = connection
             .query_row(
                 "select value from meta where key = 'schema_version'",
@@ -836,10 +844,7 @@ impl SqliteStore {
 
     /// The version this store records.
     pub fn schema_version(&self) -> Result<u32> {
-        let connection = self
-            .connection
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let connection = self.pool.writer();
         let stored: Option<String> = connection
             .query_row(
                 "select value from meta where key = 'schema_version'",

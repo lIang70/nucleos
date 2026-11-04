@@ -42,19 +42,34 @@ impl EventWriter {
     }
 
     pub(crate) async fn append(&self, kind: EventKind) -> Result<()> {
+        self.append_batch(std::slice::from_ref(&kind)).await
+    }
+
+    /// Append several events in one store call.
+    ///
+    /// A process reader produces output in 8 KiB reads, and one transaction per read made a chatty
+    /// command cost a commit per chunk. The batch is the same guarantee as the single append — the
+    /// numbers are reserved and written under the log's lock, in order — at one commit.
+    pub(crate) async fn append_batch(&self, kinds: &[EventKind]) -> Result<()> {
+        if kinds.is_empty() {
+            return Ok(());
+        }
         // Reservation and write, atomically with respect to every other writer of this log — the
         // kernel's `emit` included. Without it, stdout and stderr take numbers that reach the store
         // out of order, and the store refuses the second as a gap: the output is silently lost.
         let _appending = self.head.appending.lock().await;
-        let seq = self.head.seq.fetch_add(1, Ordering::SeqCst);
-        let event = Event {
-            seq,
-            session: self.session.id.clone(),
-            at_unix_millis: self.clock.now_unix_millis(),
-            schema_version: Event::SCHEMA_VERSION,
-            kind,
-            meta: BTreeMap::new(),
-        };
-        self.store.append(&self.session, &[event]).await
+        let mut events = Vec::with_capacity(kinds.len());
+        for kind in kinds {
+            let seq = self.head.seq.fetch_add(1, Ordering::SeqCst);
+            events.push(Event {
+                seq,
+                session: self.session.id.clone(),
+                at_unix_millis: self.clock.now_unix_millis(),
+                schema_version: Event::SCHEMA_VERSION,
+                kind: kind.clone(),
+                meta: BTreeMap::new(),
+            });
+        }
+        self.store.append(&self.session, &events).await
     }
 }

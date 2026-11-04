@@ -124,7 +124,7 @@ pub async fn run(options: &Options) -> Result<Done> {
     // password and add another administrator key, and the operator who ran it would have been trying
     // to do something else.
     if !options.force
-        && let Some(existing) = system.get(RECOVERY_KEY)?
+        && let Some(existing) = system.get(RECOVERY_KEY).await?
     {
         let _ = existing;
         return Err(Error::invalid(format!(
@@ -259,10 +259,11 @@ mod tests {
 
         let system = SystemStore::open(root.join("system.db")).unwrap();
         // The password is verifiable and is not stored in the clear.
-        let hash = PasswordHash::from_stored(system.get(RECOVERY_KEY).unwrap().unwrap()).unwrap();
+        let hash =
+            PasswordHash::from_stored(system.get(RECOVERY_KEY).await.unwrap().unwrap()).unwrap();
         assert!(hash.verify("correct horse battery").unwrap());
         // The bootstrap policy parses and permits exactly what it says.
-        let policy = system.get(POLICY_KEY).unwrap().unwrap();
+        let policy = system.get(POLICY_KEY).await.unwrap().unwrap();
         let document = nucleos_policy::Document::parse(&policy).unwrap();
         document.validate().unwrap();
         assert_eq!(
@@ -271,7 +272,7 @@ mod tests {
             "one administrator, and every subject available to them"
         );
         // The administrator's public key is there, and the private one is at the path asked for.
-        let keys = system.get(ADMIN_KEYS_KEY).unwrap().unwrap();
+        let keys = system.get(ADMIN_KEYS_KEY).await.unwrap().unwrap();
         assert!(keys.contains(&done.key_id));
         assert!(root.join("admin.key").exists());
         // A client can find the daemon.
@@ -314,7 +315,8 @@ mod tests {
         run(&options).await.unwrap();
 
         let system = SystemStore::open(root.join("system.db")).unwrap();
-        let hash = PasswordHash::from_stored(system.get(RECOVERY_KEY).unwrap().unwrap()).unwrap();
+        let hash =
+            PasswordHash::from_stored(system.get(RECOVERY_KEY).await.unwrap().unwrap()).unwrap();
         assert!(hash.verify("another horse battery").unwrap());
         assert!(!hash.verify("correct horse battery").unwrap());
 

@@ -31,6 +31,15 @@ use tokio::sync::{Mutex, mpsc, oneshot, watch};
 /// prints a hundred megabytes has to be shortened somewhere.
 const OUTPUT_BUDGET_BYTES: usize = 64 * 1024;
 
+/// How many output chunks one append carries.
+///
+/// Eight reads of 8 KiB is 64 KiB per commit: a chatty build costs a handful of transactions instead
+/// of one per read, and the events stay small enough to stream.
+const OUTPUT_BATCH: usize = 8;
+
+/// ...and how long output may wait, so a command that prints a line and then thinks still shows it.
+const OUTPUT_FLUSH_AFTER: std::time::Duration = std::time::Duration::from_millis(8);
+
 /// What the supervisor can tell a running process to do.
 enum Control {
     /// Write to its stdin.
@@ -473,32 +482,54 @@ async fn reader(
 ) {
     let mut buffer = [0u8; 8192];
     let mut written = 0usize;
+    // Output is batched, like the model's fragments: a command that prints a megabyte should not cost
+    // a commit per 8 KiB read. The buffer is bounded by count and by time, so a slow trickle is still
+    // streamed, and EOF flushes whatever is left.
+    let mut pending: Vec<EventKind> = Vec::new();
+    let mut last_flush = std::time::Instant::now();
     loop {
-        match pipe.read(&mut buffer).await {
-            Ok(0) | Err(_) => break,
-            Ok(read) => {
+        let read = tokio::time::timeout(OUTPUT_FLUSH_AFTER, pipe.read(&mut buffer)).await;
+        let chunk = match read {
+            // A pause: flush what is buffered, then keep waiting. A command that prints one line and
+            // then thinks must not hold that line until it exits.
+            Err(_elapsed) => {
+                if !pending.is_empty() && log.append_batch(&pending).await.is_err() {
+                    break;
+                }
+                pending.clear();
+                last_flush = std::time::Instant::now();
+                continue;
+            }
+            Ok(Ok(0)) | Ok(Err(_)) => break,
+            Ok(Ok(read)) => {
                 if written >= OUTPUT_BUDGET_BYTES {
                     continue; // drain the pipe; the budget is spent
                 }
                 let take = read.min(OUTPUT_BUDGET_BYTES - written);
                 written += take;
-                let chunk = String::from_utf8_lossy(&buffer[..take]).into_owned();
-                {
-                    let mut captured = captured.lock().await;
-                    match stream {
-                        ExecStream::Stdout => captured.stdout.push_str(&chunk),
-                        ExecStream::Stderr => captured.stderr.push_str(&chunk),
-                    }
-                }
-                if log
-                    .append(EventKind::ExecOutput { stream, chunk })
-                    .await
-                    .is_err()
-                {
-                    break;
-                }
+                String::from_utf8_lossy(&buffer[..take]).into_owned()
+            }
+        };
+        {
+            let mut captured = captured.lock().await;
+            match stream {
+                ExecStream::Stdout => captured.stdout.push_str(&chunk),
+                ExecStream::Stderr => captured.stderr.push_str(&chunk),
             }
         }
+        pending.push(EventKind::ExecOutput { stream, chunk });
+        if pending.len() >= OUTPUT_BATCH || last_flush.elapsed() >= OUTPUT_FLUSH_AFTER {
+            if log.append_batch(&pending).await.is_err() {
+                break;
+            }
+            pending.clear();
+            last_flush = std::time::Instant::now();
+        }
+    }
+    // EOF or a failed append: whatever is left goes out, so the log ends with the output the process
+    // actually produced rather than with a gap a reader has to explain.
+    if !pending.is_empty() {
+        let _ = log.append_batch(&pending).await;
     }
     // EOF: every byte this stream will ever produce has been appended.
     let _ = drained.send(()).await;
@@ -545,7 +576,10 @@ impl Kernel {
                     tenant: tenant.to_owned(),
                     id: session.clone(),
                 };
-                let Some(snapshot) = self.store.snapshot(&key).await? else {
+                // The head, not the whole session: a process listing needs `process`, and reading the
+                // snapshot would reassemble every message and every attempt of every session on the
+                // page to answer it.
+                let Some(snapshot) = self.store.snapshot_head(&key).await? else {
                     continue;
                 };
                 let Some(process) = snapshot.process.clone() else {

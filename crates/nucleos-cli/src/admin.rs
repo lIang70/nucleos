@@ -62,7 +62,7 @@ pub struct Done {
 pub async fn recover(options: &Options) -> Result<Done> {
     let system = SystemStore::open(options.root.join("system.db"))?;
 
-    let stored = system.get(RECOVERY_KEY)?.ok_or_else(|| {
+    let stored = system.get(RECOVERY_KEY).await?.ok_or_else(|| {
         Error::invalid(format!(
             "{} is not initialised: run `nucleos init` first",
             options.root.display()
@@ -93,7 +93,7 @@ pub async fn recover(options: &Options) -> Result<Done> {
     };
     store.put(&key.secret())?;
 
-    let mut keys = enrolled(&system)?;
+    let mut keys = enrolled(&system).await?;
     keys.push(public.clone());
     let text = serde_json::to_string(&keys)
         .map_err(|error| Error::internal(format!("cannot encode the keys: {error}")))?;
@@ -125,8 +125,8 @@ pub async fn recover(options: &Options) -> Result<Done> {
 /// Where administrator keys live. The same key the daemon reads.
 const ADMIN_KEYS_KEY: &str = "auth/admin_keys";
 
-fn enrolled(system: &SystemStore) -> Result<Vec<nucleos_auth::PublicKey>> {
-    match system.get(ADMIN_KEYS_KEY)? {
+async fn enrolled(system: &SystemStore) -> Result<Vec<nucleos_auth::PublicKey>> {
+    match system.get(ADMIN_KEYS_KEY).await? {
         Some(raw) => serde_json::from_str(&raw).map_err(|error| {
             Error::internal(format!("stored administrator keys are unreadable: {error}"))
         }),

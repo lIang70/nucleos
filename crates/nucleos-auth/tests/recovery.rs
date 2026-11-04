@@ -29,6 +29,7 @@ async fn a_password_written_at_init_is_verified_after_a_restart() {
     let store = SystemStore::open(&path).unwrap();
     let stored = store
         .get(RECOVERY_KEY)
+        .await
         .unwrap()
         .expect("the hash was written");
     let hash = PasswordHash::from_stored(stored).unwrap();
@@ -45,7 +46,7 @@ async fn the_stored_row_is_not_a_password() {
     let hash = PasswordHash::new(PASSWORD, Cost::TESTING).unwrap();
     store.set(RECOVERY_KEY, hash.as_str()).await.unwrap();
 
-    let row = store.get(RECOVERY_KEY).unwrap().unwrap();
+    let row = store.get(RECOVERY_KEY).await.unwrap().unwrap();
     // What a leaked store gives: an Argon2 hash, and the cost parameters needed to attack it
     // offline. That is a slow problem, not an immediate one — which is the whole point of the cost.
     assert!(!row.contains(PASSWORD));
@@ -56,7 +57,7 @@ async fn the_stored_row_is_not_a_password() {
 async fn an_uninitialised_deployment_says_so_rather_than_failing_a_login() {
     let store = SystemStore::in_memory().unwrap();
     // No row is a state, not an error: `init` has not run, and recovery has nothing to check against.
-    assert_eq!(store.get(RECOVERY_KEY).unwrap(), None);
+    assert_eq!(store.get(RECOVERY_KEY).await.unwrap(), None);
 }
 
 #[test]

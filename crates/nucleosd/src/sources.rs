@@ -88,7 +88,7 @@ impl SourceSet {
     /// A source that cannot start is logged and skipped: a daemon that refuses to boot because one MCP
     /// server is down turns a missing tool into an outage.
     pub async fn load(system: &SystemStore) -> Result<Self> {
-        let Some(raw) = system.get(SOURCES_KEY)? else {
+        let Some(raw) = system.get(SOURCES_KEY).await? else {
             return Ok(Self::default());
         };
         let specs: Vec<SourceSpec> = serde_json::from_str(&raw)

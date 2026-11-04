@@ -133,7 +133,7 @@ pub async fn post_model(
         .add_model(&request.name, Arc::new(adapter))
         .map_err(|error| ApiError::from_error(&error))?;
 
-    let mut models = models_of(&app)?;
+    let mut models = models_of(&app).await?;
     models.retain(|model| model.name != request.name);
     models.push(ModelView {
         name: request.name.clone(),
@@ -179,7 +179,7 @@ pub async fn delete_model(
             "no model named {name:?}"
         ))));
     }
-    let mut models = models_of(&app)?;
+    let mut models = models_of(&app).await?;
     models.retain(|model| model.name != name);
     persist_models(&app, &models, &admin).await?;
     app.set_models(models.iter().map(|model| model.name.clone()).collect());
@@ -192,8 +192,8 @@ pub async fn delete_model(
 ///
 /// Without this a model added by request would work until the next restart and then vanish — the
 /// operator would have been told the change succeeded, and it did, for as long as the process lived.
-pub fn stored_models(system: &SystemStore) -> Result<Vec<ModelView>> {
-    let Some(raw) = system.get(MODELS_KEY)? else {
+pub async fn stored_models(system: &SystemStore) -> Result<Vec<ModelView>> {
+    let Some(raw) = system.get(MODELS_KEY).await? else {
         return Ok(Vec::new());
     };
     serde_json::from_str(&raw).map_err(|error| {
@@ -276,7 +276,9 @@ pub async fn put_tenant_policy(
         .map_err(|error| ApiError::from_error(&error))?;
     // The whole policy is rebuilt and swapped: a tenant policy is not a patch on the deployment's, it
     // is a second answer that has to be composed with it on every call.
-    let layered = layered_from(system).map_err(|error| ApiError::from_error(&error))?;
+    let layered = layered_from(system)
+        .await
+        .map_err(|error| ApiError::from_error(&error))?;
     kernel
         .set_policy(Arc::new(layered))
         .map_err(|error| ApiError::from_error(&error))?;
@@ -319,7 +321,7 @@ pub async fn put_tenant_limits(
     permit_scope(&app, &admin, ConfigScope::Tenant(&tenant), "limits").await?;
 
     let kernel = app.kernel()?;
-    let mut view = stored_limits(&app, &tenant)?;
+    let mut view = stored_limits(&app, &tenant).await?;
     // Absent leaves it unchanged; `null` clears; an array sets — including an empty one, which means
     // "nothing", not "no limit".
     if let Some(tools) = &request.tools {
@@ -357,8 +359,8 @@ pub async fn put_tenant_limits(
 }
 
 /// Apply every stored tenant limit to a kernel, at start-up.
-pub fn apply_tenant_limits(kernel: &nucleos::Kernel, system: &SystemStore) -> Result<()> {
-    for (key, value) in system.with_prefix(TENANT_LIMITS_PREFIX)? {
+pub async fn apply_tenant_limits(kernel: &nucleos::Kernel, system: &SystemStore) -> Result<()> {
+    for (key, value) in system.with_prefix(TENANT_LIMITS_PREFIX).await? {
         let Some(tenant) = key.strip_prefix(TENANT_LIMITS_PREFIX) else {
             continue;
         };
@@ -374,9 +376,13 @@ pub fn apply_tenant_limits(kernel: &nucleos::Kernel, system: &SystemStore) -> Re
     Ok(())
 }
 
-fn stored_limits(app: &Arc<App>, tenant: &str) -> std::result::Result<TenantLimitsView, ApiError> {
+async fn stored_limits(
+    app: &Arc<App>,
+    tenant: &str,
+) -> std::result::Result<TenantLimitsView, ApiError> {
     let Some(raw) = system(app)?
         .get(&format!("{TENANT_LIMITS_PREFIX}{tenant}"))
+        .await
         .map_err(|error| ApiError::from_error(&error))?
     else {
         return Ok(TenantLimitsView {
@@ -393,12 +399,13 @@ fn stored_limits(app: &Arc<App>, tenant: &str) -> std::result::Result<TenantLimi
 }
 
 /// The policy in force, rebuilt from the store: the deployment's and every tenant's.
-pub fn layered_from(system: &SystemStore) -> Result<nucleos_policy::Layered> {
+pub async fn layered_from(system: &SystemStore) -> Result<nucleos_policy::Layered> {
     let text = system
-        .get(POLICY_KEY)?
+        .get(POLICY_KEY)
+        .await?
         .ok_or_else(|| Error::invalid("this deployment has no policy: run `nucleos init`"))?;
     let mut layered = nucleos_policy::Layered::system(nucleos_policy::Document::parse(&text)?)?;
-    for (key, value) in system.with_prefix(TENANT_POLICY_PREFIX)? {
+    for (key, value) in system.with_prefix(TENANT_POLICY_PREFIX).await? {
         let Some(tenant) = key.strip_prefix(TENANT_POLICY_PREFIX) else {
             continue;
         };
@@ -434,7 +441,8 @@ pub async fn list_admin_keys(
     _admin: Admin,
 ) -> std::result::Result<Json<AdminKeyListResponse>, ApiError> {
     Ok(Json(AdminKeyListResponse {
-        keys: enrolled(&app)?
+        keys: enrolled(&app)
+            .await?
             .iter()
             .map(|key| ConfigKey {
                 id: key.id.clone(),
@@ -468,7 +476,7 @@ pub async fn post_admin_key(
     )
     .map_err(|error| ApiError::from_error(&error))?;
 
-    let mut keys = enrolled(&app)?;
+    let mut keys = enrolled(&app).await?;
     if keys.iter().any(|existing| existing.id == key.id) {
         return Err(ApiError::from_error(&Error::invalid(format!(
             "key {} is already enrolled",
@@ -502,7 +510,7 @@ pub async fn delete_admin_key(
 ) -> std::result::Result<Json<AdminKeyListResponse>, ApiError> {
     permit(&app, &admin, "admin_keys").await?;
 
-    let mut keys = enrolled(&app)?;
+    let mut keys = enrolled(&app).await?;
     let before = keys.len();
     keys.retain(|key| key.id != id);
     if keys.len() == before {
@@ -537,9 +545,10 @@ fn view(key: &nucleos_auth::PublicKey) -> ConfigKey {
     }
 }
 
-fn enrolled(app: &Arc<App>) -> std::result::Result<Vec<nucleos_auth::PublicKey>, ApiError> {
+async fn enrolled(app: &Arc<App>) -> std::result::Result<Vec<nucleos_auth::PublicKey>, ApiError> {
     let Some(raw) = system(app)?
         .get(crate::admin::ADMIN_KEYS_KEY)
+        .await
         .map_err(|error| ApiError::from_error(&error))?
     else {
         return Ok(Vec::new());
@@ -637,6 +646,7 @@ pub async fn list_tokens(
 ) -> std::result::Result<Json<nucleos::wire::api::TokenListResponse>, ApiError> {
     let tokens = system(&app)?
         .list_tokens()
+        .await
         .map_err(|error| ApiError::from_error(&error))?;
     Ok(Json(nucleos::wire::api::TokenListResponse {
         tokens: tokens
@@ -679,7 +689,7 @@ pub async fn list_models(
     _admin: Admin,
 ) -> std::result::Result<Json<ModelListResponse>, ApiError> {
     Ok(Json(ModelListResponse {
-        models: models_of(&app)?,
+        models: models_of(&app).await?,
     }))
 }
 
@@ -706,8 +716,10 @@ fn system(app: &Arc<App>) -> std::result::Result<&Arc<SystemStore>, ApiError> {
         .ok_or_else(|| ApiError::from_error(&Error::unavailable("this daemon has no system store")))
 }
 
-fn models_of(app: &Arc<App>) -> std::result::Result<Vec<ModelView>, ApiError> {
-    stored_models(system(app)?).map_err(|error| ApiError::from_error(&error))
+async fn models_of(app: &Arc<App>) -> std::result::Result<Vec<ModelView>, ApiError> {
+    stored_models(system(app)?)
+        .await
+        .map_err(|error| ApiError::from_error(&error))
 }
 
 async fn persist_models(
@@ -754,25 +766,27 @@ async fn record(
 /// Built from the store rather than from what the daemon is holding: an export that described the
 /// running state would be an export that could not reproduce it, and the two differ exactly when
 /// something went wrong.
-pub fn document(system: &SystemStore) -> Result<nucleos::wire::api::Deployment> {
+pub async fn document(system: &SystemStore) -> Result<nucleos::wire::api::Deployment> {
     use nucleos::wire::api::{Deployment, TenantDocument, TenantLimitsView};
 
-    let policy = system.get(crate::http::POLICY_KEY)?;
-    let models = stored_models(system)?;
-    let sources: Vec<crate::sources::SourceSpec> = match system.get(crate::sources::SOURCES_KEY)? {
-        Some(raw) => serde_json::from_str(&raw)
-            .map_err(|error| Error::internal(format!("stored sources are unreadable: {error}")))?,
-        None => Vec::new(),
-    };
+    let policy = system.get(crate::http::POLICY_KEY).await?;
+    let models = stored_models(system).await?;
+    let sources: Vec<crate::sources::SourceSpec> =
+        match system.get(crate::sources::SOURCES_KEY).await? {
+            Some(raw) => serde_json::from_str(&raw).map_err(|error| {
+                Error::internal(format!("stored sources are unreadable: {error}"))
+            })?,
+            None => Vec::new(),
+        };
 
     let mut tenants: std::collections::BTreeMap<String, TenantDocument> =
         std::collections::BTreeMap::new();
-    for (key, value) in system.with_prefix(TENANT_POLICY_PREFIX)? {
+    for (key, value) in system.with_prefix(TENANT_POLICY_PREFIX).await? {
         if let Some(tenant) = key.strip_prefix(TENANT_POLICY_PREFIX) {
             tenants.entry(tenant.to_owned()).or_default().policy = Some(value);
         }
     }
-    for (key, value) in system.with_prefix(TENANT_LIMITS_PREFIX)? {
+    for (key, value) in system.with_prefix(TENANT_LIMITS_PREFIX).await? {
         let Some(tenant) = key.strip_prefix(TENANT_LIMITS_PREFIX) else {
             continue;
         };
@@ -786,7 +800,7 @@ pub fn document(system: &SystemStore) -> Result<nucleos::wire::api::Deployment> 
 
     Ok(Deployment {
         document_version: 1,
-        revision: system.revision()?,
+        revision: system.revision().await?,
         policy,
         models,
         sources: sources
@@ -828,7 +842,7 @@ pub async fn apply(
     expected_revision: Option<u64>,
     admin: &crate::admin::Admin,
 ) -> Result<Applied> {
-    let current = system.revision()?;
+    let current = system.revision().await?;
     if let Some(expected) = expected_revision
         && expected != current
     {
@@ -997,7 +1011,7 @@ async fn rehydrate(
 
     // Policy first: everything else is checked against it, and a document that widens permissions must
     // widen them before the models it names are reachable.
-    let layered = layered_from(system)?;
+    let layered = layered_from(system).await?;
     kernel.set_policy(Arc::new(layered))?;
 
     // Models: remove what the document no longer names, then add or replace what it does. Replacing
@@ -1015,7 +1029,10 @@ async fn rehydrate(
     }
     for model in &document.models {
         let api_key = match app.seal() {
-            Some(seal) => match system.get(&format!("{SEALED_KEY_PREFIX}{}", model.name))? {
+            Some(seal) => match system
+                .get(&format!("{SEALED_KEY_PREFIX}{}", model.name))
+                .await?
+            {
                 Some(sealed) => Some(seal.open(&sealed)?),
                 None => None,
             },
@@ -1037,7 +1054,7 @@ async fn rehydrate(
         kernel.add_model(&model.name, Arc::new(adapter))?;
     }
 
-    apply_tenant_limits(kernel, system)?;
+    apply_tenant_limits(kernel, system).await?;
 
     // Sources: reconnected from the store, then published as one generation. A source that cannot
     // start is logged and skipped, the same way start-up treats it.

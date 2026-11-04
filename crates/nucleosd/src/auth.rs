@@ -40,11 +40,11 @@ impl TokenAuth {
     }
 
     /// Who is calling, or why they may not.
-    pub fn authenticate(&self, header: Option<&str>) -> Result<Principal, Error> {
-        let required = self
-            .system
-            .tokens_required()
-            .map_err(|error| Error::internal(format!("cannot read the token table: {error}")))?;
+    pub async fn authenticate(&self, header: Option<&str>) -> Result<Principal, Error> {
+        let required =
+            self.system.tokens_required().await.map_err(|error| {
+                Error::internal(format!("cannot read the token table: {error}"))
+            })?;
         if !required {
             // No token exists, so possessing one cannot be the check. The socket's permissions are.
             return Ok(self.fallback.clone());
@@ -59,6 +59,7 @@ impl TokenAuth {
         let found = self
             .system
             .tenant_for_hash(&token::hash(presented))
+            .await
             .map_err(|error| Error::internal(format!("cannot read the token table: {error}")))?;
         match found {
             Some((_id, tenant, subject)) => Ok(Principal { tenant, subject }),
@@ -124,7 +125,7 @@ mod tests {
     #[tokio::test]
     async fn with_no_tokens_the_socket_is_the_authentication() {
         let (auth, _) = auth();
-        let principal = auth.authenticate(None).unwrap();
+        let principal = auth.authenticate(None).await.unwrap();
         assert_eq!(principal.tenant, "local");
     }
 
@@ -135,6 +136,7 @@ mod tests {
 
         let principal = auth
             .authenticate(Some(&format!("Bearer {}", issued.token)))
+            .await
             .unwrap();
         assert_eq!(principal.tenant, "acme");
         assert_eq!(principal.subject, "alice");
@@ -146,7 +148,7 @@ mod tests {
         // local caller in, because "no header" used to mean the fallback.
         let (auth, system) = auth();
         issue(&system, "acme", "alice").await;
-        let error = auth.authenticate(None).unwrap_err();
+        let error = auth.authenticate(None).await.unwrap_err();
         assert!(error.reason().contains("bearer"), "{error:?}");
     }
 
@@ -156,6 +158,7 @@ mod tests {
         issue(&system, "acme", "alice").await;
         let error = auth
             .authenticate(Some("Bearer nu_not-a-real-token"))
+            .await
             .unwrap_err();
         assert!(error.reason().contains("not valid"), "{error:?}");
     }
@@ -165,10 +168,10 @@ mod tests {
         let (auth, system) = auth();
         let issued = issue(&system, "acme", "alice").await;
         let header = format!("Bearer {}", issued.token);
-        assert!(auth.authenticate(Some(&header)).is_ok());
+        assert!(auth.authenticate(Some(&header)).await.is_ok());
 
         assert!(system.revoke_token(&issued.id).await.unwrap());
-        let error = auth.authenticate(Some(&header)).unwrap_err();
+        let error = auth.authenticate(Some(&header)).await.unwrap_err();
         assert!(error.reason().contains("not valid"), "{error:?}");
     }
 
@@ -182,10 +185,11 @@ mod tests {
         system.require_tokens().await.unwrap();
         system.revoke_token(&issued.id).await.unwrap();
 
-        let error = auth.authenticate(None).unwrap_err();
+        let error = auth.authenticate(None).await.unwrap_err();
         assert!(error.reason().contains("bearer"), "{error:?}");
         let error = auth
             .authenticate(Some(&format!("Bearer {}", issued.token)))
+            .await
             .unwrap_err();
         assert!(error.reason().contains("not valid"), "{error:?}");
     }
@@ -194,11 +198,23 @@ mod tests {
     async fn the_store_never_holds_the_token_itself() {
         let (_, system) = auth();
         let issued = issue(&system, "acme", "alice").await;
-        let listed = system.list_tokens().unwrap();
+        let listed = system.list_tokens().await.unwrap();
         assert_eq!(listed.len(), 1);
         assert!(listed[0].hash.is_empty(), "a listing carries no hash");
         // And the row that does carry one carries the hash, not the token.
-        assert!(system.tenant_for_hash(&issued.hash).unwrap().is_some());
-        assert!(system.tenant_for_hash(&issued.token).unwrap().is_none());
+        assert!(
+            system
+                .tenant_for_hash(&issued.hash)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            system
+                .tenant_for_hash(&issued.token)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 }

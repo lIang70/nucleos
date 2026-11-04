@@ -632,3 +632,77 @@ async fn a_checkpoint_cannot_remove_messages() {
         "a refused checkpoint changed nothing"
     );
 }
+
+/// Readers and the writer proceed together, and a reader never sees half a checkpoint.
+///
+/// The point of the pool: one connection behind a mutex made every read wait behind every write, and
+/// WAL only removes that wait if the readers have connections of their own. This drives reads and
+/// writes at the same file concurrently and asserts two things — nothing fails with `SQLITE_BUSY`, and
+/// every snapshot read is internally consistent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn readers_and_the_writer_proceed_together() {
+    let dir = temp_dir("pool");
+    let path = dir.join("sessions.db");
+    let store = std::sync::Arc::new(SqliteStore::open(&path).unwrap());
+    let session = SessionId::new("s1");
+    store
+        .append(&key(&session), &[event(&session, 0)])
+        .await
+        .unwrap();
+    // One checkpoint before the readers start, so "no snapshot yet" is not a race this test is about.
+    let mut first = snapshot_for(&session);
+    first.seq = 0;
+    first.version = 1;
+    first.messages = vec![message()];
+    first.ledger.attempts = vec![attempt(0)];
+    store.write_snapshot(first).await.unwrap();
+
+    let writer = {
+        let store = std::sync::Arc::clone(&store);
+        let session = session.clone();
+        tokio::spawn(async move {
+            for version in 2..=40u64 {
+                let mut snapshot = snapshot_for(&session);
+                snapshot.seq = 0;
+                snapshot.version = version;
+                snapshot.messages = (0..version).map(|_| message()).collect();
+                snapshot.ledger.attempts = (0..version as u32).map(attempt).collect();
+                store.write_snapshot(snapshot).await.unwrap();
+                tokio::task::yield_now().await;
+            }
+        })
+    };
+
+    let mut readers = Vec::new();
+    for _ in 0..8 {
+        let store = std::sync::Arc::clone(&store);
+        let session = session.clone();
+        readers.push(tokio::spawn(async move {
+            for _ in 0..40 {
+                let snapshot = store
+                    .snapshot(&key(&session))
+                    .await
+                    .unwrap()
+                    .expect("a checkpoint exists after the first write");
+                // The invariant a split checkpoint must keep: the held counts and the rows agree, so
+                // no reader ever sees a body that claims more than was written.
+                assert_eq!(
+                    snapshot.messages.len() as u64,
+                    snapshot.version,
+                    "a reader saw a body from one checkpoint and rows from another"
+                );
+                assert_eq!(snapshot.ledger.attempts.len() as u64, snapshot.version);
+                let head = store.snapshot_head(&key(&session)).await.unwrap().unwrap();
+                assert!(head.messages.is_empty());
+                tokio::task::yield_now().await;
+            }
+        }));
+    }
+
+    writer.await.unwrap();
+    for reader in readers {
+        reader.await.unwrap();
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

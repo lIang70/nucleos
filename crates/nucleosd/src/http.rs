@@ -254,9 +254,9 @@ impl App {
         tracing::debug!(
             event = "system_store_open",
             path = %layout.system_store().display(),
-            schema = system.schema_version()?,
+            schema = system.schema_version().await?,
         );
-        let stored = crate::configure::stored_models(&system)?;
+        let stored = crate::configure::stored_models(&system).await?;
         // Resolved before any adapter is built: a sealed key has to be openable at start-up, and a
         // missing seal key with sealed rows in the store is a deployment that cannot reach its models.
         let seal = nucleos_auth::SealKey::resolve(&layout.seal_key)?;
@@ -312,7 +312,7 @@ impl App {
         // The deployment's policy, composed with one per tenant that wrote its own. Composed rather
         // than replaced: a tenant that wrote an empty document would otherwise allow everything the
         // deployment forbids.
-        let layered = crate::configure::layered_from(&system)?;
+        let layered = crate::configure::layered_from(&system).await?;
         tracing::info!(
             event = "policy_loaded",
             source = "system store",
@@ -336,11 +336,14 @@ impl App {
             .routing(routing);
         for model in &stored {
             let api_key = match &seal {
-                Some(seal) => match system.get(&format!(
-                    "{}{}",
-                    crate::configure::SEALED_KEY_PREFIX,
-                    model.name
-                ))? {
+                Some(seal) => match system
+                    .get(&format!(
+                        "{}{}",
+                        crate::configure::SEALED_KEY_PREFIX,
+                        model.name
+                    ))
+                    .await?
+                {
                     Some(sealed) => Some(seal.open(&sealed)?),
                     None => None,
                 },
@@ -370,7 +373,7 @@ impl App {
         let kernel = builder.build()?;
         // Limits a previous run stored are applied before the first request: a ceiling an operator set
         // during an incident has to survive the restart that incident caused.
-        crate::configure::apply_tenant_limits(&kernel, &system)?;
+        crate::configure::apply_tenant_limits(&kernel, &system).await?;
 
         let models: Vec<String> = stored.into_iter().map(|model| model.name).collect();
 
@@ -1118,7 +1121,7 @@ async fn authenticate(
     // No token table means no token exists to check: the socket's permissions are the
     // authentication, and every call is attributed to the daemon's own principal.
     let resolved = match app.tokens() {
-        Some(tokens) => tokens.authenticate(header),
+        Some(tokens) => tokens.authenticate(header).await,
         None => Ok(app.principal.clone()),
     };
     match resolved {
@@ -1185,6 +1188,7 @@ async fn config(
 
     let keys = system
         .get(crate::admin::ADMIN_KEYS_KEY)
+        .await
         .map_err(|error| ApiError::from_error(&error))?;
     let keys: Vec<nucleos_auth::PublicKey> = keys
         .as_deref()
@@ -1203,8 +1207,9 @@ async fn config(
         tenant = %admin.principal.tenant,
     );
 
-    let document =
-        crate::configure::document(system).map_err(|error| ApiError::from_error(&error))?;
+    let document = crate::configure::document(system)
+        .await
+        .map_err(|error| ApiError::from_error(&error))?;
     let tenants = document.tenants.keys().cloned().collect::<Vec<String>>();
 
     Ok(Json(ConfigResponse {
@@ -1216,6 +1221,7 @@ async fn config(
         tenant_policies: tenants,
         schema_version: system
             .schema_version()
+            .await
             .map_err(|error| ApiError::from_error(&error))?,
         root: app.root().map(|root| root.display().to_string()),
         policy_json: document.policy.clone(),
@@ -1302,6 +1308,7 @@ async fn config_history(
     let limit = if query.limit == 0 { 50 } else { query.limit };
     let rows = system
         .history(limit.min(500))
+        .await
         .map_err(|error| ApiError::from_error(&error))?;
     Ok(Json(ChangeListResponse {
         changes: rows

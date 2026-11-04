@@ -1870,7 +1870,7 @@ async fn every_change_lands_in_the_deployment_history() {
     )
     .await;
 
-    let history = app.system().unwrap().history(10).unwrap();
+    let history = app.system().unwrap().history(10).await.unwrap();
     let keys: Vec<&str> = history.iter().map(|change| change.key.as_str()).collect();
     // Newest first: `limit` means "how many do I want to know about", and the answer to that is the
     // recent ones — not the three oldest changes the deployment ever had.
@@ -2099,6 +2099,7 @@ async fn an_api_key_is_sealed_and_never_stored_in_the_clear() {
             nucleosd::configure::SEALED_KEY_PREFIX,
             "primary"
         ))
+        .await
         .unwrap()
         .expect("a sealed row was written");
     assert!(!stored.contains("sk-a-real-key"), "{stored}");
