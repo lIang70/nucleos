@@ -18,10 +18,11 @@ use nucleos::contract::{ErrorCode, Event, EventKind, Principal, SessionId, Sessi
 use nucleos::kernel::{HitlVerdict, Kernel, SessionSpec, StateWrite};
 use nucleos::wire::api::{
     AppliedDeployment, CancelResponse, ChangeListResponse, ChangeView, ConfigKey, ConfigResponse,
-    DeletedResponse, Deployment, DescribeResponse, ErrorBody, InferenceRequest, InferenceResponse,
-    MetricsResponse, ProcessInfo, ProcessListResponse, ProcessStartRequest, ProcessStartResponse,
-    ReloadResponse, RetireResponse, SessionListResponse, SessionSummary, SessionView, StartRequest,
-    StartResponse, StateRequest, StdinRequest, ToolBatchRequest, ToolBatchResponse, VerdictRequest,
+    CreditRequest, CreditResponse, DeletedResponse, Deployment, DescribeResponse, ErrorBody,
+    InferenceRequest, InferenceResponse, MetricsResponse, ProcessInfo, ProcessListResponse,
+    ProcessStartRequest, ProcessStartResponse, ReloadResponse, RetireResponse, SessionListResponse,
+    SessionSummary, SessionView, StartRequest, StartResponse, StateRequest, StdinRequest,
+    ToolBatchRequest, ToolBatchResponse, VerdictRequest,
 };
 use nucleos::wire::openapi::{self, Kind, Parameter};
 use nucleos_agent as agent;
@@ -943,6 +944,18 @@ pub const ROUTES: &[Route] = &[
             reply: openapi::Reply::Json("ReloadResponse"),
         },
         build: || post(reload),
+    },
+    Route {
+        meta: openapi::Route {
+            parameters: &[],
+            method: "post",
+            path: "/v1/sessions/{id}/credit",
+            operation: "creditSession",
+            summary: "Grant more credit, and revive a session that stopped on a budget.",
+            request: Some("CreditRequest"),
+            reply: openapi::Reply::Json("CreditResponse"),
+        },
+        build: || post(credit),
     },
     Route {
         meta: openapi::Route {
@@ -2137,6 +2150,32 @@ async fn configure(
         .map_err(|error| ApiError::from_error(&error))?;
     Ok(Json(nucleos::wire::api::ConfigureResponse {
         changed: changed.into_iter().map(str::to_owned).collect(),
+    }))
+}
+
+/// Grant credit, and revive a session that stopped on a budget.
+async fn credit(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    Path(id): Path<String>,
+    Json(request): Json<CreditRequest>,
+) -> Result<Json<CreditResponse>, ApiError> {
+    let kernel = app.kernel()?.clone();
+    let mut session = load(&kernel, &caller, &id).await?;
+    kernel
+        .credit(&mut session, request.amount)
+        .await
+        .map_err(|error| ApiError::from_error(&error))?;
+    Ok(Json(CreditResponse {
+        session: session.id().as_str().to_owned(),
+        state: if session.is_closed() {
+            nucleos::contract::SessionState::Closed
+        } else {
+            nucleos::contract::SessionState::Open
+        },
+        stop: session.stop_reason(),
+        credit_tokens: session.credit(),
+        next_seq: session.next_seq(),
     }))
 }
 

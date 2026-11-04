@@ -556,6 +556,66 @@
         ],
         "type": "object"
       },
+      "CreditRequest": {
+        "description": "A grant of credit to a session.",
+        "properties": {
+          "amount": {
+            "description": "How many tokens to grant. Absent removes the limit entirely.\n\nZero is refused: a grant of nothing is not a grant, and it would read as \"unlimited\" if it were\ntreated as absent.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "CreditResponse": {
+        "description": "What a grant left the session with.",
+        "properties": {
+          "credit_tokens": {
+            "description": "The balance after the grant. Absent means unlimited.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "next_seq": {
+            "description": "The cursor a client resumes from.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session": {
+            "description": "Which session.",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/SessionState",
+            "description": "Whether it takes calls again."
+          },
+          "stop": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StopReason"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why it stopped, if it still has a stop reason. Absent after a revival."
+          }
+        },
+        "required": [
+          "session",
+          "state",
+          "next_seq"
+        ],
+        "type": "object"
+      },
       "DataPart": {
         "description": "Structured output. JSON text rather than bytes, because JSON is UTF-8 by definition and\ntext is what every toolchain can read.",
         "properties": {
@@ -1184,6 +1244,37 @@
             "required": [
               "kind",
               "reason"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Credit was granted to a session.\n\nAn event rather than a silent mutation: a replay that did not see this would think the session\nran out of money when it did not, and a session that was revived would look like one that never\nstopped.",
+            "properties": {
+              "amount": {
+                "description": "How much was granted. `None` means the limit was removed.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "kind": {
+                "const": "credited",
+                "type": "string"
+              },
+              "remaining": {
+                "description": "The balance after the grant. `None` means unlimited.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind"
             ],
             "type": "object"
           },
@@ -3266,11 +3357,13 @@
             "description": "The mutable configuration to start from — the same shape `configure` takes, so a session can\nbegin in any state it could later be changed into."
           },
           "credit_tokens": {
-            "default": 0,
-            "description": "Tokens granted up front.\n\n**Zero is not \"no ceiling\".** `spend` closes the session on its first turn when the credit is\nzero, so a request that omits this field opens a session that cannot answer once — and the stop\nreason will be about tokens it never had. Set it. Making it required is a wire contract change\n(every caller and every fixture would have to state a number), so it is documented here first.",
+            "description": "Tokens granted up front. `None` means no limit, which is the default.\n\nOmitting this field opens a session with no token ceiling. Setting it to zero opens one that\nstops on its first turn — a limit of zero, not \"no limit\".",
             "format": "uint64",
             "minimum": 0,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "initial": {
             "default": [],
@@ -5867,6 +5960,105 @@
           }
         },
         "summary": "Change what a session is doing, without closing it."
+      }
+    },
+    "/v1/sessions/{id}/credit": {
+      "post": {
+        "operationId": "creditSession",
+        "parameters": [
+          {
+            "description": "The session this addresses.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreditRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditResponse"
+                }
+              }
+            },
+            "description": "The result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "Grant more credit, and revive a session that stopped on a budget."
       }
     },
     "/v1/sessions/{id}/events": {

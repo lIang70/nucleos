@@ -303,3 +303,84 @@ async fn a_tool_batch_is_gated_too() {
         "the tool did not run"
     );
 }
+
+/// A session that ran out of credit can be topped up, and one that stopped on a budget can be revived.
+#[tokio::test]
+async fn credit_revives_a_session_that_stopped_on_a_budget() {
+    let (kernel, store) = build(FakeModel::text(["ok"]));
+    let mut session = kernel
+        .open(
+            &principal(),
+            SessionId::new("s1"),
+            SessionSpec {
+                credit_tokens: Some(0),
+                ..SessionSpec::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    // Exhausted on the first call, as the zero grant says.
+    assert!(kernel.inference(&mut session, &[]).await.is_err());
+    assert!(session.is_closed());
+
+    // Revived by a grant, and open again.
+    kernel.credit(&mut session, Some(10_000)).await.unwrap();
+    assert!(!session.is_closed());
+    assert_eq!(session.stop_reason(), None);
+    assert_eq!(session.credit(), Some(10_000));
+
+    // The grant is in the log: a replay cannot mistake this for a session that never stopped.
+    let events = store.events_since(&key(session.id()), 0).await.unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::Credited { .. })),
+        "no Credited event: {events:?}"
+    );
+
+    // And the revival survives a reload, which is the whole point of recording it.
+    let reloaded = kernel.load(&principal(), session.id()).await.unwrap();
+    assert!(!reloaded.is_closed());
+    assert_eq!(reloaded.credit(), Some(10_000));
+}
+
+/// A session that ended for any other reason is not revived by money.
+#[tokio::test]
+async fn credit_does_not_revive_a_session_that_was_cancelled() {
+    let (kernel, _store) = build(FakeModel::text(["ok"]));
+    let mut session = kernel
+        .open(&principal(), SessionId::new("s1"), SessionSpec::default())
+        .await
+        .unwrap();
+    kernel
+        .close(&mut session, nucleos::contract::StopReason::Cancelled)
+        .await
+        .unwrap();
+
+    let error = kernel.credit(&mut session, Some(1_000)).await.unwrap_err();
+    assert_eq!(error.code(), ErrorCode::Invalid);
+    assert!(session.is_closed(), "a cancelled session stays closed");
+}
+
+/// A grant of nothing is not a grant, and removing the limit is explicit.
+#[tokio::test]
+async fn credit_of_zero_is_refused_and_none_removes_the_limit() {
+    let (kernel, _store) = build(FakeModel::text(["ok"]));
+    let mut session = kernel
+        .open(
+            &principal(),
+            SessionId::new("s1"),
+            SessionSpec {
+                credit_tokens: Some(100),
+                ..SessionSpec::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    assert!(kernel.credit(&mut session, Some(0)).await.is_err());
+
+    kernel.credit(&mut session, None).await.unwrap();
+    assert_eq!(session.credit(), None, "no limit after the grant");
+}

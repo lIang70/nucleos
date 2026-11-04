@@ -255,6 +255,12 @@ impl Session {
         self.steps
     }
 
+    /// The credit left, if this session has a limit.
+    #[must_use]
+    pub fn credit(&self) -> Option<u64> {
+        self.credit_tokens
+    }
+
     /// What it has spent.
     #[must_use]
     pub fn usage(&self) -> &Usage {

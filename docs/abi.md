@@ -347,14 +347,20 @@ counted after the body is built, so it cannot appear in its own response.
 event debits the credit; on exhaustion the session drains, writes a checkpoint, emits
 `budget_exhausted`, and stops.
 
-There is **no route that extends it**. The limits are part of what the session is and travel in the
-checkpoint, so a request cannot forget them or widen them — and a caller that wants more starts a
-new session. §11 records the missing extension as a gap rather than an oversight.
+`POST /v1/sessions/{id}/credit` grants more: `{"amount": 10000}` adds tokens, and omitting `amount`
+removes the limit. A session that stopped on a budget is revived — open again, stop reason cleared.
+A session that ended any other way is refused: completed, cancelled and failed are endings, not a
+lack of funds. The grant is recorded as `credited`, so a replay cannot mistake a revived session for
+one that never stopped.
+
+The four `Budget` ceilings are unchanged: they answer "how much may this session ever consume",
+which is not the question a grant answers.
 
 Backpressure and cost control are the same mechanism, which is why there is no separate
 rate-limit surface: the caller decides how much to grant at `Start`.
 
-`credit_tokens: 0` is not "no ceiling": it closes the session on its first turn. Set it.
+`credit_tokens: 0` is not "no ceiling": it closes the session on its first turn. Omitting the field
+means no limit.
 
 ## 6. Generations and reload
 
@@ -522,7 +528,7 @@ A stream that can be wrong about order is a stream nobody can build a UI on, so:
 | Stateless model invocation     | This is an agent OS, not a gateway. A host that wants a raw model call links the library; see [`architecture.md`](architecture.md) §7.                    |
 | Embeddings                     | A tool: an embedding model belongs with the index and the ranking that use it.                                                                            |
 | Speech to text, text to speech | A tool. Voice output also needs an artifact store the kernel does not have.                                                                               |
-| Raising credit                 | A session's limits are fixed at `Start` and carried in the checkpoint; raising them is a syscall that does not exist yet, not an oversight in this table. |
+| Raising the `Budget` ceilings  | Those are fixed at `Start` and carried in the checkpoint; a grant moves the balance, not the ceiling. |
 
 An endpoint that exists and returns 501 is a contract nobody can rely on, so these are absent
 rather than declared. Session cancel and list, and source registration and reload, are served —

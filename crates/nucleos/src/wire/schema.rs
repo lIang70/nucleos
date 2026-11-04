@@ -66,6 +66,10 @@ pub struct Abi {
     pub source_view: api::SourceView,
     /// `POST /v1/sessions/{id}/cancel`.
     pub cancel_response: api::CancelResponse,
+    /// `POST /v1/sessions/{id}/credit`.
+    pub credit_request: api::CreditRequest,
+    /// What a grant leaves the session with.
+    pub credit_response: api::CreditResponse,
     /// `GET /v1/sessions`.
     pub session_summary: api::SessionSummary,
     /// `GET /v1/sessions`.

@@ -13,6 +13,61 @@ use crate::contract::{EventKind, StopReason};
 use crate::error::{Error, Result};
 
 impl Kernel {
+    /// Grant more credit to a session, and revive one that stopped on a budget.
+    ///
+    /// Two acts in one call, because they are the same act from the caller's side: topping up a running
+    /// session, and bringing back one that ran out of money. A session that stopped for any other reason
+    /// — completed, cancelled, failed, denied — is *done*, not out of credit, and is refused.
+    ///
+    /// `amount` is `Some(tokens)` to grant that many, or `None` to remove the limit. The balance after
+    /// the grant is recorded in the log, because a replay has to be able to tell a revived session from
+    /// one that never stopped.
+    pub async fn credit(&self, session: &mut session::Session, amount: Option<u64>) -> Result<()> {
+        if amount == Some(0) {
+            return Err(Error::invalid(
+                "a grant must be for some tokens, or None for no limit",
+            ));
+        }
+        if session.is_closed() {
+            // Only a budget stop may be revived. Everything else is an ending, and a caller that wants
+            // to undo one of those wants a new session, not more money.
+            let budget_stop = session.stop_reason().is_some_and(|reason| {
+                matches!(
+                    reason,
+                    StopReason::Tokens | StopReason::Cost | StopReason::Steps | StopReason::Wall
+                )
+            });
+            if !budget_stop {
+                return Err(Error::invalid(format!(
+                    "session {} is closed ({:?}), and only a session that stopped on a budget can be \
+                     credited",
+                    session.id,
+                    session.stop_reason()
+                )));
+            }
+        }
+        let remaining = match (session.credit_tokens, amount) {
+            // Removing the limit is a decision, not an arithmetic overflow.
+            (_, None) => None,
+            // A session with no limit keeps it: there is nothing to top up.
+            (None, Some(_)) => None,
+            (Some(current), Some(grant)) => Some(current.saturating_add(grant)),
+        };
+        session.credit_tokens = remaining;
+        if session.is_closed() {
+            session.state = crate::contract::SessionState::Open;
+            session.stop = None;
+        }
+        self.emit(
+            session,
+            crate::contract::EventKind::Credited { amount, remaining },
+        )
+        .await?;
+        // Forced, not throttled: the grant is what the next turn spends against, and a crash between
+        // the answer and the checkpoint would otherwise lose it.
+        self.write_checkpoint(session).await
+    }
+
     /// Refuse a call that has no room to run.
     ///
     /// Called before a model call and before a batch of tools, which are the two ways this kernel

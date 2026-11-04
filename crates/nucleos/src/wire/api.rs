@@ -879,6 +879,34 @@ pub struct SessionView {
     pub partial: Option<crate::contract::PartialTurn>,
 }
 
+/// A grant of credit to a session.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CreditRequest {
+    /// How many tokens to grant. Absent removes the limit entirely.
+    ///
+    /// Zero is refused: a grant of nothing is not a grant, and it would read as "unlimited" if it were
+    /// treated as absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<u64>,
+}
+
+/// What a grant left the session with.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CreditResponse {
+    /// Which session.
+    pub session: String,
+    /// Whether it takes calls again.
+    pub state: SessionState,
+    /// Why it stopped, if it still has a stop reason. Absent after a revival.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop: Option<StopReason>,
+    /// The balance after the grant. Absent means unlimited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credit_tokens: Option<u64>,
+    /// The cursor a client resumes from.
+    pub next_seq: u64,
+}
+
 /// What a caller sends to answer a parked call.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct VerdictRequest {
