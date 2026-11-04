@@ -61,6 +61,21 @@ pub struct Session {
     /// event a minute would checkpoint every event on time alone, and a burst would never checkpoint
     /// on time alone. Count covers throughput, time covers idle.
     pub(crate) checkpointed_through: u64,
+    /// The last sequence number this *handle* has materialised into its own state.
+    ///
+    /// Not the log's head: the log is shared, and another handle (a second request, a supervisor) can
+    /// append events this handle never applied. A checkpoint that claimed the head would then skip
+    /// those events on the next `load` — they are in the log, and the snapshot says they are already
+    /// folded in. This counter only advances when *this* handle writes, which is the only time its own
+    /// state is known to include the event. `None` means nothing has been applied: sequence 0 is a real
+    /// event, so `0` cannot be the sentinel.
+    pub(crate) materialised_through: Option<u64>,
+    /// The last sequence number this handle has *written*, whether or not it applied the effect.
+    ///
+    /// `MessageCompleted` is announced here and applied by the caller's next `state` write, so the two
+    /// counters differ by exactly that window. `append` closes it: the driver has consumed what the
+    /// kernel announced, so the state now reflects those events.
+    pub(crate) written_through: Option<u64>,
     /// What this turn has debited so far. Reset at every turn, taken by a cancel.
     ///
     /// A cancelled attempt is dropped mid-stream, so the route never returns an `Ending` to record. The
@@ -317,6 +332,8 @@ impl Session {
             last_flush: std::time::Instant::now(),
             last_checkpoint: std::time::Instant::now(),
             checkpointed_through: 0,
+            materialised_through: None,
+            written_through: None,
             log: init.log,
             pending: Vec::new(),
             data: std::collections::BTreeMap::new(),
@@ -394,13 +411,13 @@ impl Session {
     /// `None` before anything has been recorded: a snapshot that includes no event would claim
     /// a `seq` the log does not have.
     pub(crate) fn snapshot(&self, now_unix_millis: u64, version: u64) -> Option<Snapshot> {
-        if self.log.next() == 0 {
-            return None;
-        }
+        // What this handle actually folded in, not where the log's head is. A snapshot claiming the
+        // head would skip every event another writer appended and this handle never applied.
+        let through = self.materialised_through?;
         Some(Snapshot {
             session: self.id.clone(),
             principal: self.principal.clone(),
-            seq: self.log.next() - 1,
+            seq: through,
             version,
             generation: self.generation,
             state: self.state,
@@ -467,6 +484,10 @@ impl Session {
             // Checkpointing again immediately would rewrite a snapshot that is current.
             last_checkpoint: std::time::Instant::now(),
             checkpointed_through: snapshot.seq,
+            // What the store's checkpoint already folded in. This handle's own writes advance it
+            // from here; nothing else does.
+            materialised_through: Some(snapshot.seq),
+            written_through: Some(snapshot.seq),
             // The counter belongs to the log, not to this handle: `load` may be handing out a second
             // handle for a session a supervisor is still writing to, and the head it resolves to is
             // already at the right number.

@@ -836,3 +836,37 @@ async fn retention_keeps_a_session_it_cannot_date() {
     assert_eq!(report.sessions, 0, "an undated session is never pruned");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Closing is recorded on its own, so a refused checkpoint cannot leave a session unremovable.
+///
+/// `closed` is what `DELETE` and retention consult. It used to travel only inside a snapshot, so a
+/// checkpoint refused as stale left the store believing a closed session was open — and `close` never
+/// retries, so nothing ever corrected it.
+#[tokio::test]
+async fn closing_is_recorded_without_a_checkpoint() {
+    let store = SqliteStore::in_memory().unwrap();
+    let session = SessionId::new("s1");
+    store
+        .append(&key(&session), &[event(&session, 0)])
+        .await
+        .unwrap();
+    // No snapshot at all: the session exists only in the log and the listing table.
+    assert!(store.snapshot(&key(&session)).await.unwrap().is_none());
+
+    store.mark_closed(&key(&session), 5_000).await.unwrap();
+
+    // Retention can now see it, which is the property that matters.
+    let report = store
+        .prune_closed(&nucleos::adapter::PruneQuery {
+            tenant: None,
+            before_unix_millis: 9_000,
+            limit: 10,
+            dry_run: true,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        report.sessions, 1,
+        "a closed session without a snapshot is prunable"
+    );
+}

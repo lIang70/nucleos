@@ -589,6 +589,31 @@ impl Store for SqliteStore {
         .await
     }
 
+    async fn mark_closed(&self, session: &SessionKey, at_unix_millis: u64) -> Result<()> {
+        let (tenant, id) = (session.tenant.clone(), session.id.clone());
+        self.run(move |connection| {
+            connection
+                .execute(
+                    "insert into sessions (tenant, session, closed, last_activity_unix_millis)
+                     values (?1, ?2, 1, ?3)
+                     on conflict (tenant, session) do update set
+                       closed = 1,
+                       last_activity_unix_millis = max(
+                         coalesce(sessions.last_activity_unix_millis, 0),
+                         excluded.last_activity_unix_millis
+                       )",
+                    params![
+                        tenant,
+                        id.as_str(),
+                        i64::try_from(at_unix_millis).unwrap_or(i64::MAX)
+                    ],
+                )
+                .map_err(failed)?;
+            Ok(())
+        })
+        .await
+    }
+
     async fn prune_closed(
         &self,
         query: &nucleos::adapter::PruneQuery,

@@ -533,3 +533,77 @@ async fn a_turn_that_ends_without_a_checkpoint_reloads_as_the_same_session() {
     assert_eq!(again.messages().len(), 1);
     assert_eq!(again.inference_calls(), loaded.inference_calls());
 }
+
+/// Two handles on one session: the one that checkpoints later must not claim events it never applied.
+///
+/// The log is shared, so a second handle can append while the first is still working. A checkpoint the
+/// first handle writes must say how far *it* got, not where the log's head is — claiming the head would
+/// tell the next `load` that the second handle's events were already folded in, and they would be
+/// skipped for good. That is what the throttled turn path made routine.
+#[tokio::test]
+async fn a_checkpoint_does_not_claim_events_another_handle_wrote() {
+    let store = store();
+    let kernel = kernel(&store);
+    let id = SessionId::new("s1");
+
+    // Two handles, loaded before either writes.
+    let mut first = kernel.open(&principal(), id.clone(), spec()).await.unwrap();
+    let mut second = kernel.load(&principal(), &id).await.unwrap();
+
+    // The second handle finishes a turn: its message lands in the log, and it is checkpointed.
+    kernel.inference(&mut second, &[]).await.unwrap();
+    let answered = second.next_seq();
+    kernel.checkpoint(&mut second).await.unwrap();
+
+    // The first handle writes a checkpoint of its own, having applied nothing since it loaded.
+    kernel.checkpoint(&mut first).await.unwrap();
+
+    // Whatever the store now claims, a reload must still see the second handle's message.
+    let reloaded = kernel.load(&principal(), &id).await.unwrap();
+    assert_eq!(
+        reloaded.messages().len(),
+        1,
+        "the message the second handle wrote was skipped: the first handle's checkpoint claimed it"
+    );
+    assert!(
+        reloaded.next_seq() >= answered,
+        "the log head is at least where the second handle left it"
+    );
+}
+
+/// A refused durable checkpoint is reported, not swallowed.
+///
+/// `append` is the only write with no event behind it: its checkpoint *is* its durability. Treating a
+/// stale-version refusal as success told the caller `204` for a write that was in neither the log nor
+/// the snapshot.
+#[tokio::test]
+async fn an_append_that_cannot_be_checkpointed_is_an_error() {
+    let store = store();
+    let kernel = kernel(&store);
+    let id = SessionId::new("s1");
+
+    let mut first = kernel.open(&principal(), id.clone(), spec()).await.unwrap();
+    let mut second = kernel.load(&principal(), &id).await.unwrap();
+
+    // The second handle advances the store's version.
+    kernel.inference(&mut second, &[]).await.unwrap();
+    kernel.checkpoint(&mut second).await.unwrap();
+
+    // The first handle's append now loses the version race. Its content exists nowhere else, so the
+    // answer is an error rather than a cheerful no-op.
+    let refused = kernel
+        .append(
+            &mut first,
+            nucleos::kernel::StateWrite {
+                messages: Vec::new(),
+                data: [("k".to_owned(), serde_json::json!("v"))]
+                    .into_iter()
+                    .collect(),
+            },
+        )
+        .await;
+    assert!(
+        refused.is_err(),
+        "a durable checkpoint that was refused must not report success"
+    );
+}

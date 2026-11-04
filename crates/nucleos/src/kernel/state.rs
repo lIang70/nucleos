@@ -7,14 +7,37 @@ use crate::error::Result;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+/// What a checkpoint is for, which decides what a refusal means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Checkpoint {
+    /// A cache of the log. The work it describes is already written down, so a refusal loses nothing
+    /// a `load` cannot fold back — it only means somebody else's checkpoint is newer.
+    Cache,
+    /// The only copy. What it describes has no event behind it, so a refusal is a lost write and the
+    /// caller must be told.
+    Durable,
+}
+
 impl Kernel {
     /// Append to the session's conversation or its opaque state.
+    ///
+    /// The only write with no event behind it: what it carries is durable **because** of its
+    /// checkpoint, so a refused checkpoint is a lost write rather than a stale cache and has to
+    /// surface as an error.
     pub async fn append(&self, session: &mut session::Session, write: StateWrite) -> Result<()> {
         for (key, value) in write.data {
             session.data.insert(key, value);
         }
         session.messages.extend(write.messages);
-        self.write_checkpoint(session).await
+        // The driver has consumed what the kernel announced — including any `MessageCompleted` — so the
+        // state now reflects those events and a checkpoint may claim them.
+        session.materialised_through = match (session.materialised_through, session.written_through)
+        {
+            (Some(applied), Some(written)) => Some(applied.max(written)),
+            (None, written) => written,
+            (applied, None) => applied,
+        };
+        self.checkpoint_with(session, Checkpoint::Durable).await
     }
     /// Park a call on a human.
     pub async fn park(
@@ -33,7 +56,9 @@ impl Kernel {
         )
         .await?;
         session.pending.push(pending);
-        self.write_checkpoint(session).await
+        // The `AwaitingHuman` event is the narrative record; the pending list itself travels only in
+        // the checkpoint, so a refusal means the answer would have nowhere to land.
+        self.checkpoint_with(session, Checkpoint::Durable).await
     }
     /// Append an event to the session's log.
     ///
@@ -80,6 +105,7 @@ impl Kernel {
         // supervisor writing to the same log. Two writers, one order.
         let _appending = session.log.appending.lock().await;
         let key = session.key();
+        let kinds_first = kinds[0].clone();
         let mut events = Vec::with_capacity(kinds.len());
         for kind in kinds {
             let event = Event {
@@ -100,6 +126,27 @@ impl Kernel {
         // about an event, a reader of the store can already see it, so catching up from a sequence
         // number never lands short.
         self.store.append(&key, &events).await?;
+        // This handle now holds everything up to its own last write. Advanced here, after the store
+        // accepted the batch, so a checkpoint can never claim an event that was not written.
+        if let Some(last) = events.last() {
+            session.written_through = Some(
+                session
+                    .written_through
+                    .map_or(last.seq, |through| through.max(last.seq)),
+            );
+            // `MessageCompleted` is announced, not applied: the message enters history on the caller's
+            // next `state` write, so claiming it here would let a checkpoint describe a conversation
+            // its own state does not contain — and the next `load` would skip the message. Everything
+            // else this crate emits updates the session before or immediately after the append.
+            let announced_only = matches!(kinds_first, EventKind::MessageCompleted { .. });
+            if !announced_only {
+                session.materialised_through = Some(
+                    session
+                        .materialised_through
+                        .map_or(last.seq, |through| through.max(last.seq)),
+                );
+            }
+        }
         for event in events {
             self.live.announce(super::live::Live {
                 key: key.clone(),
@@ -150,6 +197,15 @@ impl Kernel {
     /// Failing the caller here would turn "somebody else checkpointed more recently" into "your close
     /// failed", which is a lie about what was durable.
     pub(crate) async fn write_checkpoint(&self, session: &mut session::Session) -> Result<()> {
+        self.checkpoint_with(session, Checkpoint::Cache).await
+    }
+
+    /// Write the checkpoint, and decide what a refusal means from the caller's side.
+    pub(crate) async fn checkpoint_with(
+        &self,
+        session: &mut session::Session,
+        what: Checkpoint,
+    ) -> Result<()> {
         let next = session.version.saturating_add(1);
         match session.snapshot(self.now(), next) {
             Some(snapshot) => {
@@ -166,7 +222,10 @@ impl Kernel {
                         session.last_checkpoint = std::time::Instant::now();
                         Ok(())
                     }
-                    Err(error) if error.code() == crate::contract::ErrorCode::Conflict => {
+                    Err(error)
+                        if error.code() == crate::contract::ErrorCode::Conflict
+                            && what == Checkpoint::Cache =>
+                    {
                         tracing::debug!(
                             event = "checkpoint_skipped",
                             session = %session.id,

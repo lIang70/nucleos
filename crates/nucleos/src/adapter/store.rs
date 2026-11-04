@@ -172,6 +172,14 @@ pub trait Store: Send + Sync {
         limit: usize,
     ) -> Result<Vec<Event>>;
 
+    /// Record that a session is closed, without writing a whole checkpoint.
+    ///
+    /// The `closed` flag is what `DELETE` and retention consult, and it used to travel only inside a
+    /// snapshot. A checkpoint refused as stale therefore left a session the store still believed was
+    /// open — unremovable, unprunable, forever, because `close` is idempotent and never retries. This
+    /// is the same fact written on its own, where a stale version cannot take it away.
+    async fn mark_closed(&self, session: &SessionKey, at_unix_millis: u64) -> Result<()>;
+
     /// Remove closed sessions whose last activity is before a deadline.
     ///
     /// Whole sessions, never a span of a log: `seq` stays dense for every session that survives, and a

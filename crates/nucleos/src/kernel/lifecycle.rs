@@ -230,6 +230,14 @@ impl Kernel {
                 .log
                 .seq
                 .fetch_max(event.seq + 1, std::sync::atomic::Ordering::SeqCst);
+            // Folded *and* materialised: the state now contains this event, so a checkpoint taken
+            // from here must say so. Claiming less would write a snapshot whose messages carry events
+            // its `seq` denies, and the next `load` would fold them a second time.
+            session.materialised_through = Some(
+                session
+                    .materialised_through
+                    .map_or(event.seq, |through| through.max(event.seq)),
+            );
         }
 
         // A turn the runtime did not survive is recorded rather than inferred. Nothing else in the
@@ -279,6 +287,10 @@ impl Kernel {
             },
         )
         .await?;
+        // The flag first, on its own, because it is what `DELETE` and retention read and a checkpoint
+        // can be refused as stale. Then the checkpoint, which is the cache: if it loses the race the
+        // session is still closed as far as every reader of the listing table is concerned.
+        self.store.mark_closed(&session.key(), self.now()).await?;
         self.write_checkpoint(session).await?;
         // The head is only useful while something can still write: a closed session takes no calls,
         // and a process supervisor holds its own `Arc`. Dropping the kernel's entry lets a long-lived

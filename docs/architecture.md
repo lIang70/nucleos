@@ -659,6 +659,19 @@ Store:  events[sid]   = [(seq, at, Event)]      append-only
 recover: load(snapshot + messages + attempts) → replay(events_since(snapshot.seq))
 ```
 
+A checkpoint claims exactly what its own handle has **materialised**, never the log's head: the log is
+shared by every handle and by the supervisor, so a snapshot claiming the head would tell the next `load`
+that events it never folded are already in — and they would be skipped for good. Two counters make that
+precise: `materialised_through` advances when this handle applies an event, and `written_through` when it
+writes one. They differ by exactly one window, `MessageCompleted`, which the kernel announces and the
+caller applies with its next `state` write — so `append` closes the gap and nothing else does.
+
+A refusal is not always harmless. A checkpoint whose content is described by events in the log is a cache
+and a stale-version refusal loses nothing; a checkpoint that is the *only* copy — `state` appends, the
+parked-call list — must fail loudly instead. `close` writes its flag on its own
+(`Store::mark_closed`), because it is what `DELETE` and retention read and a stale version must not be
+able to take it away.
+
 Three things are separate because they grow with a session's age, and a checkpoint is rewritten at every
 turn boundary. The conversation and the attempt ledger are rows of their own, written once; the snapshot
 records how many it has already written, so a turn writes what changed rather than what it has
