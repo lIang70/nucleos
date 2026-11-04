@@ -483,6 +483,18 @@ impl Kernel {
         )
     }
 
+    /// Forget the head of a session that can no longer be written to.
+    ///
+    /// Only the kernel's own entry: a supervisor or a turn that still holds the `Arc` keeps its
+    /// counter, which is exactly what it should do — the entry in the map is for *future* writers,
+    /// and a closed session has none.
+    pub(crate) fn forget_log(&self, key: &crate::adapter::SessionKey) {
+        self.logs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(key);
+    }
+
     /// Remove a session: its log, its checkpoint, and the head this kernel was holding for it.
     ///
     /// Only a closed session may be removed — deleting an open one would destroy a conversation

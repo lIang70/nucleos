@@ -433,7 +433,7 @@ impl Kernel {
     fn build_request(&self, session: &Session, messages: &[Message]) -> ModelRequest {
         ModelRequest {
             system: session.system.clone(),
-            messages: messages.to_vec(),
+            messages: messages.into(),
             tools: self.tool_specs(session),
             params: session.params.clone(),
             hints: session.hints.clone(),

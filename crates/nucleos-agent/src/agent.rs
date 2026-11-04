@@ -150,7 +150,9 @@ pub async fn drive(kernel: &Kernel, session: &mut Session) -> Result<Outcome> {
 }
 
 async fn inference_turn(kernel: &Kernel, session: &mut Session) -> Result<Step> {
-    let messages = session.messages().to_vec();
+    // Shared, not cloned: the request only reads the history, and a long session would otherwise copy
+    // every message it has ever produced on every turn.
+    let messages: std::sync::Arc<[nucleos::contract::Message]> = session.messages().into();
     // Errors propagate: what a failure *means* is decided once, in `step`.
     let inference = kernel.inference(session, &messages).await?;
 

@@ -111,7 +111,7 @@ async fn run(request: ModelRequest) -> Result<Collected, String> {
 async fn text_streams_and_reports_usage() {
     let got = run(ModelRequest {
         system: Some("Answer with one word.".to_owned()),
-        messages: vec![user("Say hello.")],
+        messages: vec![user("Say hello.")].into(),
         params: nucleos::adapter::GenerateParams {
             max_output_tokens: Some(16),
             ..Default::default()
@@ -134,7 +134,7 @@ async fn text_streams_and_reports_usage() {
 #[ignore = "needs a live endpoint"]
 async fn a_tool_call_assembles_into_valid_json() {
     let got = run(ModelRequest {
-        messages: vec![user("Read the file /etc/hosts. Use the tool.")],
+        messages: vec![user("Read the file /etc/hosts. Use the tool.")].into(),
         tools: vec![tool()],
         params: nucleos::adapter::GenerateParams {
             max_output_tokens: Some(128),
@@ -233,7 +233,8 @@ async fn every_parameter_in_the_contract_is_sent() {
             // says so plainly. Verified, not assumed.
             messages: vec![user(
                 "Reply with a json object, or call the tool if you must.",
-            )],
+            )]
+            .into(),
             tools: vec![tool()],
             params,
             ..ModelRequest::default()
@@ -252,7 +253,7 @@ async fn every_parameter_in_the_contract_is_sent() {
 #[ignore = "needs a live endpoint"]
 async fn json_schema_is_honoured() {
     let got = run(ModelRequest {
-        messages: vec![user("Give me an answer.")],
+        messages: vec![user("Give me an answer.")].into(),
         params: nucleos::adapter::GenerateParams {
             format: TextFormat::JsonSchema {
                 name: "answer".to_owned(),
@@ -325,7 +326,7 @@ async fn the_deployment_parameters_are_accepted() {
 
         match model
             .invoke(ModelRequest {
-                messages: vec![user("Say ok.")],
+                messages: vec![user("Say ok.")].into(),
                 params: nucleos::adapter::GenerateParams {
                     max_output_tokens: Some(32),
                     ..Default::default()

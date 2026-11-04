@@ -279,7 +279,12 @@ impl Kernel {
             },
         )
         .await?;
-        self.write_checkpoint(session).await
+        self.write_checkpoint(session).await?;
+        // The head is only useful while something can still write: a closed session takes no calls,
+        // and a process supervisor holds its own `Arc`. Dropping the kernel's entry lets a long-lived
+        // daemon forget sessions that ended, instead of keeping one counter per session forever.
+        self.forget_log(&session.key());
+        Ok(())
     }
 
     // -- syscalls -------------------------------------------------------------

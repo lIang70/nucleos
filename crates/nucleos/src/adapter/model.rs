@@ -47,7 +47,10 @@ pub struct ModelRequest {
     /// Standing instructions, if the session has any.
     pub system: Option<String>,
     /// The conversation, oldest first.
-    pub messages: Vec<Message>,
+    ///
+    /// Shared, not copied: a turn builds one request per attempt, and a long session would otherwise
+    /// clone its whole history for each one. The adapter only reads it.
+    pub messages: std::sync::Arc<[Message]>,
     /// The tools this turn may use.
     pub tools: Vec<ToolSpec>,
     /// How to shape the answer.

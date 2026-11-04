@@ -80,7 +80,7 @@ pub fn encode(
     // A system message and `instructions` are the same channel here; the request's `system` wins
     // by being written second, because that is the one the kernel put there deliberately.
     let mut instructions = String::new();
-    for message in &request.messages {
+    for message in request.messages.iter() {
         encode_message(message, &mut input, &mut dropped);
     }
     if let Some(system) = &request.system {

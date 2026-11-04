@@ -236,7 +236,8 @@ fn request() -> ModelRequest {
             content: Content::new([Part::new(PartKind::Text(TextPart {
                 text: "hi".to_owned(),
             }))]),
-        }],
+        }]
+        .into(),
         ..ModelRequest::default()
     }
 }
@@ -321,7 +322,8 @@ fn history_tool_calls_are_input_items() {
                     },
                 }))]),
             },
-        ],
+        ]
+        .into(),
         ..ModelRequest::default()
     };
 
@@ -449,7 +451,8 @@ fn an_image_is_an_input_image() {
                     },
                 },
             }))]),
-        }],
+        }]
+        .into(),
         ..ModelRequest::default()
     };
     let encoded = encoded(&request);

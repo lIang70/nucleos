@@ -176,7 +176,8 @@ fn token_counting_is_the_adapters_decision_not_the_kernels() -> Result<()> {
             content: Content::new([Part::new(PartKind::Text(TextPart {
                 text: "hello there".to_owned(),
             }))]),
-        }],
+        }]
+        .into(),
         ..ModelRequest::default()
     };
 

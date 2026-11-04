@@ -20,7 +20,7 @@
 
 use nucleos::wire::api::MetricsResponse;
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Counters for one running daemon.
@@ -30,7 +30,7 @@ pub struct Metrics {
     ///
     /// Keyed by the matched *route template*, not the raw path: a thousand sessions would otherwise
     /// be a thousand keys, and the counter would be a memory leak shaped like a metric.
-    requests: Mutex<BTreeMap<String, u64>>,
+    requests: RwLock<BTreeMap<String, u64>>,
     /// Refused by authentication.
     unauthorized: AtomicU64,
     /// Sessions opened, agent and process alike.
@@ -58,9 +58,24 @@ impl Metrics {
     /// One request, however it ended.
     pub fn observe(&self, method: &str, route: &str, status: u16) {
         let key = format!("{method} {route}");
+        // A read lock first, and a write lock only for a route seen for the first time. Almost every
+        // request increments a counter that already exists, and the set of keys is the route table,
+        // not the traffic — so the write path is the rare one.
+        let seen = self
+            .requests
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains_key(&key);
+        if !seen {
+            let mut requests = self
+                .requests
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            requests.entry(key.clone()).or_insert(0);
+        }
         let mut requests = self
             .requests
-            .lock()
+            .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         *requests.entry(key).or_insert(0) += 1;
         if status == 401 {
@@ -88,7 +103,7 @@ impl Metrics {
     pub fn snapshot(&self) -> MetricsResponse {
         let requests = self
             .requests
-            .lock()
+            .read()
             .map(|requests| requests.clone())
             .unwrap_or_default();
         let now = nucleos::adapter::Clock::now_unix_millis(&nucleos::adapter::SystemClock);
