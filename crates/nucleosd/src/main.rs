@@ -79,6 +79,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     });
 
     let app = Arc::new(app);
+    // Retention runs for as long as the daemon does, and stops with it. It reads its policy from the
+    // store on every pass, so `PUT /v1/config` takes effect without a restart.
+    let _sweeper = nucleosd::retention::spawn(Arc::clone(&app), watching.clone());
     let served = match &parsed.tls {
         None => {
             axum::serve(listener, router(Arc::clone(&app)))

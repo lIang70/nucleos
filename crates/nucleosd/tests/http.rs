@@ -2480,3 +2480,51 @@ async fn retention_round_trips_through_the_configuration_document() {
     let (status, error) = signed(&app, &key, &key_id, "PUT", "/v1/config", invalid).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
 }
+
+/// The sweeper does nothing until retention is configured, and then removes only the closed session.
+#[tokio::test]
+async fn the_sweeper_is_disabled_until_retention_is_configured() {
+    let (app, key, key_id) = governable().await;
+    for id in ["s1", "s2"] {
+        let (status, _) = request(
+            &app,
+            "POST",
+            "/v1/sessions",
+            "",
+            &format!(r#"{{"session":"{id}","credit_tokens":1000000}}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    let (status, _) = request(&app, "POST", "/v1/sessions/s1/close", "", "{}").await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Unconfigured: nothing happens, and the closed session is still there.
+    assert!(
+        nucleosd::retention::sweep_once(&app)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let (status, _) = request(&app, "GET", "/v1/sessions/s1", "", "").await;
+    assert_eq!(status, StatusCode::OK);
+
+    let document = r#"{
+        "document_version": 1,
+        "policy": "{\"default\":\"allow\",\"rules\":[]}",
+        "models": [], "sources": [], "tenants": {},
+        "retention": {"closed_session_ttl_millis": 1, "sweep_interval_millis": 60000}
+    }"#;
+    let (status, applied) = signed(&app, &key, &key_id, "PUT", "/v1/config", document).await;
+    assert_eq!(status, StatusCode::OK, "{applied}");
+
+    let report = nucleosd::retention::sweep_once(&app)
+        .await
+        .unwrap()
+        .expect("retention is configured now");
+    assert_eq!(report.sessions, 1);
+    let (status, _) = request(&app, "GET", "/v1/sessions/s1", "", "").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = request(&app, "GET", "/v1/sessions/s2", "", "").await;
+    assert_eq!(status, StatusCode::OK, "the open session survives a sweep");
+}

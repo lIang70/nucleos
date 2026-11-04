@@ -105,3 +105,96 @@ pub async fn prune(
             .collect(),
     }))
 }
+
+/// One pass of the sweeper, over whatever the configuration says right now.
+///
+/// Returns `None` when retention is not configured, or when it is configured without both a TTL and
+/// an interval — which is also what a disabled sweeper means, so the loop and the tests share one
+/// definition of "nothing to do".
+pub async fn sweep_once(app: &Arc<App>) -> Result<Option<nucleos::adapter::PruneReport>, Error> {
+    let Some(system) = app.system() else {
+        return Ok(None);
+    };
+    let Some(retention) = crate::configure::configured_retention(system).await? else {
+        return Ok(None);
+    };
+    let (Some(ttl), Some(_interval)) = (
+        retention.closed_session_ttl_millis,
+        retention.sweep_interval_millis,
+    ) else {
+        return Ok(None);
+    };
+    let kernel = app.kernel().map_err(|error| error.into_error())?;
+    let before = kernel.now().saturating_sub(ttl);
+    let report = kernel
+        .prune_closed(&PruneQuery {
+            tenant: None,
+            before_unix_millis: before,
+            limit: DEFAULT_LIMIT,
+            dry_run: false,
+        })
+        .await?;
+    if report.sessions > 0 {
+        app.metrics()
+            .retention_pruned(report.sessions, report.events);
+        tracing::info!(
+            event = "retention_swept",
+            sessions = report.sessions,
+            events = report.events,
+            before_unix_millis = before,
+        );
+    }
+    Ok(Some(report))
+}
+
+/// How often a disabled sweeper looks at the configuration again.
+///
+/// A minute: cheap, and a deployment that turns retention on does not wait long for it to take effect.
+const DISABLED_POLL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Run the retention sweeper until `stop` says the daemon is going away.
+///
+/// The configuration is read on every pass, so `PUT /v1/config` takes effect on the next one — no
+/// restart, and no extra wiring between the configuration surface and this task.
+pub fn spawn(
+    app: Arc<App>,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let interval = match app.system() {
+                Some(system) => crate::configure::configured_retention(system)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|retention| retention.sweep_interval_millis),
+                None => None,
+            };
+            match interval {
+                Some(millis) if millis > 0 => {
+                    tokio::select! {
+                        () = tokio::time::sleep(std::time::Duration::from_millis(millis)) => {}
+                        _ = stop.changed() => return,
+                    }
+                    if *stop.borrow() {
+                        return;
+                    }
+                    if let Err(error) = sweep_once(&app).await {
+                        // A failed pass is a warning and a later retry, not a dead sweeper: a store
+                        // that is briefly unavailable should not turn retention off for good.
+                        tracing::warn!(event = "retention_sweep_failed", detail = %error);
+                    }
+                }
+                _ => {
+                    tokio::select! {
+                        () = tokio::time::sleep(DISABLED_POLL) => {}
+                        _ = stop.changed() => return,
+                    }
+                    if *stop.borrow() {
+                        return;
+                    }
+                }
+            }
+        }
+    })
+}
