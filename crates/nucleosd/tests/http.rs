@@ -1371,6 +1371,14 @@ async fn governable() -> (Arc<App>, nucleos_auth::KeyPair, String) {
 async fn governable_with(
     seal: Option<nucleos_auth::SealKey>,
 ) -> (Arc<App>, nucleos_auth::KeyPair, String) {
+    governable_by(GOVERNED_BY, seal).await
+}
+
+/// The same fixture, with a policy of the test's choosing.
+async fn governable_by(
+    governed_by: &str,
+    seal: Option<nucleos_auth::SealKey>,
+) -> (Arc<App>, nucleos_auth::KeyPair, String) {
     let system = Arc::new(nucleos_sqlite::SystemStore::in_memory().unwrap());
     let key = nucleos_auth::KeyPair::generate();
     let public = key.public("acme", "admin");
@@ -1386,14 +1394,14 @@ async fn governable_with(
     // change the rules silently on the first change — which is a bug in the fixture and, in a daemon,
     // the reason `load` never takes a policy from anywhere else.
     system
-        .set(nucleosd::http::POLICY_KEY, GOVERNED_BY)
+        .set(nucleosd::http::POLICY_KEY, governed_by)
         .await
         .unwrap();
 
     // The kernel enforces the same policy that is stored, as the daemon does at start-up: a fixture
     // with a permissive gate would test the endpoints without testing the thing in front of them.
     let policy =
-        nucleos_policy::Ruleset::new(nucleos_policy::Document::parse(GOVERNED_BY).unwrap())
+        nucleos_policy::Ruleset::new(nucleos_policy::Document::parse(governed_by).unwrap())
             .unwrap();
     // The store is kept: `GET /v1/sessions` reads it directly, because a page of a hundred sessions
     // must not load a hundred conversations.
@@ -2527,4 +2535,48 @@ async fn the_sweeper_is_disabled_until_retention_is_configured() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     let (status, _) = request(&app, "GET", "/v1/sessions/s2", "", "").await;
     assert_eq!(status, StatusCode::OK, "the open session survives a sweep");
+}
+
+/// `PUT /v1/config` is gated per subject, so a narrow administrator cannot rewrite the deployment.
+///
+/// The whole document used to be accepted on a good signature alone, with no `check_config` call at
+/// all — the single mutation endpoint that skipped the gate. An administrator granted one subject could
+/// replace the policy that had granted it, which is privilege escalation rather than a missing check.
+#[tokio::test]
+async fn a_document_that_changes_the_policy_needs_permission_for_it() {
+    // Administrators here may change models and nothing else.
+    const NARROW: &str = r#"{
+        "default": "deny",
+        "rules": [
+          {"decision":"allow","config":"models","scope":"system","tenant":"acme","subject":"admin"}
+        ]
+    }"#;
+    let (app, key, key_id) = governable_by(NARROW, None).await;
+
+    // Changing the policy is refused: that subject is not theirs.
+    let escalate = r#"{
+        "document_version": 1,
+        "policy": "{\"default\":\"allow\",\"rules\":[]}",
+        "models": [], "sources": [], "tenants": {}
+    }"#;
+    let (status, refused) = signed(&app, &key, &key_id, "PUT", "/v1/config", escalate).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+    assert!(
+        refused["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("policy"),
+        "the refusal names the subject: {refused}"
+    );
+
+    // Re-asserting the policy it already has changes nothing, so it needs no permission for it —
+    // which is what keeps export → apply a no-op even on a deployment that locked itself down.
+    let unchanged = serde_json::json!({
+        "document_version": 1,
+        "policy": NARROW,
+        "models": [], "sources": [], "tenants": {},
+    })
+    .to_string();
+    let (status, applied) = signed(&app, &key, &key_id, "PUT", "/v1/config", &unchanged).await;
+    assert_eq!(status, StatusCode::OK, "{applied}");
 }

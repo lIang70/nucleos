@@ -1232,7 +1232,7 @@ async fn config(
         tenant = %admin.principal.tenant,
     );
 
-    let document = crate::configure::document(system)
+    let document = crate::configure::document_of(system)
         .await
         .map_err(|error| ApiError::from_error(&error))?;
     let tenants = document.tenants.keys().cloned().collect::<Vec<String>>();

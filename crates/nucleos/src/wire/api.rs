@@ -244,7 +244,7 @@ where
 }
 
 /// What one tenant may use, as the daemon reports it.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TenantLimitsView {
     /// The tenant.
     pub tenant: String,
@@ -304,7 +304,7 @@ pub struct SourceRequest {
 }
 
 /// A source, as the daemon reports it.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SourceView {
     /// Its name.
     pub name: String,
@@ -483,7 +483,7 @@ pub struct ModelRequest {
 }
 
 /// A model, as the daemon reports it.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ModelView {
     /// The name routes use.
     pub name: String,
@@ -577,7 +577,7 @@ pub struct ChangeListResponse {
 /// token is issued once and shown once. Those are recovered by other means, and the document says so by
 /// carrying `has_sealed_key` rather than the key.
 /// How long closed sessions are kept, and whether the daemon sweeps for them itself.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Retention {
     /// How long a closed session may be idle before it is removed, in milliseconds. Absent means
     /// forever.
@@ -617,7 +617,7 @@ pub struct Deployment {
 }
 
 /// One tenant's part of the deployment document.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TenantDocument {
     /// Its policy, as text. Composed with the system policy rather than replacing it.
     #[serde(default, skip_serializing_if = "Option::is_none")]

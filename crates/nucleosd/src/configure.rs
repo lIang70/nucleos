@@ -770,7 +770,7 @@ async fn record(
 /// Built from the store rather than from what the daemon is holding: an export that described the
 /// running state would be an export that could not reproduce it, and the two differ exactly when
 /// something went wrong.
-pub async fn document(system: &SystemStore) -> Result<nucleos::wire::api::Deployment> {
+pub async fn document_of(system: &SystemStore) -> Result<nucleos::wire::api::Deployment> {
     use nucleos::wire::api::{Deployment, TenantDocument, TenantLimitsView};
 
     let policy = system.get(crate::http::POLICY_KEY).await?;
@@ -973,6 +973,58 @@ pub async fn apply(
                     "the policy for {tenant} is not a valid document: {error}"
                 ))
             })?;
+        }
+    }
+
+    // --- the gate, once per subject the document touches ---------------------------------------
+    //
+    // A document is a batch of changes, and a signature proves *who* asked without saying *what* they
+    // may change. Every single-endpoint mutation asks the gate (`permit`/`permit_scope`); this one used
+    // to skip it entirely, so an administrator granted one narrow subject could rewrite the whole
+    // deployment — including the policy that had granted them that subject.
+    let kernel = app.kernel().map_err(|error| error.into_error())?;
+    // Only what the document *changes* needs permission. Re-asserting a value is not a change, and
+    // that distinction is what keeps export → apply a no-op: a deployment whose policy does not grant
+    // configuration to its own administrators can still be restored, because restoring it changes
+    // nothing.
+    let current_document = document_of(system).await?;
+    let mut subjects: Vec<(ConfigScope<'_>, &str)> = Vec::new();
+    if current_document.policy.as_deref() != Some(policy.as_str()) {
+        subjects.push((ConfigScope::System, "policy"));
+    }
+    if document.models != current_document.models {
+        subjects.push((ConfigScope::System, "models"));
+    }
+    if document.sources != current_document.sources {
+        subjects.push((ConfigScope::System, "sources"));
+    }
+    if document.retention != current_document.retention {
+        subjects.push((ConfigScope::System, "retention"));
+    }
+    for (tenant, part) in &document.tenants {
+        let before = current_document.tenants.get(tenant);
+        if part.policy != before.and_then(|before| before.policy.clone()) {
+            subjects.push((ConfigScope::Tenant(tenant), "policy"));
+        }
+        if part.limits != before.and_then(|before| before.limits.clone()) {
+            subjects.push((ConfigScope::Tenant(tenant), "limits"));
+        }
+    }
+    for (scope, subject) in subjects {
+        match kernel
+            .check_config(&admin.principal, scope, subject)
+            .await?
+        {
+            Verdict::Allow => {}
+            Verdict::Deny { code, reason } => return Err(Error::new(code, reason)),
+            // Configuration cannot wait for a human, and `check_config` already answers `ask` that way;
+            // reaching here would be a bug in that translation rather than a decision to honour.
+            Verdict::AskHuman { question, .. } => {
+                return Err(Error::denied(format!(
+                    "changing {subject} needs a human ({question}), and configuration cannot wait \
+                     for one"
+                )));
+            }
         }
     }
 
