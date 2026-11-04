@@ -53,7 +53,27 @@ impl Kernel {
             (None, Some(_)) => None,
             (Some(current), Some(grant)) => Some(current.saturating_add(grant)),
         };
+
+        // A grant moves the balance; it cannot move a ceiling. `max_steps`, `max_tokens`, `max_cost`
+        // and `max_wall` were fixed at `Start` and stay fixed, so a session that stopped on one of
+        // those would be "revived" into a state it cannot run in — reporting a stop reason of `None`
+        // and then refusing the very next call. Checked before anything is written, so a refusal
+        // leaves the session exactly as it was.
+        let previous = (session.credit_tokens, session.state, session.stop);
         session.credit_tokens = remaining;
+        if session.is_closed()
+            && let Some(reason) = session.exhausted(self.now())
+        {
+            session.credit_tokens = previous.0;
+            return Err(Error::new(
+                crate::contract::ErrorCode::Budget,
+                format!(
+                    "session {} stopped on a budget a grant cannot move ({reason:?}): its ceilings \
+                     were fixed when it started, and more credit does not raise them",
+                    session.id
+                ),
+            ));
+        }
         if session.is_closed() {
             session.state = crate::contract::SessionState::Open;
             session.stop = None;

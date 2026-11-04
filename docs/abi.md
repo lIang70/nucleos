@@ -348,10 +348,15 @@ event debits the credit; on exhaustion the session drains, writes a checkpoint, 
 `budget_exhausted`, and stops.
 
 `POST /v1/sessions/{id}/credit` grants more: `{"amount": 10000}` adds tokens, and omitting `amount`
-removes the limit. A session that stopped on a budget is revived — open again, stop reason cleared.
-A session that ended any other way is refused: completed, cancelled and failed are endings, not a
-lack of funds. The grant is recorded as `credited`, so a replay cannot mistake a revived session for
+removes the limit. A session that stopped because its credit ran out is revived — open again, stop
+reason cleared. The grant is recorded as `credited`, so a replay cannot mistake a revived session for
 one that never stopped.
+
+Two refusals, and both are about not lying to the caller. A session that ended any other way —
+completed, cancelled, failed, denied — is done, not out of funds. And a session stopped by a **ceiling**
+(`max_steps`, `max_tokens`, `max_cost`, `max_wall`) stays stopped: those were fixed at `Start`, a grant
+does not move them, and reviving into a state where the next call is refused would report a session
+open that cannot run.
 
 The four `Budget` ceilings are unchanged: they answer "how much may this session ever consume",
 which is not the question a grant answers.

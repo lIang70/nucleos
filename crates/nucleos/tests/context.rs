@@ -384,3 +384,54 @@ async fn credit_of_zero_is_refused_and_none_removes_the_limit() {
     kernel.credit(&mut session, None).await.unwrap();
     assert_eq!(session.credit(), None, "no limit after the grant");
 }
+
+/// A grant cannot revive a session whose ceiling is what stopped it.
+///
+/// `max_steps`, `max_tokens`, `max_cost` and `max_wall` are fixed at `Start`. Reviving one of those
+/// would report a session open with no stop reason and then refuse its very next call — a lie about
+/// what the caller can do next, in exchange for nothing.
+#[tokio::test]
+async fn credit_does_not_revive_a_session_stopped_by_a_ceiling() {
+    let (kernel, _store) = build(FakeModel::text(["ok"]));
+    let mut session = kernel
+        .open(
+            &principal(),
+            SessionId::new("s1"),
+            SessionSpec {
+                credit_tokens: Some(1_000),
+                budget: nucleos::contract::Budget {
+                    // A step cap: immutable after `Start`, and reached without the model having to
+                    // report tokens.
+                    max_steps: Some(1),
+                    ..nucleos::contract::Budget::default()
+                },
+                ..SessionSpec::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    // The first turn uses the only step the session has; the second is refused on that cap, which is
+    // what stops it — a ceiling, not a shortage of credit.
+    kernel.inference(&mut session, &[]).await.unwrap();
+    assert!(kernel.inference(&mut session, &[]).await.is_err());
+    assert!(session.is_closed());
+    let stopped = session.stop_reason();
+
+    // A grant is refused, and changes nothing — not the balance, not the state, not the reason.
+    let refused = kernel.credit(&mut session, Some(1_000_000)).await;
+    let error = refused.expect_err("a ceiling stop is not revivable by credit");
+    assert_eq!(error.code(), ErrorCode::Budget);
+    assert!(error.reason().contains("ceiling"), "{error:?}");
+    assert!(session.is_closed(), "a refused grant revived the session");
+    assert_eq!(
+        session.stop_reason(),
+        stopped,
+        "a refused grant changed the reason"
+    );
+    assert_eq!(
+        session.credit(),
+        Some(1_000),
+        "a refused grant changed the balance"
+    );
+}
