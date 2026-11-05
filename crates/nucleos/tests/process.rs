@@ -172,3 +172,63 @@ fn a_process_that_outlived_the_runtime_is_lost_not_running() {
     };
     assert!(!running.is_finished());
 }
+
+/// A phase filter that matches nothing walks a bounded number of rows and hands back a cursor.
+///
+/// The listing fills a page by reading store pages until the filter matches, which is the price of
+/// filtering on a status only the kernel can compute. Unbounded, `?phase=lost` on a node with none
+/// would read every process session the tenant ever had — one snapshot at a time — inside one request.
+#[tokio::test]
+async fn a_filter_that_matches_nothing_is_bounded_and_returns_a_cursor() -> nucleos::Result<()> {
+    let (kernel, _) = kernel();
+    // Process sessions opened but never started: none of them is running, so a `running` filter
+    // matches nothing however many there are.
+    for index in 0..40u64 {
+        kernel
+            .open(
+                &principal(),
+                SessionId::new(format!("p{index:02}")),
+                SessionSpec {
+                    kind: SessionKind::Process,
+                    process: Some(process_spec()),
+                    ..SessionSpec::default()
+                },
+            )
+            .await?;
+    }
+
+    let mut requests = 0;
+    let mut after = None;
+    loop {
+        requests += 1;
+        let page = kernel
+            .processes(
+                "acme",
+                &nucleos::contract::ProcessQuery {
+                    phase: Some(nucleos::contract::ProcessPhase::Running),
+                    limit: 1,
+                    after: after.clone(),
+                },
+            )
+            .await?;
+        assert!(
+            page.processes.is_empty(),
+            "nothing is running, so nothing matches"
+        );
+        assert!(
+            requests <= 10,
+            "the walk is unbounded: {requests} requests for forty sessions"
+        );
+        match page.next {
+            Some(cursor) => after = Some(cursor),
+            None => break,
+        }
+    }
+
+    // Bounded, so it takes more than one request; and it terminates, so the cursor makes progress.
+    assert!(
+        requests > 1,
+        "one request scanned the whole tenant, which is the unbounded walk this bounds"
+    );
+    Ok(())
+}

@@ -581,6 +581,13 @@ async fn reader(
     let _ = drained.send(()).await;
 }
 
+/// How many store pages one listing request may walk while filtering by phase.
+///
+/// A page is filled from as many store pages as it takes, and a phase filter the node has nothing for
+/// would take all of them. This bounds the work one request can be made to do; the cursor it returns
+/// is what lets a client page through a sparse filter honestly.
+const PROCESS_SCAN_PAGES: usize = 8;
+
 /// How much of a byte string is valid UTF-8.
 ///
 /// `valid_up_to` is the length of the valid prefix, which is exactly the part that may be decoded now;
@@ -601,7 +608,10 @@ impl Kernel {
     ///
     /// A phase filter is applied here, so a page can be filled from more than one store page. That
     /// is the price of filtering on a status only the kernel can compute; it is not a price a store
-    /// could pay by indexing.
+    /// could pay by indexing — and it is why the walk is bounded. A filter that matches nothing
+    /// (`?phase=lost` on a node with none) would otherwise read every process session the tenant ever
+    /// had, one snapshot at a time, inside one request. Past `PROCESS_SCAN_PAGES` store pages the
+    /// answer is a short page and a cursor: the client continues, the server stops.
     pub async fn processes(
         &self,
         tenant: &str,
@@ -611,6 +621,7 @@ impl Kernel {
         let mut page = crate::contract::ProcessPage::default();
         let mut after = query.after.clone();
         let live = self.supervisor.list().await;
+        let mut scanned = 0usize;
 
         loop {
             let store_page = self
@@ -628,7 +639,9 @@ impl Kernel {
                 .await?;
 
             let total = store_page.sessions.len();
+            let mut last_examined: Option<crate::contract::SessionId> = None;
             for (position, session) in store_page.sessions.into_iter().enumerate() {
+                last_examined = Some(session.clone());
                 let key = crate::adapter::SessionKey {
                     tenant: tenant.to_owned(),
                     id: session.clone(),
@@ -665,6 +678,14 @@ impl Kernel {
                 }
             }
 
+            scanned = scanned.saturating_add(1);
+            if scanned >= PROCESS_SCAN_PAGES {
+                // Out of budget with rows still unexamined: hand back what matched and a cursor at
+                // the last row looked at, so the client can continue rather than the server reading
+                // the tenant inline.
+                page.next = last_examined;
+                return Ok(page);
+            }
             match store_page.next {
                 Some(next) => after = Some(next),
                 None => return Ok(page),
