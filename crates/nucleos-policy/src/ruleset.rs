@@ -119,6 +119,29 @@ fn matches(rule: &Rule, request: &PolicyRequest<'_>) -> bool {
     }
 
     match &request.subject {
+        // A session's isolation: the kind, the network, and where it may write.
+        Gated::Sandbox { policy, workspace } => {
+            let Some(pattern) = &rule.sandbox else {
+                return false;
+            };
+            if !glob(pattern, policy.kind()) {
+                return false;
+            }
+            // Network is denied unless the rule says otherwise: it is not part of the kind, so a rule
+            // that allowed `workspace_write` would otherwise also allow it with the network on.
+            if policy.network_access() && rule.network != Some(true) {
+                return false;
+            }
+            if let Some(prefix) = &rule.workspace_prefix
+                && policy
+                    .writable_roots(*workspace)
+                    .iter()
+                    .any(|root| !root.starts_with(prefix.as_str()))
+            {
+                return false;
+            }
+            true
+        }
         Gated::Tool { call } => rule
             .tool
             .as_ref()
@@ -202,6 +225,7 @@ fn describe(subject: &Gated<'_>) -> String {
             None => "an empty command".to_owned(),
         },
         Gated::Config { scope, subject } => format!("{scope} configuration `{subject}`"),
+        Gated::Sandbox { policy, .. } => format!("a `{}` session", policy.kind()),
     }
 }
 
@@ -786,5 +810,181 @@ mod config_tests {
             subject: "models",
         });
         assert_eq!(described, "system configuration `models`");
+    }
+}
+
+/// A session's isolation is gated like anything else, and the three constraints are separate.
+#[cfg(test)]
+mod sandbox_rules {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use nucleos::contract::{Principal, SandboxPolicy, SessionId};
+
+    /// The same request the sibling module's helper builds, kept local so this module is self-contained.
+    async fn check<'a>(document: Document, subject: Gated<'a>) -> Verdict {
+        let principal = Principal {
+            tenant: "acme".to_owned(),
+            subject: "alice".to_owned(),
+        };
+        let ruleset = Ruleset::new(document).unwrap();
+        let session = SessionId::new("s1");
+        ruleset
+            .check(PolicyRequest {
+                principal: &principal,
+                session: Some(&session),
+                subject,
+            })
+            .await
+    }
+
+    fn workspace_write(extra: &[&str], network: bool) -> SandboxPolicy {
+        SandboxPolicy::WorkspaceWrite {
+            extra_writable_roots: extra.iter().map(|root| (*root).to_owned()).collect(),
+            network_access: network,
+        }
+    }
+
+    /// A rule with no `sandbox` grants no session, whatever else it allows.
+    #[tokio::test]
+    async fn a_policy_without_a_sandbox_rule_opens_nothing() {
+        let document =
+            Document::parse(r#"{"default":"deny","rules":[{"decision":"allow","tool":"*"}]}"#)
+                .unwrap();
+        let policy = workspace_write(&[], false);
+        let verdict = check(
+            document,
+            Gated::Sandbox {
+                policy: &policy,
+                workspace: Some("/srv/ws"),
+            },
+        )
+        .await;
+        assert!(matches!(verdict, Verdict::Deny { .. }), "{verdict:?}");
+    }
+
+    /// The kind is matched by glob, so a deployment can allow one rung and not the next.
+    #[tokio::test]
+    async fn the_kind_is_what_the_rule_names() {
+        let document = Document::parse(
+            r#"{"default":"deny","rules":[{"decision":"allow","sandbox":"read_only"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            check(
+                Document::clone(&document),
+                Gated::Sandbox {
+                    policy: &SandboxPolicy::ReadOnly {
+                        network_access: false
+                    },
+                    workspace: None,
+                },
+            )
+            .await,
+            Verdict::Allow
+        );
+        assert!(
+            matches!(
+                check(
+                    Document::clone(&document),
+                    Gated::Sandbox {
+                        policy: &SandboxPolicy::DangerFullAccess,
+                        workspace: None,
+                    },
+                )
+                .await,
+                Verdict::Deny { .. }
+            ),
+            "one rung allowed is not the ladder allowed"
+        );
+    }
+
+    /// Network is not part of the kind, so it is denied unless the rule says otherwise.
+    #[tokio::test]
+    async fn network_is_denied_unless_the_rule_allows_it() {
+        let without = Document::parse(
+            r#"{"default":"deny","rules":[{"decision":"allow","sandbox":"workspace_write"}]}"#,
+        )
+        .unwrap();
+        let networked = workspace_write(&[], true);
+        assert!(matches!(
+            check(
+                Document::clone(&without),
+                Gated::Sandbox {
+                    policy: &networked,
+                    workspace: None,
+                },
+            )
+            .await,
+            Verdict::Deny { .. }
+        ));
+
+        let with = Document::parse(
+            r#"{"default":"deny","rules":[{"decision":"allow","sandbox":"workspace_write","network":true}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            check(
+                with,
+                Gated::Sandbox {
+                    policy: &networked,
+                    workspace: None,
+                },
+            )
+            .await,
+            Verdict::Allow
+        );
+    }
+
+    /// A writable root outside the prefix is refused, and the extra roots count as roots.
+    ///
+    /// The workspace is a request field, so "may write in its workspace" can only mean something if a
+    /// rule says which directories those are.
+    #[tokio::test]
+    async fn a_writable_root_outside_the_prefix_is_refused() {
+        let document = Document::parse(
+            r#"{"default":"deny","rules":[
+                 {"decision":"allow","sandbox":"workspace_write","workspace_prefix":"/srv/"}
+               ]}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            check(
+                Document::clone(&document),
+                Gated::Sandbox {
+                    policy: &workspace_write(&["/srv/cache"], false),
+                    workspace: Some("/srv/ws"),
+                },
+            )
+            .await,
+            Verdict::Allow
+        );
+
+        // The workspace is fine, the extra root is not: bounding one and not the other would leave
+        // the widening reachable through the field nobody bounded.
+        assert!(matches!(
+            check(
+                Document::clone(&document),
+                Gated::Sandbox {
+                    policy: &workspace_write(&["/etc"], false),
+                    workspace: Some("/srv/ws"),
+                },
+            )
+            .await,
+            Verdict::Deny { .. }
+        ));
+
+        assert!(matches!(
+            check(
+                document,
+                Gated::Sandbox {
+                    policy: &workspace_write(&[], false),
+                    workspace: Some("/"),
+                },
+            )
+            .await,
+            Verdict::Deny { .. }
+        ));
     }
 }

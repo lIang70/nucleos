@@ -50,6 +50,18 @@ pub enum Gated<'a> {
         /// A name rather than a path, so a policy rule reads `{"config": "models"}` and not a URL.
         subject: &'a str,
     },
+    /// A session is about to be created, with the isolation it asked for.
+    ///
+    /// A separate question from [`Gated::Exec`], asked once at `open`: the sandbox is a property of the
+    /// whole session, decided there and carried in the checkpoint, so it cannot be judged per command.
+    /// Without this, "the caller names its own policy" means any tenant can name `danger_full_access`,
+    /// and [`crate::contract::SandboxPolicy`]'s own documentation says a request may not do that.
+    Sandbox {
+        /// What the caller asked for.
+        policy: &'a crate::contract::SandboxPolicy,
+        /// Where its commands would run, which bounds the writable roots a policy grants.
+        workspace: Option<&'a str>,
+    },
     /// A command is about to run.
     ///
     /// The three fields are what a policy needs to decide: you cannot judge "run this" without
@@ -149,6 +161,7 @@ impl Policy for DenyAll {
             Gated::Model { model, .. } => model.to_owned(),
             Gated::Exec { argv, .. } => argv.join(" "),
             Gated::Config { scope, subject } => format!("{scope} configuration: {subject}"),
+            Gated::Sandbox { policy, .. } => format!("a `{}` session", policy.kind()),
         };
         Verdict::Deny {
             code: crate::contract::ErrorCode::Denied,

@@ -1414,6 +1414,44 @@ impl Default for SandboxPolicy {
 }
 
 impl SandboxPolicy {
+    /// The name a policy rule matches, and the name an error message uses.
+    ///
+    /// A string rather than a `Debug` rendering: a rule reads `{"sandbox": "workspace_write"}`, and a
+    /// rename in the enum has to be a decision about the wire, not a side effect of refactoring.
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::DangerFullAccess => "danger_full_access",
+            Self::ReadOnly { .. } => "read_only",
+            Self::WorkspaceWrite { .. } => "workspace_write",
+            Self::ExternalSandbox { .. } => "external_sandbox",
+        }
+    }
+
+    /// Every root this policy would let a command write to.
+    ///
+    /// Both the session's workspace and the extra roots a caller may add: bounding one and not the
+    /// other would leave the widening reachable through the field nobody bounded.
+    #[must_use]
+    pub fn writable_roots<'a>(&'a self, workspace: Option<&'a str>) -> Vec<&'a str> {
+        let mut roots = Vec::new();
+        match self {
+            Self::DangerFullAccess | Self::ReadOnly { .. } => {}
+            Self::WorkspaceWrite {
+                extra_writable_roots,
+                ..
+            } => {
+                if let Some(workspace) = workspace {
+                    roots.push(workspace);
+                }
+                roots.extend(extra_writable_roots.iter().map(String::as_str));
+            }
+            // Outside the kernel's reach: the policy is somebody else's, so nothing here bounds it.
+            Self::ExternalSandbox { .. } => {}
+        }
+        roots
+    }
+
     /// The narrowest policy: read only, no network.
     #[must_use]
     pub fn read_only() -> Self {

@@ -73,6 +73,22 @@ each with a network flag. `SandboxPermissions` is `use_default`, `require_escala
 The policy is **not** a request field. A caller that can name its own policy can name
 `danger_full_access`, and a permission slip the untrusted side writes is not a permission model.
 
+So a session's isolation is gated at `open`, as `Gated::Sandbox`, before anything is written. Three
+constraints, three fields on the rule, and each one is its own decision:
+
+| Field              | What it bounds                                                           |
+| ------------------ | ------------------------------------------------------------------------ |
+| `sandbox`          | a glob over the kind — `read_only`, `workspace_write`, and the rest      |
+| `network`          | whether the network is on. Absent means no, whatever the kind allows     |
+| `workspace_prefix` | every writable root, workspace and extra roots alike, must start with it |
+
+A rule with no `sandbox` grants no session, and `network` and `workspace_prefix` only narrow a
+`sandbox` rule — on their own they name nothing, which the document validator refuses. This is the same
+shape as `escalation`: "may this caller open a session" and "with how much isolation" are different
+questions, and letting one answer both is how a caller picks its own confinement. The workspace being a
+request field is why the prefix exists: "may write in its workspace" can only mean something if a rule
+says which directories those are.
+
 Nothing widens without a gate. An escalation becomes `Gated::Exec` — the policy sees the argv, the
 session's policy and what was asked for — and the usual answer applies: allow, deny, or ask a
 human. `with_additional_permissions` only ever adds; there is no field for removing a restriction,
@@ -102,7 +118,8 @@ lying:
 an escalation means; the gate is then the only protection, which is why the contract says the gate
 turns it into a question rather than a formality.
 
-**How it is configured.** Two places, and neither is a request field that a command can rewrite:
+**How it is configured.** A request *asks* for isolation and a policy rule *grants* it; a command
+cannot rewrite either:
 
 ```jsonc
 POST /v1/processes

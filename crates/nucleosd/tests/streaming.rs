@@ -7,6 +7,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use nucleos::adapter::{AllowAll, Store};
@@ -394,6 +395,29 @@ async fn a_client_that_hangs_up_cancels_the_turn_and_the_record_says_so() {
     assert_eq!(view["state"], "open", "{view}");
 }
 
+/// Denies the model and allows everything else, so the session opens and the turn fails inside it.
+///
+/// `DenyAll` refuses every gate, including the isolation one at `open` — a test about a turn failing
+/// inside the call needs a turn that began.
+struct DenyModelOnly;
+
+#[async_trait]
+impl nucleos::adapter::Policy for DenyModelOnly {
+    async fn check(
+        &self,
+        request: nucleos::adapter::PolicyRequest<'_>,
+    ) -> nucleos::adapter::Verdict {
+        use nucleos::adapter::{Gated, Verdict};
+        match request.subject {
+            Gated::Model { .. } => Verdict::Deny {
+                code: nucleos::contract::ErrorCode::Denied,
+                reason: "this deployment runs no models".to_owned(),
+            },
+            _ => Verdict::Allow,
+        }
+    }
+}
+
 #[tokio::test]
 async fn a_turn_that_fails_inside_the_call_ends_with_the_reason() {
     // The policy refuses the model, so the turn begins (budget spent, route resolved) and then dies
@@ -405,7 +429,7 @@ async fn a_turn_that_fails_inside_the_call_ends_with_the_reason() {
             Arc::new(nucleos_testkit::FakeModel::text(["never"])),
         )
         .store(Arc::new(nucleos_sqlite::SqliteStore::in_memory().unwrap()) as Arc<dyn Store>)
-        .policy(Arc::new(nucleos::adapter::DenyAll))
+        .policy(Arc::new(DenyModelOnly))
         .routing(Routing {
             chain: vec!["primary".to_owned()],
             retries: 0,

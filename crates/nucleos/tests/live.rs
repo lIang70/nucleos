@@ -134,6 +134,30 @@ async fn an_event_arrives_before_the_turn_that_wrote_it_has_finished() {
     turn.await.unwrap().unwrap();
 }
 
+/// Denies the model and nothing else: the session opens, so the turn can start and then fail.
+///
+/// `DenyAll` would refuse the session itself — the isolation a caller asks for is gated at `open` — and
+/// a test about a turn failing inside the call needs a turn that began.
+#[derive(Debug)]
+struct DenyModelOnly;
+
+#[async_trait]
+impl nucleos::adapter::Policy for DenyModelOnly {
+    async fn check(
+        &self,
+        request: nucleos::adapter::PolicyRequest<'_>,
+    ) -> nucleos::adapter::Verdict {
+        use nucleos::adapter::{Gated, Verdict};
+        match request.subject {
+            Gated::Model { .. } => Verdict::Deny {
+                code: ErrorCode::Denied,
+                reason: "this deployment runs no models".to_owned(),
+            },
+            _ => Verdict::Allow,
+        }
+    }
+}
+
 #[tokio::test]
 async fn a_turn_that_fails_inside_the_call_leaves_a_reason() {
     // The rule: a turn that produced no record must not look like one that is still running. A policy
@@ -144,7 +168,7 @@ async fn a_turn_that_fails_inside_the_call_leaves_a_reason() {
         Kernel::builder()
             .model("primary", Arc::new(Gated { release }))
             .store(Arc::new(SqliteStore::in_memory().unwrap()) as Arc<dyn Store>)
-            .policy(Arc::new(nucleos::adapter::DenyAll))
+            .policy(Arc::new(DenyModelOnly))
             .clock(Arc::new(FixedClock::at(0)))
             .routing(Routing {
                 chain: vec!["primary".to_owned()],
@@ -218,7 +242,16 @@ async fn a_turn_that_fails_before_announcing_itself_writes_why() {
     let release = Arc::new(tokio::sync::Notify::new());
     let kernel = kernel(Arc::clone(&release));
     let mut session = kernel
-        .open(&principal(), SessionId::new("s1"), SessionSpec::default())
+        .open(
+            &principal(),
+            SessionId::new("s1"),
+            SessionSpec {
+                // Explicitly none: omitting the field means no limit, which is the opposite of what
+                // this test is about.
+                credit_tokens: Some(0),
+                ..SessionSpec::default()
+            },
+        )
         .await
         .unwrap();
 

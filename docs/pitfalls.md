@@ -1734,3 +1734,27 @@ does not hand back a step the budget already charged.
 
 **Failure it prevents.** A runtime whose cost per turn is proportional to the conversation: one that gets
 slower the longer it is used, and never says why.
+
+## 106. Isolation is a privilege, and it is gated where the session is born
+
+**Decision.** A session's sandbox is checked at `open` through `Gated::Sandbox`, not read out of the
+request. Three fields on the rule: `sandbox` (a glob over the kind), `network` (off unless the rule says
+otherwise), and `workspace_prefix` (which every writable root, workspace and extra roots alike, must
+start with).
+
+**Why.** `StartRequest.sandbox.policy` used to travel from the request straight into the session, and
+`confine()` answers `danger_full_access` with "nothing to enforce". Any tenant token could therefore
+declare full access and run commands as the daemon with no sandbox at all. A caller that can name its own
+policy has no permission model — the contract's own comment says so, and the code disagreed with it.
+
+**Why at `open` and not per command.** The sandbox is a property of the whole session, carried in the
+checkpoint, so it is decided once rather than re-judged per `exec`. The escalation gate already exists for
+the per-command half.
+
+**Why the workspace prefix exists.** The workspace is a request field, so "may write in its workspace" is
+meaningless without a bound on where it is. Both the workspace and any extra roots a caller adds are
+checked, because bounding one and not the other would leave the widening reachable through the field
+nobody bounded.
+
+**Failure it prevents.** "May this caller open a session" silently answering "with no isolation", because
+no rule had a field to say otherwise.

@@ -7,6 +7,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use async_trait::async_trait;
 use nucleos::adapter::{AllowAll, Store};
 use nucleos::contract::{
     AttemptOutcome, ConfigPatch, Content, ErrorCode, Event, EventKind, Message, Part, PartKind,
@@ -425,15 +426,36 @@ async fn a_session_that_never_ran_has_no_partial() {
 /// *end* the turn for recovery: `fold` treats `turn_started` as evidence of an abandoned turn, and
 /// `completes_a_unit` is what retires that evidence. Without it, `load` appends `attempt_failed`
 /// beneath a turn that already said what happened — inventing a model, a trigger and a duration.
+/// Denies the model and allows everything else: a session that opens and a turn that fails.
+struct DenyModelOnly;
+
+#[async_trait]
+impl nucleos::adapter::Policy for DenyModelOnly {
+    async fn check(
+        &self,
+        request: nucleos::adapter::PolicyRequest<'_>,
+    ) -> nucleos::adapter::Verdict {
+        use nucleos::adapter::{Gated, Verdict};
+        match request.subject {
+            Gated::Model { .. } => Verdict::Deny {
+                code: ErrorCode::Denied,
+                reason: "this deployment runs no models".to_owned(),
+            },
+            _ => Verdict::Allow,
+        }
+    }
+}
+
 #[tokio::test]
 async fn a_turn_that_ended_in_writing_is_not_re_load_ed_as_abandoned() {
     let store = Arc::new(SqliteStore::in_memory().unwrap());
     let kernel = Kernel::builder()
         .model("primary", Arc::new(FakeModel::text(["unused"])))
         .store(Arc::clone(&store) as Arc<dyn Store>)
-        // Denies the model, so the turn fails inside the call — the path that writes `turn_failed`
-        // and nothing else.
-        .policy(Arc::new(nucleos::adapter::DenyAll))
+        // Denies the model and nothing else, so the turn fails inside the call — the path that
+        // writes `turn_failed` and nothing else. `DenyAll` would refuse the session at `open`, since
+        // the isolation a caller asks for is gated there too.
+        .policy(Arc::new(DenyModelOnly))
         .clock(Arc::new(FixedClock::at(0)))
         .routing(Routing {
             chain: vec!["primary".to_owned()],

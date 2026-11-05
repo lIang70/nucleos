@@ -1358,7 +1358,9 @@ const GOVERNED_BY: &str = r#"{
   "default": "deny",
   "rules": [
     {"decision": "allow", "config": "*", "scope": "system", "tenant": "acme", "subject": "admin"},
-    {"decision": "allow", "config": "*", "scope": "own", "tenant": "acme", "subject": "admin"}
+    {"decision": "allow", "config": "*", "scope": "own", "tenant": "acme", "subject": "admin"},
+    {"decision": "allow", "sandbox": "*", "network": true,
+     "reason": "the fixture's callers may open any session; a real deployment would not be this broad"}
   ]
 }"#;
 
@@ -2579,4 +2581,36 @@ async fn a_document_that_changes_the_policy_needs_permission_for_it() {
     .to_string();
     let (status, applied) = signed(&app, &key, &key_id, "PUT", "/v1/config", &unchanged).await;
     assert_eq!(status, StatusCode::OK, "{applied}");
+}
+
+/// A deployment that says nothing about isolation cannot open sessions.
+///
+/// The sandbox is decided at `open` and carried in the checkpoint, so it is gated there — once, for the
+/// whole session. Before this, the policy field travelled from the request straight into the session, and
+/// any tenant token could name `danger_full_access`.
+#[tokio::test]
+async fn a_policy_that_says_nothing_about_isolation_opens_no_sessions() {
+    // Everything except isolation: models, tools, configuration — and no `sandbox` rule.
+    const NO_ISOLATION: &str = r#"{
+        "default": "deny",
+        "rules": [
+          {"decision":"allow","config":"*","scope":"system","tenant":"acme","subject":"admin"},
+          {"decision":"allow","config":"*","scope":"own","tenant":"acme","subject":"admin"}
+        ]
+    }"#;
+    let (app, _key, _key_id) = governable_by(NO_ISOLATION, None).await;
+
+    let (status, refused) = request(&app, "POST", "/v1/sessions", "", r#"{"session":"s1"}"#).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+    assert!(
+        refused["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("workspace_write"),
+        "the refusal names the isolation that was asked for: {refused}"
+    );
+
+    // Nothing was created: a refusal at the gate leaves no session behind.
+    let (status, _) = request(&app, "GET", "/v1/sessions/s1", "", "").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }

@@ -641,6 +641,9 @@ impl Policy for DenyToolsOnly {
             },
             Gated::Model { .. } => Verdict::Allow,
             Gated::Exec { .. } => Verdict::Allow,
+            // These tests drive turns in sessions the fixture opens itself; isolation has its own
+            // gate and its own tests.
+            Gated::Sandbox { .. } => Verdict::Allow,
             // These tests are about a session's turns; configuration has its own gate and its own
             // tests, and a policy here that allowed it would be answering a question nobody asked.
             Gated::Config { .. } => Verdict::Deny {
@@ -675,6 +678,9 @@ impl Policy for AskFirst {
             },
             Gated::Model { .. } => Verdict::Allow,
             Gated::Exec { .. } => Verdict::Allow,
+            // These tests drive turns in sessions the fixture opens itself; isolation has its own
+            // gate and its own tests.
+            Gated::Sandbox { .. } => Verdict::Allow,
             // These tests are about a session's turns; configuration has its own gate and its own
             // tests, and a policy here that allowed it would be answering a question nobody asked.
             Gated::Config { .. } => Verdict::Deny {

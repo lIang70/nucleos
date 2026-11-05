@@ -28,6 +28,35 @@ impl Kernel {
             )));
         }
 
+        // The isolation a caller asks for is a privilege, not a field: without this, any tenant could
+        // name `danger_full_access` and run commands with no sandbox at all. Asked before anything is
+        // written, so a refusal leaves no session behind to clean up.
+        match self
+            .policy()
+            .check(crate::adapter::PolicyRequest {
+                principal,
+                session: None,
+                subject: crate::adapter::Gated::Sandbox {
+                    policy: &spec.sandbox,
+                    workspace: spec.workspace.as_deref(),
+                },
+            })
+            .await
+        {
+            crate::adapter::Verdict::Allow => {}
+            crate::adapter::Verdict::Deny { code, reason } => {
+                return Err(Error::new(code, reason));
+            }
+            // A human decision on a session that does not exist yet is a refusal: there is nothing to
+            // park, and an unattended "ask" that becomes an "allow" later is worse than a no.
+            crate::adapter::Verdict::AskHuman { question, .. } => {
+                return Err(Error::denied(format!(
+                    "a session with this isolation needs a human ({question}), and there is no \
+                     session yet to park"
+                )));
+            }
+        }
+
         let now = self.now();
         let (generation, tools) = {
             let generations = self.generations();

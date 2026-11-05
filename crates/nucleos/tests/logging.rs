@@ -96,7 +96,16 @@ fn kernel() -> Kernel {
 async fn a_budget_refusal_is_logged_with_the_numbers_behind_it() {
     let kernel = kernel();
     let session = kernel
-        .open(&principal(), SessionId::new("s1"), SessionSpec::default())
+        .open(
+            &principal(),
+            SessionId::new("s1"),
+            SessionSpec {
+                // A zero grant, because the record this test looks for is written when the budget
+                // refuses a call — and an omitted grant now means no limit rather than none.
+                credit_tokens: Some(0),
+                ..SessionSpec::default()
+            },
+        )
         .await
         .unwrap();
     let mut session = session;

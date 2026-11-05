@@ -75,6 +75,27 @@ pub struct Rule {
     /// escalation needs a rule that says so.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub escalation: Option<bool>,
+    /// A glob over the sandbox a session asks to be created with: `read_only`, `workspace_write`,
+    /// `danger_full_access`, `external_sandbox`.
+    ///
+    /// Its own field for the same reason `escalation` is: "may this caller open a session" and "with
+    /// how much isolation" are different questions, and letting one answer both is how a caller picks
+    /// its own confinement. A rule without `sandbox` grants no session at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<String>,
+    /// Whether a session under this rule may reach the network.
+    ///
+    /// Absent means no. Network access is not part of the sandbox *kind*, so a rule that allowed
+    /// `workspace_write` would otherwise also allow it with the network on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<bool>,
+    /// Every writable root a session asks for must start with this.
+    ///
+    /// `workspace_write` grants writes under the session's workspace, and the workspace is a request
+    /// field — so without a prefix, "may write in its workspace" means "may write wherever it says its
+    /// workspace is". Both the workspace and any extra roots a caller adds are checked against it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_prefix: Option<String>,
     /// Only this tenant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tenant: Option<String>,
@@ -144,11 +165,20 @@ impl Document {
                 && rule.model.is_none()
                 && rule.program.is_none()
                 && rule.config.is_none()
+                && rule.sandbox.is_none()
             {
                 return Err(Error::invalid(format!(
-                    "a rule with no tool, model, program or config matches nothing; {decision:?} on \
-                     everything is written as a rule with `tool: \"*\"`"
+                    "a rule with no tool, model, program, config or sandbox matches nothing; \
+                     {decision:?} on everything is written as a rule with `tool: \"*\"`"
                 )));
+            }
+            // The narrowing fields only narrow what they belong to.
+            if (rule.network.is_some() || rule.workspace_prefix.is_some()) && rule.sandbox.is_none()
+            {
+                return Err(Error::invalid(
+                    "`network` and `workspace_prefix` only narrow a `sandbox` rule; on their own they \
+                     name nothing",
+                ));
             }
             // `system`, `tenant`, `own`, or `tenant/<id>` for one named tenant. A bare tenant name is
             // not accepted: the document cannot tell one from a typo, and "matches nothing" is the
