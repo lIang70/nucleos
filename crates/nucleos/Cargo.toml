@@ -11,8 +11,21 @@ keywords = ["agent", "kernel", "session", "mcp"]
 categories = ["development-tools"]
 
 [dependencies]
+tracing = { workspace = true }
+async-trait = { workspace = true }
+futures-util = { workspace = true }
+schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+
+[dev-dependencies]
+nucleos-sqlite = { path = "../nucleos-sqlite" }
+nucleos-policy = { path = "../nucleos-policy" }
+nucleos-testkit = { path = "../nucleos-testkit" }
+tracing-subscriber = { workspace = true }
+tokio = { workspace = true }
 
 [lints]
 workspace = true

@@ -1,6 +1,16 @@
 [workspace]
 resolver = "3"
-members = ["crates/nucleos", "crates/nucleos-proto", "crates/nucleosd"]
+members = [
+    "crates/nucleos",
+    "crates/nucleos-auth",
+    "crates/nucleos-cli",
+    "crates/nucleos-mcp",
+    "crates/nucleos-openai",
+    "crates/nucleos-policy",
+    "crates/nucleos-sqlite",
+    "crates/nucleos-testkit",
+    "crates/nucleosd",
+]
 
 [workspace.package]
 version = "0.0.1-preview"
@@ -12,10 +22,21 @@ repository = "https://github.com/lIang70/nucleos"
 
 [workspace.dependencies]
 nucleos = { path = "crates/nucleos", version = "0.0.1-preview" }
-nucleos-proto = { path = "crates/nucleos-proto", version = "0.0.1-preview" }
+nucleos-mcp = { path = "crates/nucleos-mcp", version = "0.0.1-preview" }
+nucleos-openai = { path = "crates/nucleos-openai", version = "0.0.1-preview" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+schemars = "1"
+async-trait = "0.1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+axum = "0.8"
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+tower = { version = "0.5", features = ["util"] }
+tokio-stream = { version = "0.1", features = ["sync", "net"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "process", "io-util", "signal"] }
 
 # `unwrap` in the kernel is a bug, not a shortcut. `expect` needs a reason on the line.
 [workspace.lints.rust]

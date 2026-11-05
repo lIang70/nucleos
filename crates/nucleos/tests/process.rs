@@ -1,0 +1,336 @@
+//! Process sessions: the same lifecycle as an agent, a different face.
+//!
+//! Three things are pinned here. A process session cannot exist without something to run; the
+//! two faces do not mix; and a process that outlived the runtime is reported as lost rather than
+//! as still running.
+
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+use nucleos::adapter::{AllowAll, Store};
+use nucleos::contract::{
+    ErrorCode, Principal, ProcessSpec, ProcessState, ProcessStatus, Routing, SandboxPermissions,
+    SandboxPolicy, SessionId, SessionKind,
+};
+use nucleos::kernel::{Kernel, SessionSpec};
+use nucleos_sqlite::SqliteStore;
+use nucleos_testkit::{FakeModel, FixedClock};
+use std::sync::Arc;
+
+/// The store's key for a test tenant. The tests all use one tenant, so the helper keeps them about
+/// what they are testing rather than about spelling out a key at every call.
+fn key(id: &SessionId) -> nucleos::adapter::SessionKey {
+    nucleos::adapter::SessionKey::new("acme", id.clone())
+}
+
+fn principal() -> Principal {
+    Principal {
+        tenant: "acme".to_owned(),
+        subject: "alice".to_owned(),
+    }
+}
+
+fn kernel() -> (Kernel, Arc<SqliteStore>) {
+    let store = Arc::new(SqliteStore::in_memory().expect("an in-memory database"));
+    let kernel = Kernel::builder()
+        .model("primary", Arc::new(FakeModel::text(["unused"])))
+        .store(Arc::clone(&store) as Arc<dyn Store>)
+        .policy(Arc::new(AllowAll))
+        .clock(Arc::new(FixedClock::at(0)))
+        .routing(Routing {
+            chain: vec!["primary".to_owned()],
+            retries: 0,
+        })
+        .build()
+        .unwrap();
+    (kernel, store)
+}
+
+fn process_spec() -> ProcessSpec {
+    ProcessSpec {
+        argv: vec!["python3".to_owned(), "-c".to_owned(), "print(1)".to_owned()],
+        cwd: Some("/work".to_owned()),
+        env: Default::default(),
+        permissions: SandboxPermissions::UseDefault,
+    }
+}
+
+#[tokio::test]
+async fn a_process_session_without_a_process_is_invalid() -> nucleos::Result<()> {
+    let (kernel, _) = kernel();
+    let error = kernel
+        .open(
+            &principal(),
+            SessionId::new("p1"),
+            SessionSpec {
+                kind: SessionKind::Process,
+                process: None,
+                ..SessionSpec::default()
+            },
+        )
+        .await
+        .err()
+        .unwrap();
+
+    // A process session with nothing to run is a request that cannot mean anything.
+    assert_eq!(error.code(), ErrorCode::Invalid);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_process_session_records_how_it_was_started() -> nucleos::Result<()> {
+    let (kernel, store) = kernel();
+    let id = SessionId::new("p1");
+    kernel
+        .open(
+            &principal(),
+            id.clone(),
+            SessionSpec {
+                kind: SessionKind::Process,
+                process: Some(process_spec()),
+                workspace: Some("/work".to_owned()),
+                sandbox: SandboxPolicy::read_only(),
+                ..SessionSpec::default()
+            },
+        )
+        .await?;
+
+    let snapshot = store.snapshot(&key(&id)).await?.unwrap();
+    assert_eq!(snapshot.kind, SessionKind::Process);
+    let process = snapshot.process.unwrap();
+    assert_eq!(process.spec.argv[0], "python3");
+    // Pending, not Running: the session exists and the process does not — and saying "running"
+    // before a pid exists is the lie that makes a lost process indistinguishable from a live one.
+    assert_eq!(process.status, ProcessStatus::Pending);
+    assert!(!process.is_finished());
+
+    let reloaded = kernel.load(&principal(), &id).await?;
+    assert_eq!(reloaded.kind(), SessionKind::Process);
+    assert_eq!(
+        reloaded.process().map(|process| &process.spec.argv[0]),
+        Some(&"python3".to_owned())
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_agent_session_has_no_process() -> nucleos::Result<()> {
+    let (kernel, store) = kernel();
+    let id = SessionId::new("a1");
+    kernel
+        .open(
+            &principal(),
+            id.clone(),
+            SessionSpec {
+                // A spec handed to an agent session is ignored, not silently used.
+                process: Some(process_spec()),
+                ..SessionSpec::default()
+            },
+        )
+        .await?;
+
+    let snapshot = store.snapshot(&key(&id)).await?.unwrap();
+    assert_eq!(snapshot.kind, SessionKind::Agent);
+    assert!(snapshot.process.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_faces_do_not_mix() -> nucleos::Result<()> {
+    let (kernel, _) = kernel();
+    let mut session = kernel
+        .open(
+            &principal(),
+            SessionId::new("p1"),
+            SessionSpec {
+                kind: SessionKind::Process,
+                process: Some(process_spec()),
+                ..SessionSpec::default()
+            },
+        )
+        .await?;
+
+    let error = kernel.inference(&mut session, &[]).await.err().unwrap();
+    assert_eq!(error.code(), ErrorCode::Invalid);
+    assert!(error.reason().contains("no model calls"));
+    Ok(())
+}
+
+#[test]
+fn a_process_that_outlived_the_runtime_is_lost_not_running() {
+    // A live process cannot be reconstructed from a log: its memory, its descriptors and its
+    // cursor are not in the event stream. So the honest status is `Lost`, and it counts as
+    // finished — the alternative is a session that waits forever for a process that is gone.
+    let state = ProcessState {
+        spec: process_spec(),
+        status: ProcessStatus::Lost,
+    };
+    assert!(state.is_finished());
+
+    let running = ProcessState {
+        spec: process_spec(),
+        status: ProcessStatus::Running { pid: 42 },
+    };
+    assert!(!running.is_finished());
+}
+
+/// A phase filter that matches nothing walks a bounded number of rows and hands back a cursor.
+///
+/// The listing fills a page by reading store pages until the filter matches, which is the price of
+/// filtering on a status only the kernel can compute. Unbounded, `?phase=lost` on a node with none
+/// would read every process session the tenant ever had — one snapshot at a time — inside one request.
+#[tokio::test]
+async fn a_filter_that_matches_nothing_is_bounded_and_returns_a_cursor() -> nucleos::Result<()> {
+    let (kernel, _) = kernel();
+    // Process sessions opened but never started: none of them is running, so a `running` filter
+    // matches nothing however many there are.
+    for index in 0..40u64 {
+        kernel
+            .open(
+                &principal(),
+                SessionId::new(format!("p{index:02}")),
+                SessionSpec {
+                    kind: SessionKind::Process,
+                    process: Some(process_spec()),
+                    ..SessionSpec::default()
+                },
+            )
+            .await?;
+    }
+
+    let mut requests = 0;
+    let mut after = None;
+    loop {
+        requests += 1;
+        let page = kernel
+            .processes(
+                "acme",
+                &nucleos::contract::ProcessQuery {
+                    phase: Some(nucleos::contract::ProcessPhase::Running),
+                    limit: 1,
+                    after: after.clone(),
+                },
+            )
+            .await?;
+        assert!(
+            page.processes.is_empty(),
+            "nothing is running, so nothing matches"
+        );
+        assert!(
+            requests <= 10,
+            "the walk is unbounded: {requests} requests for forty sessions"
+        );
+        match page.next {
+            Some(cursor) => after = Some(cursor),
+            None => break,
+        }
+    }
+
+    // Bounded, so it takes more than one request; and it terminates, so the cursor makes progress.
+    assert!(
+        requests > 1,
+        "one request scanned the whole tenant, which is the unbounded walk this bounds"
+    );
+    Ok(())
+}
+
+/// A command the policy asks about is parked, not refused, and a human's answer runs it.
+///
+/// Approval is about the question, not about what the question is for: a tool call and a command are
+/// answered through the same syscall. Before this, an `ask` verdict on a command closed the session,
+/// which made an escalation gate nothing more than a refusal with extra steps.
+#[tokio::test]
+async fn a_command_the_policy_asks_about_is_parked_and_can_be_approved() -> nucleos::Result<()> {
+    /// Asks about `sh`, and allows everything else.
+    struct AskForSh;
+
+    #[async_trait::async_trait]
+    impl nucleos::adapter::Policy for AskForSh {
+        async fn check(
+            &self,
+            request: nucleos::adapter::PolicyRequest<'_>,
+        ) -> nucleos::adapter::Verdict {
+            use nucleos::adapter::{Gated, Verdict};
+            match request.subject {
+                Gated::Exec { argv, .. } if argv.first().is_some_and(|arg| arg == "sh") => {
+                    Verdict::AskHuman {
+                        question: "run sh?".to_owned(),
+                        options: vec![
+                            nucleos::contract::PermissionOption {
+                                id: "allow_once".to_owned(),
+                                kind: nucleos::contract::PermissionKind::AllowOnce,
+                                label: "Allow once".to_owned(),
+                            },
+                            nucleos::contract::PermissionOption {
+                                id: "reject".to_owned(),
+                                kind: nucleos::contract::PermissionKind::Reject,
+                                label: "Refuse".to_owned(),
+                            },
+                        ],
+                    }
+                }
+                _ => Verdict::Allow,
+            }
+        }
+    }
+
+    let store = Arc::new(SqliteStore::in_memory().expect("an in-memory database"));
+    let kernel = Kernel::builder()
+        .model("primary", Arc::new(FakeModel::text(["unused"])))
+        .store(Arc::clone(&store) as Arc<dyn Store>)
+        .policy(Arc::new(AskForSh))
+        .clock(Arc::new(FixedClock::at(0)))
+        .routing(Routing {
+            chain: vec!["primary".to_owned()],
+            retries: 0,
+        })
+        .build()
+        .unwrap();
+
+    let id = SessionId::new("p1");
+    let parked = kernel
+        .spawn(
+            &principal(),
+            id.clone(),
+            SessionSpec {
+                kind: SessionKind::Process,
+                process: Some(ProcessSpec {
+                    argv: vec!["sh".to_owned(), "-c".to_owned(), "printf hi".to_owned()],
+                    ..ProcessSpec::default()
+                }),
+                sandbox: SandboxPolicy::DangerFullAccess,
+                ..SessionSpec::default()
+            },
+        )
+        .await;
+    let error = parked.expect_err("the command did not start");
+    assert_eq!(error.code(), ErrorCode::Unavailable);
+
+    // Parked, and open: the question has somewhere to land.
+    let mut session = kernel.load(&principal(), &id).await?;
+    assert!(!session.is_closed());
+    let pending = session.pending()[0].clone();
+    assert_eq!(
+        pending.id,
+        id.as_str(),
+        "a command is identified by its session"
+    );
+    assert!(matches!(
+        pending.action,
+        nucleos::contract::PendingAction::Exec { .. }
+    ));
+
+    kernel
+        .answer(
+            &mut session,
+            nucleos::kernel::Approval {
+                pending_id: pending.id.clone(),
+                option_id: "allow_once".to_owned(),
+            },
+        )
+        .await?;
+    assert!(session.pending().is_empty(), "the answer was consumed");
+
+    let output = kernel.wait(&session).await?;
+    assert_eq!(output.stdout.text, "hi");
+    Ok(())
+}

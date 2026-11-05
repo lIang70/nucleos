@@ -1,0 +1,161 @@
+//! The published JSON Schema, generated in one pass.
+//!
+//! Under C1 the kernel's own types *are* the wire shape: `nucleos::contract` derives
+//! `JsonSchema` next to `Serialize`, and this module takes one document from a single root.
+//!
+//! Generating from one root rather than merging a document per type is not a detail. Merging
+//! means schemars describes the same reachable type twice — once as a root, once as a definition
+//! of some other root — and those two descriptions are allowed to differ in ways nobody wants to
+//! reconcile. One pass has one version of each type by construction.
+
+use super::api;
+use crate::contract as k;
+use schemars::{JsonSchema, schema_for};
+use serde_json::Value;
+
+/// The API surface, as a schema root.
+///
+/// Its properties name the payload of every endpoint; its `$defs` holds each reachable type
+/// exactly once. An SDK generator starts here.
+#[derive(Debug, JsonSchema)]
+pub struct Abi {
+    /// What one `GET /v1/sessions/{id}/events` frame carries.
+    ///
+    /// There is no frame *type*: a server-sent event already gives the type (`event:`) and the
+    /// cursor (`id:`), and a second type restating them is a second truth.
+    pub event: k::Event,
+    /// `GET /v1/describe`.
+    pub describe_response: api::DescribeResponse,
+    /// `POST /v1/sessions`.
+    pub start_request: api::StartRequest,
+    /// What that returns.
+    pub start_response: api::StartResponse,
+    /// `POST /v1/sessions/{id}/answer`.
+    pub answer_request: api::AnswerRequest,
+    /// The body of every failure.
+    pub error: api::ErrorBody,
+    /// The conversation model, for a client that sends `initial` messages.
+    pub message: k::Message,
+    /// What a call cost, attempt by attempt.
+    pub ledger: k::Ledger,
+    /// `POST /v1/sessions/{id}/inference`.
+    pub inference_request: api::InferenceRequest,
+    /// What that returns.
+    pub inference_response: api::InferenceResponse,
+    /// `POST /v1/sessions/{id}/tools`.
+    pub tool_batch_request: api::ToolBatchRequest,
+    /// What that returns.
+    pub tool_batch_response: api::ToolBatchResponse,
+    /// The fragment a turn left behind when it was cut short.
+    pub partial_turn: k::PartialTurn,
+    /// `GET /v1/config`.
+    pub model_request: api::ModelRequest,
+    /// One model, as reported.
+    pub model_view: api::ModelView,
+    /// `PUT /v1/tenants/{tenant}/limits`.
+    pub tenant_limits_request: api::TenantLimitsRequest,
+    /// What one tenant may use.
+    pub tenant_limits_view: api::TenantLimitsView,
+    /// `POST /v1/admin/keys`.
+    pub admin_key_request: api::AdminKeyRequest,
+    /// `GET /v1/admin/keys`.
+    pub admin_key_list_response: api::AdminKeyListResponse,
+    /// `POST /v1/sources`.
+    pub source_request: api::SourceRequest,
+    /// One source, as reported.
+    pub source_view: api::SourceView,
+    /// `POST /v1/sessions/{id}/cancel`.
+    pub cancel_response: api::CancelResponse,
+    /// `POST /v1/sessions/prune`.
+    pub prune_request: api::PruneRequest,
+    /// What a retention pass did, or would do.
+    pub prune_response: api::PruneResponse,
+    /// `POST /v1/sessions/{id}/credit`.
+    pub credit_request: api::CreditRequest,
+    /// What a grant leaves the session with.
+    pub credit_response: api::CreditResponse,
+    /// `GET /v1/sessions`.
+    pub session_summary: api::SessionSummary,
+    /// `GET /v1/sessions`.
+    pub session_list_response: api::SessionListResponse,
+    /// `POST /v1/tools/retire`.
+    pub retire_response: api::RetireResponse,
+    /// `GET /v1/sources`.
+    pub source_list_response: api::SourceListResponse,
+    /// `POST /v1/tokens`.
+    pub token_issue_request: api::TokenIssueRequest,
+    /// What issuing returns, once.
+    pub token_issued: api::TokenIssued,
+    /// One token, as a listing reports it.
+    pub token_view: api::TokenView,
+    /// `GET /v1/tokens`.
+    pub token_list_response: api::TokenListResponse,
+    /// `GET /v1/models`.
+    pub model_list_response: api::ModelListResponse,
+    /// `PUT /v1/policy` and other changes.
+    pub put_response: api::PutResponse,
+    /// The whole configuration, as one document.
+    pub deployment: api::Deployment,
+    /// One tenant's part of it.
+    pub tenant_document: api::TenantDocument,
+    /// `DELETE /v1/sessions/{id}`.
+    pub deleted_response: api::DeletedResponse,
+    /// `PUT /v1/config`.
+    pub applied_deployment: api::AppliedDeployment,
+    /// `GET /v1/config/history`.
+    pub change_view: api::ChangeView,
+    /// `GET /v1/config/history`.
+    pub change_list_response: api::ChangeListResponse,
+    /// `GET /v1/config`.
+    pub config_response: api::ConfigResponse,
+    /// `GET /v1/metrics`.
+    pub metrics_response: api::MetricsResponse,
+    /// `POST /v1/tools/reload`.
+    pub reload_response: api::ReloadResponse,
+    /// `POST /v1/sessions/{id}/state`.
+    pub state_request: api::StateRequest,
+    /// `GET /v1/sessions/{id}`.
+    pub session_view: api::SessionView,
+    /// `POST /v1/processes`.
+    pub process_start_request: api::ProcessStartRequest,
+    /// What that answers with.
+    pub process_start_response: api::ProcessStartResponse,
+    /// `GET /v1/processes`.
+    pub process_list_response: api::ProcessListResponse,
+    /// `POST /v1/sessions/{id}/stdin`.
+    pub stdin_request: api::StdinRequest,
+    /// `POST /v1/sessions/{id}/configure`.
+    pub config_patch: k::ConfigPatch,
+    /// What that returns.
+    pub configure_response: api::ConfigureResponse,
+    /// Adapter hints, which a session may change while it runs.
+    pub hints: k::Hints,
+    /// `POST /v1/sessions/{id}/exec`.
+    pub exec_request: api::ExecRequest,
+    /// What a command answers with.
+    pub exec_output: k::ExecOutput,
+    /// What a session's commands may touch.
+    pub sandbox_policy: k::SandboxPolicy,
+    /// What one command asks for on top.
+    pub sandbox_permissions: k::SandboxPermissions,
+    /// What a session is for.
+    pub session_kind: k::SessionKind,
+    /// How to start a process session.
+    pub process_spec: k::ProcessSpec,
+    /// Where a process is.
+    pub process_state: k::ProcessState,
+}
+
+/// Every named type, keyed by name.
+///
+/// The `$defs` of a single-root schema: one pass, one version of each type.
+///
+/// Deterministic: `serde_json`'s map is ordered, so two runs of the same code produce
+/// byte-identical output and a diff means a real change.
+pub fn definitions() -> Result<Value, serde_json::Error> {
+    let document = serde_json::to_value(schema_for!(Abi))?;
+    document
+        .get("$defs")
+        .cloned()
+        .ok_or_else(|| serde_json::Error::io(std::io::Error::other("schema has no $defs")))
+}

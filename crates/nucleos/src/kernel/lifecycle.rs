@@ -1,0 +1,478 @@
+//! Opening, loading and closing a session.
+//!
+//! The three doors into a session's life, and the only places one is created or ends.
+
+use super::{Kernel, SessionSpec, session};
+use crate::contract::{EventKind, Principal, SessionId, SessionState, StopReason};
+use crate::error::{Error, Result};
+
+impl Kernel {
+    /// Open a session.
+    pub async fn open(
+        &self,
+        principal: &Principal,
+        id: SessionId,
+        spec: SessionSpec,
+    ) -> Result<session::Session> {
+        // Scoped to the tenant, so a second tenant opening "s1" gets its own row rather than the
+        // first tenant's history. Within one tenant an id still belongs to whoever created it.
+        let key = crate::adapter::SessionKey {
+            tenant: principal.tenant.clone(),
+            id: id.clone(),
+        };
+        if let Some(existing) = self.store.snapshot(&key).await? {
+            // "Already exists" is not "not yours". An id another subject owns is answered as absent,
+            // so opening a session cannot be used to enumerate other people's ids; an id this caller
+            // owns is a conflict with an instruction, not a fresh empty session over a live log.
+            if existing.principal.subject != principal.subject {
+                return Err(Error::not_found(format!("no session {id}")));
+            }
+            if existing.state == crate::contract::SessionState::Closed {
+                return Err(Error::new(
+                    crate::contract::ErrorCode::Conflict,
+                    format!(
+                        "session {id} already exists and is closed: choose another id, or prune it \
+                         before reusing this one"
+                    ),
+                ));
+            }
+            return Err(Error::new(
+                crate::contract::ErrorCode::Conflict,
+                format!("session {id} already exists: resume it with `resume: true`"),
+            ));
+        }
+
+        // The isolation a caller asks for is a privilege, not a field: without this, any tenant could
+        // name `danger_full_access` and run commands with no sandbox at all. Asked before anything is
+        // written, so a refusal leaves no session behind to clean up.
+        match self
+            .policy()
+            .check(crate::adapter::PolicyRequest {
+                principal,
+                session: None,
+                subject: crate::adapter::Gated::Sandbox {
+                    policy: &spec.sandbox,
+                    workspace: spec.workspace.as_deref(),
+                },
+            })
+            .await
+        {
+            crate::adapter::Verdict::Allow => {}
+            crate::adapter::Verdict::Deny { code, reason } => {
+                return Err(Error::new(code, reason));
+            }
+            // A human decision on a session that does not exist yet is a refusal: there is nothing to
+            // park, and an unattended "ask" that becomes an "allow" later is worse than a no.
+            crate::adapter::Verdict::AskHuman { question, .. } => {
+                return Err(Error::denied(format!(
+                    "a session with this isolation needs a human ({question}), and there is no \
+                     session yet to park"
+                )));
+            }
+        }
+
+        let now = self.now();
+        let (generation, tools) = {
+            let generations = self.generations();
+            (generations.current(), generations.current_set())
+        };
+        let head = self.log_head(
+            &crate::adapter::SessionKey {
+                tenant: principal.tenant.clone(),
+                id: id.clone(),
+            },
+            0,
+        );
+        let mut session = session::Session::new(session::New {
+            id,
+            principal: principal.clone(),
+            generation,
+            tools,
+            log: head,
+            budget: spec.budget.clone(),
+            credit_tokens: spec.credit_tokens,
+            now_unix_millis: now,
+        });
+        // The kernel's default route, then whatever the caller asked to start from.
+        session.routing = self.routing.clone();
+        session.retries = session.routing.retries.max(self.retries);
+        session.workspace = spec.workspace.clone();
+        session.sandbox = spec.sandbox.clone();
+        session.kind = spec.kind;
+        session.process = match (spec.kind, spec.process.clone()) {
+            (crate::contract::SessionKind::Process, Some(process)) => {
+                Some(crate::contract::ProcessState {
+                    spec: process,
+                    status: crate::contract::ProcessStatus::Pending,
+                })
+            }
+            // A process session with nothing to run is a request that cannot mean anything.
+            (crate::contract::SessionKind::Process, None) => {
+                return Err(Error::invalid(
+                    "a process session needs a process spec to start",
+                ));
+            }
+            (crate::contract::SessionKind::Agent, _) => None,
+        };
+        session.messages = spec.initial.clone();
+        // The same path `configure` uses, so a session can start in any state it could later be
+        // changed into. A process session has no route — validating one it will never use would
+        // make it refuse to start over a model.
+        self.apply_patch(&mut session, &spec.config)?;
+        self.seed_search_policy(&mut session);
+        if session.kind == crate::contract::SessionKind::Agent {
+            // A session with no route takes the deployment's first model. Without this, a model added
+            // by request would be usable only by a session that named it, and every caller that
+            // relied on the default would keep failing until the daemon restarted — which is the
+            // change-not-surviving-a-restart problem, in the other direction.
+            if session.routing.chain.is_empty()
+                && let Some(first) = self.models().first()
+            {
+                session.routing.chain = vec![first.clone()];
+            }
+            // Resolved and filtered: a route naming a model this tenant may not use fails here, before
+            // a session exists, with a message about the tenant rather than about the model.
+            self.permit_route(&session.principal, self.resolve_route(&session.routing)?)?;
+        }
+        self.emit_state(&mut session).await?;
+        self.write_checkpoint(&mut session).await?;
+        Ok(session)
+    }
+    /// Load a session from its checkpoint.
+    ///
+    /// The spec is not re-sent: the checkpoint carries the route, the parameters and the tool set,
+    /// because a resume that had to be told its own configuration again is a resume that can
+    /// silently behave differently.
+    pub async fn load(&self, principal: &Principal, id: &SessionId) -> Result<session::Session> {
+        let key = crate::adapter::SessionKey {
+            tenant: principal.tenant.clone(),
+            id: id.clone(),
+        };
+        let snapshot = self
+            .store
+            .snapshot(&key)
+            .await?
+            .ok_or_else(|| Error::not_found(format!("no checkpoint for session {id}")))?;
+        self.restore(principal, id, snapshot, true).await
+    }
+
+    /// Load a session for a reader that needs its state, not its conversation.
+    ///
+    /// The same restore, over a checkpoint whose `messages` the store never parsed. What comes back is
+    /// a session with an empty history and an exact everything-else: the tail is folded identically, so
+    /// a view cannot disagree with the log. Use `load` when the conversation is the point.
+    pub async fn load_head(
+        &self,
+        principal: &Principal,
+        id: &SessionId,
+    ) -> Result<session::Session> {
+        let key = crate::adapter::SessionKey {
+            tenant: principal.tenant.clone(),
+            id: id.clone(),
+        };
+        let snapshot = self
+            .store
+            .snapshot_head(&key)
+            .await?
+            .ok_or_else(|| Error::not_found(format!("no checkpoint for session {id}")))?;
+        self.restore(principal, id, snapshot, false).await
+    }
+
+    /// Bring one checkpoint up to the log's head.
+    ///
+    /// `conversation` says whether the caller wants the message history. A head folds the same tail
+    /// and then drops the messages it collected: the state it returns is exact, and the conversation
+    /// it would have to keep is the thing it exists to avoid.
+    async fn restore(
+        &self,
+        principal: &Principal,
+        id: &SessionId,
+        snapshot: crate::contract::Snapshot,
+        conversation: bool,
+    ) -> Result<session::Session> {
+        // The lookup itself is scoped to the tenant, so another tenant's session is not "forbidden",
+        // it does not exist: the query cannot reach it.
+        let key = crate::adapter::SessionKey {
+            tenant: principal.tenant.clone(),
+            id: id.clone(),
+        };
+
+        // Within a tenant, an id is still its creator's. `NotFound` rather than `Denied`: a refusal
+        // that says "this exists but is not yours" enumerates the identifiers other subjects use.
+        if snapshot.principal.subject != principal.subject {
+            return Err(Error::not_found(format!("no session {id}")));
+        }
+        // The set is resolved once, here: a snapshot naming a generation this process never published
+        // (a restore into a fresh daemon) falls back to the current one, and that fallback is what the
+        // session is now pinned to.
+        let (tools, generation) = {
+            let generations = self.generations();
+            // `set` falls back to the current one for a number this process never published (a restore
+            // into a fresh daemon). The session is then pinned to that set, and its number has to say
+            // so — a checkpoint recording a generation the session does not hold is a fact that is
+            // false the moment it is written.
+            let set = generations.set(snapshot.generation);
+            let generation = if generations.contains(snapshot.generation) {
+                snapshot.generation
+            } else {
+                generations.current()
+            };
+            (set, generation)
+        };
+        // The head of the log, not a copy of its counter. A supervisor may still be writing to this
+        // session, in which case its counter is current and this handle must join it rather than
+        // re-derive a number from the checkpoint.
+        let head = if conversation {
+            self.log_head(&key, snapshot.seq.saturating_add(1))
+        } else {
+            // A view is a reader, not a writer: do not register a head for it.
+            self.peek_log_head(&key, snapshot.seq.saturating_add(1))
+        };
+        let mut session = session::Session::from_snapshot(
+            snapshot.clone(),
+            principal.clone(),
+            tools,
+            head,
+            snapshot.budget.clone(),
+            self.now(),
+        );
+        // The number, not just the set: `from_snapshot` copies it from the checkpoint, and the
+        // fallback above decided it should be the current one.
+        session.generation = generation;
+
+        // The checkpoint is a cache; the log is the truth. Everything written after it — the tokens
+        // a turn spent, the messages it completed, a configuration change — is folded in here, or a
+        // reload hands back a session that owes money it forgets and forgets work it was told.
+        let mut unfinished = false;
+        let mut warned_about_the_future = false;
+        let mut folded = 0usize;
+        let mut next = snapshot.seq.saturating_add(1);
+        // Paged, because the tail has no bound the kernel can promise: a checkpoint that keeps losing
+        // the version race, or a process session that only checkpoints when its command exits, leaves
+        // whatever the log accumulated. Reading it whole would make one request's memory a function of
+        // the session's history.
+        while let Ok(page) = self
+            .store
+            .events_page(&key, next, super::state::TAIL_PAGE)
+            .await
+        {
+            if page.is_empty() {
+                break;
+            }
+            for event in &page {
+                // The version is read, not just written. It cannot make an event readable that is not, but
+                // it can say why a session is behaving oddly after a downgrade — and once per load is
+                // enough, because the alternative is one line per event on a long log.
+                if event.schema_version > crate::contract::Event::SCHEMA_VERSION
+                    && !warned_about_the_future
+                {
+                    warned_about_the_future = true;
+                    tracing::warn!(
+                        event = "event_from_a_newer_build",
+                        session = %session.id,
+                        written = event.schema_version,
+                        understood = crate::contract::Event::SCHEMA_VERSION,
+                        consequence = "events this build does not recognise are carried, not applied",
+                    );
+                }
+                if super::replay::fold(&mut session, event) == super::replay::Applied::AbandonedTurn
+                {
+                    unfinished = true;
+                }
+                // A completed unit ends any evidence before it: a turn that finished is not abandoned,
+                // whatever deltas preceded it. This is also what makes a second recovery a no-op — the
+                // record written the first time is itself such an event.
+                if super::replay::completes_a_unit(&event.kind) {
+                    unfinished = false;
+                }
+                // `fetch_max`, not `store`: another writer (a supervisor, a concurrent request) may have
+                // moved the head past this event while the tail was being read, and rewinding it would
+                // hand out a number that is already in the log.
+                session
+                    .log
+                    .seq
+                    .fetch_max(event.seq + 1, std::sync::atomic::Ordering::SeqCst);
+                // Folded *and* materialised: the state now contains this event, so a checkpoint taken
+                // from here must say so. Claiming less would write a snapshot whose messages carry events
+                // its `seq` denies, and the next `load` would fold them a second time.
+                session.materialised_through = Some(
+                    session
+                        .materialised_through
+                        .map_or(event.seq, |through| through.max(event.seq)),
+                );
+                next = event.seq.saturating_add(1);
+            }
+            folded = folded.saturating_add(page.len());
+            if folded < super::state::TAIL_BUDGET {
+                continue;
+            }
+            // Further behind than one request should carry. Record what has been folded, so the next
+            // request starts from here instead of repeating it — and if that checkpoint loses the
+            // version race, keep folding: correctness first, and the next load finds the progress it
+            // managed to write.
+            if conversation && let Err(error) = self.write_checkpoint(&mut session).await {
+                tracing::warn!(
+                    event = "tail_checkpoint_refused",
+                    session = %session.id,
+                    folded,
+                    detail = %error.reason(),
+                    consequence = "the fold continues; the tail is read again by the next load",
+                );
+            }
+            folded = 0;
+        }
+
+        // The fold may have moved the generation, and the set must move with it. The session was
+        // restored from the checkpoint's generation, so a migration in the tail used to leave the
+        // number new and the tool set old — which made the next migration a no-op and the next
+        // checkpoint write the pairing down as fact. Resolved the same way as at the top, with the
+        // same fallback for a number this process never published.
+        let resolved = session.generation;
+        let (tools, generation) = {
+            let generations = self.generations();
+            let set = generations.set(resolved);
+            let generation = if generations.contains(resolved) {
+                resolved
+            } else {
+                generations.current()
+            };
+            (set, generation)
+        };
+        session.toolset = super::generation::Pinned::new(tools);
+        session.generation = generation;
+
+        // A turn the runtime did not survive is recorded rather than inferred. Nothing else in the
+        // log says it happened: the deltas are there, but they look the same as a turn that is still
+        // streaming.
+        // A head is a read, and a read does not write: recording the abandoned turn belongs to whoever
+        // is about to drive the session, which is the caller that asked for `load`.
+        if conversation && unfinished && session.state == crate::contract::SessionState::Open {
+            let attempt = crate::contract::Attempt {
+                index: u32::try_from(session.ledger.len()).unwrap_or(u32::MAX),
+                model: session.routing.chain.first().cloned().unwrap_or_default(),
+                phase: crate::contract::AttemptPhase::Execute,
+                trigger: crate::contract::AttemptTrigger::Selection,
+                outcome: crate::contract::AttemptOutcome::Failed {
+                    code: crate::contract::ErrorCode::Unavailable,
+                    reason: super::replay::ABANDONED.to_owned(),
+                },
+                usage: crate::contract::Usage::default(),
+                duration_millis: 0,
+                degraded: Vec::new(),
+            };
+            self.emit(
+                &mut session,
+                crate::contract::EventKind::AttemptFailed { attempt },
+            )
+            .await?;
+        }
+
+        if !conversation {
+            // Both of the things a head leaves out, dropped after folding: the state it returns is
+            // exact, and the history it would have to keep is the thing it exists to avoid.
+            session.messages.clear();
+            session.ledger = crate::contract::Ledger::default();
+        }
+        Ok(session)
+    }
+    /// Close a session. Further calls are refused.
+    pub async fn close(&self, session: &mut session::Session, reason: StopReason) -> Result<()> {
+        if !session.close_with(reason)? {
+            return Ok(());
+        }
+        self.emit(
+            session,
+            EventKind::StateChanged {
+                state: SessionState::Closed,
+                stop: Some(reason),
+            },
+        )
+        .await?;
+        // The flag first, on its own, because it is what `DELETE` and retention read and a checkpoint
+        // can be refused as stale. Then the checkpoint, which is the cache: if it loses the race the
+        // session is still closed as far as every reader of the listing table is concerned.
+        self.store.mark_closed(&session.key(), self.now()).await?;
+        self.write_checkpoint(session).await?;
+        // The head is only useful while something can still write: a closed session takes no calls,
+        // and a process supervisor holds its own `Arc`. Dropping the kernel's entry lets a long-lived
+        // daemon forget sessions that ended, instead of keeping one counter per session forever.
+        self.forget_log(&session.key());
+        Ok(())
+    }
+
+    /// Answer the question a session is parked on.
+    ///
+    /// One syscall for two kinds of question: a tool call the policy asked about, and a command the
+    /// policy asked about. The answer is consumed before anything runs — tools and commands are not
+    /// idempotent, and a client that never saw the first response retries the same answer.
+    pub async fn answer(
+        &self,
+        session: &mut session::Session,
+        approval: super::Approval,
+    ) -> Result<()> {
+        let id = session.id().clone();
+        let pending = session
+            .pending()
+            .iter()
+            .find(|pending| pending.id == approval.pending_id)
+            .cloned()
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "session {id} has no question {} waiting on a human",
+                    approval.pending_id
+                ))
+            })?;
+        let option = pending
+            .options
+            .iter()
+            .find(|option| option.id == approval.option_id)
+            .cloned()
+            .ok_or_else(|| {
+                Error::invalid(format!("option {:?} was not offered", approval.option_id))
+            })?;
+        let allowed = matches!(
+            option.kind,
+            crate::contract::PermissionKind::AllowOnce
+                | crate::contract::PermissionKind::AllowAlways
+        );
+
+        // Consumed, and written down, before the work it authorises: an entry left behind invites the
+        // retry that runs the side effect twice.
+        session
+            .pending
+            .retain(|pending| pending.id != approval.pending_id);
+        self.write_checkpoint(session).await?;
+
+        match (pending.action, allowed) {
+            (crate::contract::PendingAction::Tool { call }, true) => {
+                // The verdict *is* the policy answer, so the gate is not asked again.
+                let verdicts = vec![None];
+                self.execute_calls(session, std::slice::from_ref(&call), verdicts)
+                    .await?;
+                Ok(())
+            }
+            (crate::contract::PendingAction::Tool { call }, false) => {
+                self.record_refusal(session, &call, "refused by a human")
+                    .await?;
+                self.write_checkpoint(session).await
+            }
+            (crate::contract::PendingAction::Exec { spec }, true) => {
+                // Approved: the command runs with the escalation the gate was asked about.
+                self.launch_approved(session, spec).await
+            }
+            (crate::contract::PendingAction::Exec { .. }, false) => {
+                self.emit(
+                    session,
+                    EventKind::Failed {
+                        code: crate::contract::ErrorCode::Denied,
+                        reason: "a human refused to run this command".to_owned(),
+                    },
+                )
+                .await?;
+                self.close(session, StopReason::Denied).await
+            }
+        }
+    }
+
+    // -- syscalls -------------------------------------------------------------
+}

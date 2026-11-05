@@ -1,0 +1,20 @@
+[package]
+name = "nucleos-testkit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Test doubles for the nucleos kernel: a scripted model, a fixed clock, a fake tool."
+readme = "../../README.md"
+keywords = ["agent", "kernel", "testing"]
+categories = ["development-tools"]
+
+[dependencies]
+tracing = { workspace = true }
+async-trait = { workspace = true }
+nucleos = { workspace = true }
+tokio-stream = { workspace = true }
+
+[lints]
+workspace = true

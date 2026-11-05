@@ -1,12 +1,13 @@
 //! The kernel's pure types.
 //!
 //! No I/O, no clocks, no sockets. Everything here is data that can be compared, logged,
-//! stored and replayed, which is what lets the engine be tested without a runtime and an
+//! stored and replayed, which is what lets a driver be tested without a runtime and an
 //! event log be replayed without a network.
 //!
 //! The types are deliberately narrower than any provider's vocabulary. A capability that
 //! has no representation here is a capability the kernel does not claim to understand.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -15,7 +16,9 @@ use std::fmt;
 ///
 /// The caller chooses it when resuming, so it is a string rather than an opaque handle.
 /// That makes a retried `Start` idempotent instead of creating a second session.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 pub struct SessionId(String);
 
 impl SessionId {
@@ -43,7 +46,20 @@ impl fmt::Display for SessionId {
 /// Generations are immutable snapshots of the declared sources. A session is pinned to
 /// one at start and may only move forward at a turn boundary, and only when the two
 /// generations are compatible.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+)]
 pub struct Generation(pub u64);
 
 // ---------------------------------------------------------------------------
@@ -54,7 +70,7 @@ pub struct Generation(pub u64);
 ///
 /// The set is the smallest one every provider can express. A provider with a fifth role
 /// maps it onto one of these in its adapter — the kernel does not learn it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     /// Instructions.
@@ -68,7 +84,7 @@ pub enum Role {
 }
 
 /// One turn's worth of content.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Message {
     /// Who produced it.
     pub role: Role,
@@ -80,7 +96,7 @@ pub struct Message {
 }
 
 /// An ordered multimodal payload.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Content {
     /// The parts, in order.
     pub parts: Vec<Part>,
@@ -120,11 +136,11 @@ impl Content {
 
 /// One piece of content.
 ///
-/// The union is small on purpose: seven kinds. Audio and video are [`Part::File`] with an
+/// The union is small on purpose: seven kinds. Audio and video are [`PartKind::File`] with an
 /// `audio/*` or `video/*` media type, because the kernel moves those bytes and never
 /// interprets them. A kind is added when the kernel must act differently — not when a
 /// provider can emit something new.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Part {
     /// What it is.
     #[serde(flatten)]
@@ -150,7 +166,7 @@ impl Part {
 }
 
 /// The kind of a [`Part`], and its payload.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PartKind {
     /// Plain text.
@@ -170,14 +186,14 @@ pub enum PartKind {
 }
 
 /// Plain text.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TextPart {
     /// The text.
     pub text: String,
 }
 
 /// An image.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ImagePart {
     /// Where the bytes are.
     pub source: MediaSource,
@@ -188,7 +204,7 @@ pub struct ImagePart {
 /// `url` exists because inlining a large image into an event log is a storage incident: the
 /// log is append-only and replayed, so every byte is paid for on every replay. `data` exists
 /// because a caller with no reachable store must still be able to send one.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MediaSource {
     /// The media type, e.g. `image/png`. Required: bytes without a type are not renderable.
     pub media_type: String,
@@ -197,7 +213,7 @@ pub struct MediaSource {
 }
 
 /// Where media bytes live.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "from", rename_all = "snake_case")]
 pub enum MediaFrom {
     /// A URL to fetch.
@@ -218,7 +234,7 @@ pub enum MediaFrom {
 /// This is also how truncation is expressed. A result too large to store is spilled; the
 /// text keeps a marker and this part keeps the pointer. That is a policy outcome, not an
 /// error.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct FilePart {
     /// Where to find it.
     pub uri: String,
@@ -230,7 +246,7 @@ pub struct FilePart {
 
 /// Structured output. JSON text rather than bytes, because JSON is UTF-8 by definition and
 /// text is what every toolchain can read.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DataPart {
     /// The media type, usually `application/json`.
     pub media_type: String,
@@ -239,21 +255,21 @@ pub struct DataPart {
 }
 
 /// The model asking for a tool.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ToolCallPart {
     /// The call.
     pub call: ToolCall,
 }
 
 /// A tool's answer.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ToolResultPart {
     /// The result.
     pub result: ToolResult,
 }
 
 /// One tool invocation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ToolCall {
     /// The correlation id.
     pub id: String,
@@ -266,6 +282,44 @@ pub struct ToolCall {
     pub meta: BTreeMap<String, String>,
 }
 
+/// A turn the runtime did not survive, as far as it got.
+///
+/// Not a message: a message is something the model finished writing. This is the fragment left in the
+/// event stream when a process died mid-generation — kept because it was paid for and because it is
+/// often the most useful thing available, reported so a caller does not have to reassemble deltas by
+/// hand to find out what was said.
+///
+/// It cannot be resumed. No provider continues a generation from the middle: the stream was one HTTP
+/// response, and it ended when the process did. What a caller can do is continue the *conversation* —
+/// send this text back as context for a new turn.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PartialTurn {
+    /// The text the assistant had produced, in order.
+    #[serde(default)]
+    pub text: String,
+    /// How many steps into the turn it got.
+    #[serde(default)]
+    pub step_index: u32,
+    /// A tool call whose arguments were still arriving, if that is where it stopped.
+    ///
+    /// The name is known and the arguments may be truncated, which is why this is reported as data
+    /// rather than executed: half a JSON object is not a call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unfinished_call: Option<UnfinishedCall>,
+}
+
+/// A call that started and never resolved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct UnfinishedCall {
+    /// The correlation id it would have been filed under.
+    pub tool_call_id: String,
+    /// The tool the model was calling.
+    pub name: String,
+    /// The arguments as far as they arrived. Possibly incomplete, and possibly not valid JSON.
+    #[serde(default)]
+    pub arguments_json: String,
+}
+
 /// How a tool call ended.
 ///
 /// **Failure is a flag, not a branch.** A failed call still carries content, because the
@@ -275,9 +329,9 @@ pub struct ToolCall {
 /// `oneof` would have been enforced by the type system.
 ///
 /// One rule constrains the recursion `Content → Part → ToolResult → Content` otherwise
-/// allows: a tool result's content may contain any kind **except** [`Part::ToolCall`] or
-/// [`Part::ToolResult`]. Nesting is one level deep, and a validator enforces it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// allows: a tool result's content may contain any kind **except** [`PartKind::ToolCall`] or
+/// [`PartKind::ToolResult`]. Nesting is one level deep, and a validator enforces it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ToolResult {
     /// The call this answers.
     pub call_id: String,
@@ -293,7 +347,7 @@ pub struct ToolResult {
 /// reject the next turn when the signature is not returned verbatim. Dropping it turns a
 /// multi-turn session into a failure on turn two. `id` and `source` exist for the same
 /// reason — they are opaque to the kernel and must round-trip.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ReasoningPart {
     /// The reasoning text. May be empty when the provider withholds it.
     pub text: String,
@@ -314,32 +368,20 @@ pub struct ReasoningPart {
 /// The vocabulary is the session's, not a provider's. `AwaitingHuman` is a state rather
 /// than a callback, so a confirmation that arrives three hours later resumes a session
 /// instead of reviving a stack frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionState {
-    /// Allocated, spec not yet applied.
-    Created,
-    /// Driving a turn.
-    Running,
-    /// A tool call is in flight.
-    AwaitingTool,
-    /// Blocked on a human decision.
-    AwaitingHuman,
-    /// Stopping: finish the current turn, then checkpoint.
-    Cancelling,
-    /// Finished normally.
-    Done,
-    /// Finished with an error.
-    Failed,
-    /// Stopped on request.
-    Cancelled,
+    /// Accepting calls.
+    Open,
+    /// Finished. No further call is accepted.
+    Closed,
 }
 
 impl SessionState {
-    /// Whether no further transition is possible.
+    /// Whether the session accepts no further calls.
     #[must_use]
-    pub fn is_terminal(self) -> bool {
-        matches!(self, Self::Done | Self::Failed | Self::Cancelled)
+    pub fn is_closed(self) -> bool {
+        matches!(self, Self::Closed)
     }
 }
 
@@ -347,7 +389,7 @@ impl SessionState {
 ///
 /// Four layers, all present: a provider's `finish_reason`, the step cap, the wall clock,
 /// and the cost ledger. Each alone can be defeated; together they cannot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {
     /// The model said it was finished and no stop condition fired first.
@@ -376,7 +418,7 @@ pub enum StopReason {
 ///
 /// `None` means unbounded for that dimension, which is a decision the host makes, not a
 /// default the kernel assumes.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Budget {
     /// Turns a session may take.
     pub max_steps: Option<u64>,
@@ -393,7 +435,7 @@ pub struct Budget {
 ///
 /// A counter the provider did not report stays `None` rather than becoming zero: a budget
 /// that charges for silence is worse than one that knows it does not know.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Usage {
     /// Prompt tokens.
     pub input_tokens: u64,
@@ -433,7 +475,7 @@ impl Usage {
 /// `seq` is dense and gap-free, which is what makes it usable as a resume cursor without
 /// a separate acknowledgement protocol. `schema_version` is written alongside the event so
 /// a reader can upcast instead of guessing.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Event {
     /// Monotonic within a session, starting at 0.
     pub seq: u64,
@@ -444,6 +486,12 @@ pub struct Event {
     /// The schema this event was written with.
     pub schema_version: u32,
     /// What happened.
+    ///
+    /// Flattened, like [`Part::kind`]: without it the wire says `{"kind":{"kind":"text_delta",…}}`,
+    /// which is the tag twice and a shape nobody writes by hand. It also makes the SSE event name and
+    /// the JSON tag the same field at the same level, so a client that reads only `data` and one that
+    /// reads only the event name cannot end up with different ideas of what the frame is.
+    #[serde(flatten)]
     pub kind: EventKind,
     /// Opaque extension, same rule as [`Part::meta`].
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -460,14 +508,15 @@ impl Event {
 /// Events carry the content model rather than copies of its fields — [`ToolCall`] here is
 /// the same type a [`ToolCallPart`] holds — so a live stream and a stored history cannot
 /// disagree about the shape of an answer.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EventKind {
     /// A session state transition, with the reason when it is terminal.
     StateChanged {
         /// The state entered.
         state: SessionState,
-        /// Set when the state is terminal.
+        /// Set when the state is terminal. Omitted otherwise: `null` is not used on this wire.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         stop: Option<StopReason>,
     },
     /// A fragment of assistant text.
@@ -492,14 +541,29 @@ pub enum EventKind {
         /// The provider's signature fragment, returned verbatim.
         signature: String,
     },
-    /// A tool call was issued.
+    /// A tool call began. Its arguments follow as [`EventKind::ToolCallArgs`].
     ToolCallStarted {
-        /// The call, as the model emitted it.
-        call: ToolCall,
+        /// Position in this turn's tool-call list.
+        index: u32,
+        /// The correlation id the result will be filed under.
+        tool_call_id: String,
+        /// The tool name.
+        name: String,
         /// Wall-clock deadline for this call.
         deadline_unix_millis: u64,
         /// When set, the tool reports progress under this token.
         progress_token: String,
+    },
+    /// A fragment of one call's arguments.
+    ///
+    /// Arguments stream as text because that is what providers send and because a partial
+    /// object cannot be handed to a tool. The kernel assembles and validates before anything
+    /// runs; malformed arguments become a result the model can read.
+    ToolCallArgs {
+        /// Which call this fragment belongs to.
+        index: u32,
+        /// The fragment.
+        fragment: String,
     },
     /// A tool call resolved.
     ToolFinished {
@@ -507,18 +571,56 @@ pub enum EventKind {
         duration_millis: u64,
         /// The result — the same value that enters history.
         result: ToolResult,
+        /// What the tool reported it spent, when it reported anything.
+        ///
+        /// Absent is not zero: a tool that says nothing has not said it was free.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<Usage>,
     },
     /// One model call's consumption, debited whether or not the answer was usable.
     Usage {
         /// What it consumed.
         usage: Usage,
+        /// Why the call happened, so a summary's spend can be told from an answer's.
+        purpose: Purpose,
+        /// The model that served it, after routing.
+        model: String,
+        /// Which attempt in the ledger it belongs to.
+        attempt_index: u32,
+    },
+    /// Tools became visible to the model.
+    ///
+    /// Recorded because a replay has to know which tools the model could see at turn 42 — the same
+    /// reason `session_configured` exists, and the same failure if it did not.
+    ToolsExposed {
+        /// The names that were added.
+        names: Vec<String>,
+    },
+    /// The session's mutable configuration changed.
+    ///
+    /// Recorded because a replay has to know which system prompt was in force at turn 42; without
+    /// it, the log would rebuild a conversation that never happened.
+    SessionConfigured {
+        /// What changed, field by field.
+        patch: ConfigPatch,
+    },
+    /// A field the provider could not honour.
+    ///
+    /// Reported, never swallowed: a `tool_choice = Required` that quietly became `Auto` is a
+    /// session behaving differently than it was configured to.
+    CapabilityDegraded(Degraded),
+    /// One attempt ended badly. Recorded because a retry does not erase the attempt that failed,
+    /// or the money it spent.
+    AttemptFailed {
+        /// What happened.
+        attempt: Attempt,
     },
     /// A policy verdict of `AskHuman` was reached.
     AwaitingHuman {
         /// What the host should ask.
         question: String,
-        /// The call being gated.
-        tool_call_id: String,
+        /// Which parked question this is. A tool call's id, or the session's for a command.
+        pending_id: String,
         /// Typed answers, so a client can render "once" and "always" differently and the
         /// verdict can say which was chosen.
         options: Vec<PermissionOption>,
@@ -529,6 +631,19 @@ pub enum EventKind {
     BudgetExhausted {
         /// Which one.
         reason: StopReason,
+    },
+    /// Credit was granted to a session.
+    ///
+    /// An event rather than a silent mutation: a replay that did not see this would think the session
+    /// ran out of money when it did not, and a session that was revived would look like one that never
+    /// stopped.
+    Credited {
+        /// How much was granted. `None` means the limit was removed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        amount: Option<u64>,
+        /// The balance after the grant. `None` means unlimited.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        remaining: Option<u64>,
     },
     /// Something failed.
     Failed {
@@ -547,6 +662,37 @@ pub enum EventKind {
         /// Where it went.
         to: Generation,
     },
+    /// A turn began, and everything after this event belongs to it.
+    ///
+    /// Written before the first model call, and only once the turn is certain to run: budget spent,
+    /// route resolved, policy satisfied. That makes it the line a follower watches — before it, a
+    /// failure is the caller's to handle and belongs in a status code; after it, the log is the record
+    /// of what happened, and a stream that stopped silently is distinguishable from one that stalled.
+    TurnStarted {
+        /// The model the route resolved to first.
+        model: String,
+        /// The generation this turn runs under.
+        generation: u64,
+        /// Which step of the session this is, 1-based.
+        ///
+        /// Carried because the step counter is a budget: a turn that fails after it began still spent
+        /// one, and a reload that could not see it would hand the step back — making `max_steps`
+        /// enforceable per process rather than per session.
+        #[serde(default)]
+        step: u64,
+    },
+    /// The turn ended without producing a message and without a failed attempt to point at.
+    ///
+    /// Not every failure is an attempt's: a policy that refuses the model model-level, a prompt that
+    /// cannot fit, a store that refused the write on the way in. Without this event those turns leave
+    /// the log with a `turn_started` and nothing else — a state indistinguishable from a turn that is
+    /// still running, which is precisely what a caller cannot act on.
+    TurnFailed {
+        /// Why, in the kernel's own vocabulary.
+        code: crate::contract::ErrorCode,
+        /// What it said.
+        reason: String,
+    },
     /// The assembled message a model call produced.
     ///
     /// Deltas are a rendering protocol; this is the record. Some content can only be
@@ -557,6 +703,49 @@ pub enum EventKind {
         message: Message,
         /// Which step of the turn produced it.
         step_index: u32,
+    },
+    /// A command started.
+    ExecStarted {
+        /// The process id, when the platform gave one.
+        pid: u32,
+        /// What was run, verbatim, so an audit can see it.
+        argv: Vec<String>,
+        /// The policy it ran under, after any granted widening.
+        policy: SandboxPolicy,
+        /// The mechanism that carried the policy out, when one did.
+        ///
+        /// Absent means the kernel applied nothing: `danger_full_access`, an external sandbox, or an
+        /// approved escalation. Recorded because "was it confined" is the first question asked after
+        /// a command does something surprising, and the policy alone does not answer it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mechanism: Option<String>,
+        /// The profile the mechanism was given, verbatim.
+        ///
+        /// A refusal from a sandbox is "Operation not permitted" and nothing else. Without this the
+        /// log cannot say which rule was missing, and the only way to answer is to rebuild the
+        /// profile from a policy that may since have changed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        profile: Option<String>,
+    },
+    /// A chunk of a command's output.
+    ExecOutput {
+        /// Which stream.
+        stream: ExecStream,
+        /// The text of this chunk.
+        chunk: String,
+    },
+    /// Bytes written to a running process's stdin.
+    ///
+    /// Recorded because it is the most audit-worthy thing in the system: spawning `/bin/sh` is
+    /// safe, writing `rm -rf /` into it is not.
+    ExecStdin {
+        /// What was written.
+        chunk: String,
+    },
+    /// A command ended.
+    ExecExited {
+        /// How it ended.
+        output: ExecOutput,
     },
     /// Progress from a long-running call. A call whose only feedback is a deadline is
     /// indistinguishable from a hang.
@@ -570,6 +759,20 @@ pub enum EventKind {
         /// For humans.
         message: String,
     },
+    /// An event this build does not understand.
+    ///
+    /// Written by a newer daemon and read by an older one: carried through loading rather than
+    /// refused, because a store is shared by whichever builds happen to run against it and "cannot
+    /// parse one row" is not a state a durable log may have. `wire.md` says the same thing about the
+    /// wire — an unknown union member is carried, not failed — and this is the half that applies to
+    /// the record.
+    ///
+    /// The original kind name is **not** preserved: serde's `other` arm keeps the event, not the tag.
+    /// That is deliberate. Rewriting an event is something this kernel never does, so the only copy of
+    /// the original body is the stored one, and the correct behaviour for a build that does not
+    /// understand an event is to leave it exactly as it found it.
+    #[serde(other)]
+    Unknown,
 }
 
 impl EventKind {
@@ -586,11 +789,24 @@ impl EventKind {
             Self::ReasoningDelta { .. } => "nucleos.v1.reasoning_delta",
             Self::ToolCallStarted { .. } => "nucleos.v1.tool_call_started",
             Self::ToolFinished { .. } => "nucleos.v1.tool_finished",
+            Self::ToolCallArgs { .. } => "nucleos.v1.tool_call_args",
             Self::Usage { .. } => "nucleos.v1.usage",
+            Self::ExecStarted { .. } => "nucleos.v1.exec_started",
+            Self::ExecOutput { .. } => "nucleos.v1.exec_output",
+            Self::ExecStdin { .. } => "nucleos.v1.exec_stdin",
+            Self::ExecExited { .. } => "nucleos.v1.exec_exited",
+            Self::ToolsExposed { .. } => "nucleos.v1.tools_exposed",
+            Self::SessionConfigured { .. } => "nucleos.v1.session_configured",
+            Self::CapabilityDegraded(_) => "nucleos.v1.capability_degraded",
+            Self::AttemptFailed { .. } => "nucleos.v1.attempt_failed",
             Self::AwaitingHuman { .. } => "nucleos.v1.awaiting_human",
             Self::BudgetExhausted { .. } => "nucleos.v1.budget_exhausted",
+            Self::Credited { .. } => "nucleos.v1.credited",
             Self::Failed { .. } => "nucleos.v1.failed",
             Self::GenerationMigrated { .. } => "nucleos.v1.generation_migrated",
+            Self::TurnStarted { .. } => "nucleos.v1.turn_started",
+            Self::TurnFailed { .. } => "nucleos.v1.turn_failed",
+            Self::Unknown => "nucleos.v1.unknown",
             Self::MessageCompleted { .. } => "nucleos.v1.message_completed",
             Self::Progress { .. } => "nucleos.v1.progress",
         }
@@ -601,7 +817,7 @@ impl EventKind {
 ///
 /// The kernel *reports* the choice; it never decides that "always" applies. That is policy,
 /// and it belongs to the host.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PermissionOption {
     /// Caller-chosen, returned verbatim in the verdict.
     pub id: String,
@@ -612,7 +828,7 @@ pub struct PermissionOption {
 }
 
 /// The kinds of answer a permission request offers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionKind {
     /// Allow this call.
@@ -627,7 +843,7 @@ pub enum PermissionKind {
 ///
 /// Codes are enums rather than strings because the first caller who compares a string
 /// freezes it forever.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
     /// The request was malformed.
@@ -640,6 +856,17 @@ pub enum ErrorCode {
     Budget,
     /// A deadline passed.
     Timeout,
+    /// The request is valid but the thing it refers to moved.
+    ///
+    /// Distinct from `Invalid`, which blames the request. A caller whose configuration document was
+    /// written against revision 3 and is being applied to revision 5 sent something correct; the
+    /// answer is "re-read and try again", which is a different instruction.
+    Conflict,
+    /// The caller cancelled it.
+    ///
+    /// Distinct from `Timeout` because nothing went wrong: an operator or an application decided to
+    /// stop, and the difference matters when reading a log the next morning.
+    Cancelled,
     /// A dependency was not reachable.
     Unavailable,
     /// A bug.
@@ -655,4 +882,1186 @@ impl ErrorCode {
     pub fn is_retryable(self) -> bool {
         matches!(self, Self::Unavailable | Self::Timeout)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Kernel-facing types
+// ---------------------------------------------------------------------------
+
+/// Who is asking.
+///
+/// Travels as data. The kernel never authenticates, never verifies a signature, and never
+/// derives a tenant from a request field.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Principal {
+    /// The tenant this caller belongs to.
+    pub tenant: String,
+    /// The subject within it.
+    pub subject: String,
+}
+
+impl Default for Principal {
+    /// Nobody. Used as the "unknown owner" value for a snapshot written before the field existed,
+    /// never as an authenticated identity — a caller with an empty tenant never matches a real one.
+    fn default() -> Self {
+        Self {
+            tenant: String::new(),
+            subject: String::new(),
+        }
+    }
+}
+
+/// A tool, declared.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ToolSpec {
+    /// The name the model calls.
+    pub name: String,
+    /// What it does, in the model's words.
+    pub description: String,
+    /// A JSON Schema object, kept as text so the kernel never interprets it.
+    pub input_schema_json: String,
+    /// How the tool is reached, derived by whoever connected it.
+    ///
+    /// Part of the generation's compatibility check: a tool that keeps its name and schema but now
+    /// runs in-process where it used to run in a sandboxed child is a silent downgrade every other
+    /// check passes. `None` means the caller did not say, which is not the same as "any" — a
+    /// generation that knows must not migrate onto one that does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isolation: Option<Isolation>,
+}
+
+/// How a tool is reached, as a fact about the connection rather than a claim about the tool.
+///
+/// Derived by the daemon from how it reached the source — a spawned child, an HTTP endpoint, an
+/// in-process closure — because that is a fact the daemon owns. A source asserting its own isolation
+/// would be an unchecked claim dressed as a verified one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Isolation {
+    /// A spawned child process, which the daemon supervises.
+    Process,
+    /// A remote HTTP endpoint. The process boundary is somebody else's, and so is the isolation.
+    Http,
+    /// In the kernel's own process: a built-in, or a test double.
+    InProcess,
+}
+
+/// What a model can do.
+///
+/// Checked at `Start`, never discovered by trial: a model that silently ignores tools, or
+/// silently truncates a prompt, changes the answer without saying so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Capability {
+    /// Whether it accepts tool definitions and emits tool calls.
+    pub tools: bool,
+    /// Whether it can be *made* to call one. A provider that accepts tools but ignores
+    /// `tool_choice = required` turns a configured guarantee into a suggestion.
+    pub tool_choice_required: bool,
+    /// Whether it can be held to a JSON Schema.
+    pub structured_output: bool,
+    /// Whether [`crate::adapter::Model::invoke`] streams, or returns one final delta.
+    pub streaming: bool,
+    /// Total context, prompt plus completion.
+    pub context_window: u32,
+    /// The largest completion the provider will produce.
+    pub max_output_tokens: u32,
+}
+
+/// How strongly a tool's execution is separated from the kernel.
+///
+/// A call waiting on a human.
+///
+/// Part of the snapshot because the wait outlives any process: a session parked on a
+/// confirmation must be resumable tomorrow, and the call it is holding has to come back with
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PendingCall {
+    /// What this question is about, and how it is identified in a log.
+    pub id: String,
+    /// What has not run yet.
+    pub action: PendingAction,
+    /// What may be answered.
+    pub options: Vec<PermissionOption>,
+    /// What was asked.
+    pub question: String,
+}
+
+/// What a parked question is about.
+///
+/// Approval is not a tool concept: a policy can ask a human about a tool call *or* about running a
+/// command outside its sandbox, and both are answered the same way.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PendingAction {
+    /// A tool call the policy asked about.
+    Tool {
+        /// The call.
+        call: ToolCall,
+    },
+    /// A command the policy asked about — an escalation, or a program nobody has allowed yet.
+    Exec {
+        /// What would run, exactly.
+        spec: ProcessSpec,
+    },
+}
+
+/// A session's state, materialised at a point in its log.
+///
+/// `seq` is the event this snapshot already includes, so recovery is `load(snapshot)` then
+/// `events_since(snapshot.seq + 1)`. Two numbers that must agree, written down once.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Snapshot {
+    /// The session it belongs to.
+    pub session: SessionId,
+    /// Who owns it.
+    ///
+    /// Recorded because the store keys sessions by id alone: without this, a second tenant could
+    /// load the first tenant's session by guessing its name. `load` refuses a mismatch, and an
+    /// identifier that already belongs to somebody else cannot be opened.
+    #[serde(default)]
+    pub principal: Principal,
+    /// The last event folded in.
+    pub seq: u64,
+    /// How many times this session has been checkpointed.
+    ///
+    /// The store refuses a write that is not strictly newer, which is what makes a **stale handle**
+    /// detectable: two requests can load the same session, and without this the second one to finish
+    /// overwrites the first one's work with a materialisation of a log it read before that work
+    /// existed. The version is the only thing in the snapshot that says "I have seen less than you".
+    #[serde(default)]
+    pub version: u64,
+    /// The tool-source generation the session is pinned to.
+    pub generation: Generation,
+    /// Where the session was.
+    pub state: SessionState,
+    /// The conversation as of `seq`.
+    pub messages: Vec<Message>,
+    /// What it has spent.
+    pub usage: Usage,
+    /// How many inference calls it has made.
+    pub inference_calls: u64,
+    /// The limits this session was opened with.
+    ///
+    /// In the checkpoint for the same reason the credit is: over the ABI every request loads the
+    /// session, and a budget that is re-supplied per request is a budget the caller can forget — or
+    /// quietly widen — by sending a different one. What a session was opened with is part of what the
+    /// session *is*.
+    #[serde(default)]
+    pub budget: Budget,
+    /// Wall-clock milliseconds the session has already burned.
+    ///
+    /// Separate from the start time because the two answer different questions. A session that waited
+    /// an hour for a human verdict has not spent an hour of model time, and a `max_wall_millis` that
+    /// charged it would fire on every session that used parked calls. Accumulated at each checkpoint,
+    /// so a reload continues the clock instead of restarting it — which is what made the wall budget
+    /// impossible to hit over the ABI.
+    #[serde(default)]
+    pub spent_wall_millis: u64,
+    /// Every attempt this session has made, and the bill they add up to.
+    ///
+    /// In the checkpoint because it is the record, not a statistic: a resumed session that reported
+    /// nothing spent would under-report exactly the sessions that were interrupted, which are the ones
+    /// somebody is reconciling.
+    #[serde(default)]
+    pub ledger: Ledger,
+    /// Tokens granted and not yet spent. `None` means no limit.
+    ///
+    /// In the checkpoint because every syscall may be served by a different process: a budget
+    /// that resets on reload is not a budget.
+    pub credit_tokens: Option<u64>,
+    /// Calls waiting on a human. A batch can have more than one.
+    #[serde(default)]
+    pub pending: Vec<PendingCall>,
+    /// The route this session was started with.
+    ///
+    /// In the checkpoint because a resume that had to be told its own route again is a resume
+    /// that can silently behave differently — and the caller cannot know what to send.
+    pub routing: Routing,
+    /// Standing instructions.
+    pub system: Option<String>,
+    /// Tool names this session may use.
+    pub tools: Vec<String>,
+    /// How answers are shaped.
+    pub params: GenerateParams,
+    /// Where the session's commands run, and the default writable root.
+    pub workspace: Option<String>,
+    /// What its commands may touch.
+    pub sandbox: SandboxPolicy,
+    /// The adapter hints in force.
+    #[serde(default)]
+    pub hints: Hints,
+    /// The exposure policy in force.
+    #[serde(default)]
+    pub tool_policy: ToolPolicy,
+    /// Tools discovered or used, and the turn each was last reached.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub discovered: BTreeMap<String, u64>,
+    /// Turns taken, which the pool expires against.
+    #[serde(default)]
+    pub round: u64,
+    /// Why the session stopped, once it has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop: Option<StopReason>,
+    /// The application's own state.
+    ///
+    /// Opaque: the kernel stores it, updates it atomically and restores it, and never reads a
+    /// key. Every write is also an event, so a replay reproduces the value the application saw.
+    #[serde(default)]
+    pub data: BTreeMap<String, serde_json::Value>,
+    /// What this session is for.
+    #[serde(default)]
+    pub kind: SessionKind,
+    /// The process, when this is a process session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process: Option<ProcessState>,
+}
+
+// ---------------------------------------------------------------------------
+// Route and ledger
+// ---------------------------------------------------------------------------
+
+/// Why a model call is happening.
+///
+/// The kernel makes calls of its own — a compaction summary is one — so the purpose has to be
+/// first-class: a budget whose summarisation spend is indistinguishable from answer spend is a
+/// budget nobody can explain after the fact.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Purpose {
+    /// The answer the caller is waiting for.
+    #[default]
+    Answer,
+    /// The kernel's own bookkeeping.
+    Summary,
+    /// Another try at a turn that produced something unusable.
+    Repair,
+}
+
+/// The route a call takes, in order.
+///
+/// A chain rather than a name because the kernel owns retries and fallback: a runtime that
+/// gives up on the first 503 has the availability of its least reliable provider.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Routing {
+    /// Candidate models, first that answers wins.
+    pub chain: Vec<String>,
+    /// Extra attempts against the same target before moving to the next.
+    pub retries: u32,
+}
+
+/// Where in a call an attempt happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AttemptPhase {
+    /// Compiling and checking, before anything was sent.
+    Preflight,
+    /// The provider call itself.
+    Execute,
+    /// Refused before it happened.
+    CircuitOpen,
+}
+
+/// What caused an attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AttemptTrigger {
+    /// The first attempt for the chosen target.
+    Selection,
+    /// Another try at the same target.
+    Retry,
+    /// A hop to the next target.
+    Fallback,
+}
+
+/// How an attempt ended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum AttemptOutcome {
+    /// It answered.
+    Ok,
+    /// It did not. Present even when a partial answer was streamed, because that one still
+    /// cost money.
+    Failed {
+        /// A stable category.
+        code: ErrorCode,
+        /// For humans.
+        reason: String,
+    },
+}
+
+/// A field the provider could not honour.
+///
+/// Recorded rather than swallowed: a `tool_choice = Required` that quietly became `Auto` is a
+/// session behaving differently than it was configured to, and the difference is
+/// undiscoverable afterwards.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Degraded {
+    /// The request field, e.g. `tool_choice`.
+    pub field: String,
+    /// Why, in the provider's terms.
+    pub reason: String,
+}
+
+/// One attempt, recorded whether or not it produced anything.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Attempt {
+    /// Position in the ledger.
+    pub index: u32,
+    /// The target. Empty for a preflight refusal, which never had one.
+    pub model: String,
+    /// Where it happened.
+    pub phase: AttemptPhase,
+    /// What caused it.
+    pub trigger: AttemptTrigger,
+    /// How it ended.
+    pub outcome: AttemptOutcome,
+    /// What it consumed, if anything.
+    pub usage: Usage,
+    /// How long it took.
+    pub duration_millis: u64,
+    /// Fields this attempt could not honour.
+    pub degraded: Vec<Degraded>,
+}
+
+/// Every attempt a call made, and the sum.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Ledger {
+    /// In order.
+    pub attempts: Vec<Attempt>,
+    /// The sum across every attempt that produced tokens.
+    pub total: Usage,
+}
+
+impl Ledger {
+    /// Record an attempt and fold its usage into the total.
+    ///
+    /// Folding happens here rather than at the call site so that a failed attempt that still
+    /// streamed cannot be quietly left out of the bill.
+    ///
+    /// The first attempt *defines* the accumulator instead of being added to it: a fresh total
+    /// is zeros-and-unknown, and "nothing recorded yet" is not the same as "a report was
+    /// missing". Adding the first report to an empty total would otherwise make every cost
+    /// unknown — which is what an empty total looks like, not what the attempt said.
+    pub fn record(&mut self, attempt: Attempt) {
+        if self.attempts.is_empty() {
+            self.total = attempt.usage.clone();
+        } else {
+            self.total.add(&attempt.usage);
+        }
+        self.attempts.push(attempt);
+    }
+
+    /// Fold one attempt in by index, replacing what a streamed usage report built.
+    ///
+    /// Replay sees an attempt twice: once as the `usage` reports it streamed, once as the
+    /// `attempt_failed` that ended it. Appending both would bill the tokens twice and leave two
+    /// entries for one attempt, which is the opposite of what the ledger is for. The later report is
+    /// the better one — it knows how the attempt ended — so it replaces the entry rather than adding.
+    pub fn adopt(&mut self, attempt: Attempt) {
+        match self
+            .attempts
+            .iter_mut()
+            .find(|existing| existing.index == attempt.index)
+        {
+            Some(existing) => *existing = attempt,
+            None => self.attempts.push(attempt),
+        }
+        self.attempts.sort_by_key(|attempt| attempt.index);
+        self.recompute();
+    }
+
+    /// The total, derived from the attempts rather than accumulated beside them.
+    ///
+    /// Two accumulators that must agree is one accumulator too many: replay can insert an attempt that
+    /// was never added to the total, and the bill would then disagree with its own entries.
+    pub fn recompute(&mut self) {
+        let mut total: Option<Usage> = None;
+        for attempt in &self.attempts {
+            match &mut total {
+                // The first attempt defines the accumulator rather than being added to one, so an
+                // unreported counter stays unreported instead of being added to a zero that was
+                // never a report.
+                None => total = Some(attempt.usage.clone()),
+                Some(total) => total.add(&attempt.usage),
+            }
+        }
+        self.total = total.unwrap_or_default();
+    }
+
+    /// How many attempts were made.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.attempts.len()
+    }
+
+    /// Whether nothing was attempted.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.attempts.is_empty()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Generation parameters
+// ---------------------------------------------------------------------------
+
+/// How the model should choose among the tools it was given.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolChoice {
+    /// It decides.
+    #[default]
+    Auto,
+    /// It must call one.
+    Required,
+    /// It must not call one.
+    None,
+}
+
+/// How hard a reasoning model should think.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningEffort {
+    /// Barely.
+    Minimal,
+    /// A little.
+    Low,
+    /// Normal.
+    Medium,
+    /// As much as it costs.
+    High,
+}
+
+/// The shape the answer must have.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TextFormat {
+    /// Prose.
+    #[default]
+    Text,
+    /// A JSON object, schema unchecked.
+    JsonObject,
+    /// A JSON object that must match a schema.
+    JsonSchema {
+        /// The name the provider files it under.
+        name: String,
+        /// The schema, serialized.
+        schema_json: String,
+    },
+}
+
+/// What the caller wants from one call.
+///
+/// Every field is carried, not decided: the kernel has no opinion about sampling. They live
+/// here rather than as a bag of extras because a bag is a second extension hatch, and these are
+/// the parameters every provider has.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct GenerateParams {
+    /// The completion ceiling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+    /// Sampling temperature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    /// Nucleus sampling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
+    /// Sequences that end the completion.
+    ///
+    /// Not every provider has this — the OpenAI Responses API rejects it outright — so an adapter
+    /// that cannot send it reports a [`Degraded`] rather than dropping it in silence.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stop: Vec<String>,
+    /// Reasoning effort, for models that expose one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ReasoningEffort>,
+    /// How to choose among tools.
+    #[serde(default)]
+    pub tool_choice: ToolChoice,
+    /// Whether one turn may call several tools at once.
+    ///
+    /// In the contract rather than in an adapter because the *kernel* acts on it: `invoke_tools`
+    /// fans a batch out concurrently. A provider that forbids it and a kernel that does it anyway
+    /// would disagree about what happened in a turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parallel_tool_calls: Option<bool>,
+    /// The shape the answer must have.
+    #[serde(default)]
+    pub format: TextFormat,
+}
+
+// ---------------------------------------------------------------------------
+// Sandboxing
+// ---------------------------------------------------------------------------
+
+/// What a session's commands may touch.
+///
+/// Set when the session opens and carried in its checkpoint. It is **not** a field of a request:
+/// a caller that can name its own policy can name `DangerFullAccess`, and a permission slip the
+/// untrusted side writes is not a permission model.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SandboxPolicy {
+    /// No restriction. Use with caution, and only where the code is yours.
+    DangerFullAccess,
+    /// Read everything, write nothing.
+    ReadOnly {
+        /// Whether outbound network is allowed.
+        #[serde(default)]
+        network_access: bool,
+    },
+    /// Write inside the session's workspace and nothing else.
+    WorkspaceWrite {
+        /// Extra roots outside the workspace that may be written.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        extra_writable_roots: Vec<String>,
+        /// Whether outbound network is allowed.
+        #[serde(default)]
+        network_access: bool,
+    },
+    /// The process is already outside our reach; only the network setting is ours to honour.
+    ExternalSandbox {
+        /// Whether outbound network is allowed.
+        #[serde(default)]
+        network_access: bool,
+    },
+}
+
+/// The default is the useful one, not the loosest: write inside the workspace, no network.
+impl Default for SandboxPolicy {
+    fn default() -> Self {
+        Self::WorkspaceWrite {
+            extra_writable_roots: Vec::new(),
+            network_access: false,
+        }
+    }
+}
+
+impl SandboxPolicy {
+    /// The name a policy rule matches, and the name an error message uses.
+    ///
+    /// A string rather than a `Debug` rendering: a rule reads `{"sandbox": "workspace_write"}`, and a
+    /// rename in the enum has to be a decision about the wire, not a side effect of refactoring.
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::DangerFullAccess => "danger_full_access",
+            Self::ReadOnly { .. } => "read_only",
+            Self::WorkspaceWrite { .. } => "workspace_write",
+            Self::ExternalSandbox { .. } => "external_sandbox",
+        }
+    }
+
+    /// Every root this policy would let a command write to.
+    ///
+    /// Both the session's workspace and the extra roots a caller may add: bounding one and not the
+    /// other would leave the widening reachable through the field nobody bounded.
+    #[must_use]
+    pub fn writable_roots<'a>(&'a self, workspace: Option<&'a str>) -> Vec<&'a str> {
+        let mut roots = Vec::new();
+        match self {
+            Self::DangerFullAccess | Self::ReadOnly { .. } => {}
+            Self::WorkspaceWrite {
+                extra_writable_roots,
+                ..
+            } => {
+                if let Some(workspace) = workspace {
+                    roots.push(workspace);
+                }
+                roots.extend(extra_writable_roots.iter().map(String::as_str));
+            }
+            // Outside the kernel's reach: the policy is somebody else's, so nothing here bounds it.
+            Self::ExternalSandbox { .. } => {}
+        }
+        roots
+    }
+
+    /// The narrowest policy: read only, no network.
+    #[must_use]
+    pub fn read_only() -> Self {
+        Self::ReadOnly {
+            network_access: false,
+        }
+    }
+
+    /// Whether outbound network is permitted under this policy.
+    #[must_use]
+    pub fn network_access(&self) -> bool {
+        match self {
+            Self::DangerFullAccess => true,
+            Self::ReadOnly { network_access }
+            | Self::WorkspaceWrite { network_access, .. }
+            | Self::ExternalSandbox { network_access } => *network_access,
+        }
+    }
+
+    /// Whether moving from this policy to `next` only ever takes room away.
+    ///
+    /// The same rule tools follow — narrowing is a configuration change, widening is not — applied
+    /// to the one thing a session is allowed to change about its own confinement. A session that
+    /// wants *more* access does not reconfigure itself; it asks for an escalation on one command,
+    /// which the gate answers.
+    ///
+    /// The order is by what a process may touch, not by name: `read_only` is narrower than
+    /// `workspace_write` because it grants no writes at all, and `danger_full_access` is wider than
+    /// both. `external_sandbox` is not a rung on that ladder — it means the kernel is not enforcing
+    /// anything — so entering it from a policy the kernel *does* enforce is a widening, and leaving
+    /// it is not.
+    #[must_use]
+    pub fn narrows_to(&self, next: &Self) -> bool {
+        match (self, next) {
+            // Widening, in any of its forms.
+            (_, Self::DangerFullAccess) => false,
+            (Self::ReadOnly { .. } | Self::WorkspaceWrite { .. }, Self::ExternalSandbox { .. }) => {
+                false
+            }
+
+            // From full access, or from outside our reach, anything the kernel enforces is
+            // narrower.
+            (Self::DangerFullAccess, _) | (Self::ExternalSandbox { .. }, _) => true,
+
+            // Within one rung: fewer roots, and no network that was not already allowed.
+            (
+                Self::ReadOnly {
+                    network_access: was,
+                },
+                Self::ReadOnly { network_access },
+            ) => !network_access || *was,
+            (Self::ReadOnly { .. }, _) => false,
+
+            // A read-only policy grants no writes, so it is narrower from any writing policy.
+            (
+                Self::WorkspaceWrite {
+                    network_access: was,
+                    ..
+                },
+                Self::ReadOnly { network_access },
+            ) => !network_access || *was,
+            (
+                Self::WorkspaceWrite {
+                    extra_writable_roots: was,
+                    network_access: was_net,
+                },
+                Self::WorkspaceWrite {
+                    extra_writable_roots,
+                    network_access,
+                },
+            ) => {
+                // Compared as written: a root that only differs by a symlink is a different grant,
+                // and treating it as equal would let a session swap one directory for another.
+                (!network_access || *was_net)
+                    && extra_writable_roots.iter().all(|root| was.contains(root))
+            }
+        }
+    }
+}
+
+/// Extra room asked for by one command.
+///
+/// Only ever widens: a caller cannot use it to narrow the session's policy, because narrowing by
+/// request would let one command quietly change what a later command is allowed to assume.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AdditionalPermissions {
+    /// Roots outside the workspace this command may write.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub writable_roots: Vec<String>,
+    /// Whether this command may reach the network.
+    #[serde(default)]
+    pub network_access: bool,
+}
+
+/// What a single `exec` asks for.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SandboxPermissions {
+    /// Run under the session's policy.
+    #[default]
+    UseDefault,
+    /// Run outside the sandbox. The gate turns this into a human question, not a formality.
+    RequireEscalated,
+    /// Stay in the sandbox, with more room for this command only.
+    WithAdditionalPermissions {
+        /// What to add. Never what to remove.
+        additional: AdditionalPermissions,
+    },
+}
+
+/// Which stream a chunk came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecStream {
+    /// Standard output.
+    Stdout,
+    /// Standard error.
+    Stderr,
+}
+
+/// A piece of captured output, and whether it was cut.
+///
+/// Truncation is carried rather than applied silently: a model that cannot see that its output
+/// was shortened will reason about a file it only half read.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct OutputChunk {
+    /// The text kept.
+    pub text: String,
+    /// The line after which the rest was dropped, when it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncated_after_lines: Option<u32>,
+}
+
+/// How one command ended.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ExecOutput {
+    /// The exit status, or `-1` when the process was killed by a signal.
+    pub exit_code: i32,
+    /// Standard output.
+    pub stdout: OutputChunk,
+    /// Standard error.
+    pub stderr: OutputChunk,
+    /// How long it ran.
+    pub duration_millis: u64,
+    /// Whether it was killed for exceeding its deadline.
+    pub timed_out: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Processes
+// ---------------------------------------------------------------------------
+
+/// What a session is for.
+///
+/// A process session is not a second kind of object: it is the same lifecycle — single writer,
+/// event log, budget, sandbox, checkpoint — with a different syscall face. In Unix a shell
+/// session is a process, and the same reasoning applies here.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionKind {
+    /// Runs a model loop.
+    #[default]
+    Agent,
+    /// Runs one command, and stays open while it does.
+    Process,
+}
+
+/// How to start a process session.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ProcessSpec {
+    /// The command line. No shell by default: an argv cannot be word-split by accident.
+    pub argv: Vec<String>,
+    /// Where to run it. Absent means the session's workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Environment to add.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    /// What this command asks for on top of the session's policy.
+    #[serde(default)]
+    pub permissions: SandboxPermissions,
+}
+
+/// Where a process is.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ProcessStatus {
+    /// No pid yet: the session exists, the process does not.
+    #[default]
+    Pending,
+    /// Running, under whatever isolation the platform could give.
+    Running {
+        /// The process id.
+        pid: u32,
+    },
+    /// It ended.
+    Exited {
+        /// How.
+        output: ExecOutput,
+    },
+    /// The process is gone and we do not know how it ended.
+    ///
+    /// A live process cannot be reconstructed from a log — its memory, its file descriptors and
+    /// its cursor are not in the event stream. So a session that outlives the runtime says this,
+    /// rather than pretending the command is still running.
+    Lost,
+}
+
+/// A process session's state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ProcessState {
+    /// How it was started.
+    pub spec: ProcessSpec,
+    /// Where it is now.
+    pub status: ProcessStatus,
+}
+
+/// Where a process is, without the payload.
+///
+/// A filter asks "which ended?", not "which ended with exit code 3", so the tag is its own type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessPhase {
+    /// No pid yet.
+    Pending,
+    /// Running.
+    Running,
+    /// It ended.
+    Exited,
+    /// It is gone and we do not know how it ended.
+    Lost,
+}
+
+impl ProcessStatus {
+    /// The phase, without the payload.
+    #[must_use]
+    pub fn phase(&self) -> ProcessPhase {
+        match self {
+            Self::Pending => ProcessPhase::Pending,
+            Self::Running { .. } => ProcessPhase::Running,
+            Self::Exited { .. } => ProcessPhase::Exited,
+            Self::Lost => ProcessPhase::Lost,
+        }
+    }
+}
+
+impl ProcessState {
+    /// Whether the process has ended, one way or another.
+    #[must_use]
+    pub fn is_finished(&self) -> bool {
+        matches!(
+            self.status,
+            ProcessStatus::Exited { .. } | ProcessStatus::Lost
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Hints: the parameters that belong to a session, not to a call
+// ---------------------------------------------------------------------------
+
+/// Preferences an adapter may honour, and must report when it cannot.
+///
+/// Separate from [`GenerateParams`] because these change while a session runs — a conversation
+/// that is filling its window wants less prose, and a review turn wants more detail — and because
+/// they are *hints*: an adapter that has no channel for one reports a [`Degraded`] rather than
+/// failing the call.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Hints {
+    /// How much prose an answer should carry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verbosity: Option<Verbosity>,
+    /// How much of the reasoning to summarise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_summary: Option<Summary>,
+    /// The cost/latency trade this session prefers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<ServiceTier>,
+    /// A ceiling on tool calls in one response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tool_calls: Option<u32>,
+    /// What to do when the conversation does not fit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncation: Option<Truncation>,
+    /// Labels the provider echoes back, up to sixteen.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, String>,
+}
+
+impl Hints {
+    /// A patch that leaves every field `None` changes nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Take every field this patch sets, and keep the rest.
+    #[must_use]
+    pub fn merged(&self, over: &Self) -> Self {
+        Self {
+            verbosity: over.verbosity.or(self.verbosity),
+            reasoning_summary: over.reasoning_summary.or(self.reasoning_summary),
+            service_tier: over.service_tier.or(self.service_tier),
+            max_tool_calls: over.max_tool_calls.or(self.max_tool_calls),
+            truncation: over.truncation.or(self.truncation),
+            metadata: if over.metadata.is_empty() {
+                self.metadata.clone()
+            } else {
+                over.metadata.clone()
+            },
+        }
+    }
+}
+
+/// How much prose an answer should carry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Verbosity {
+    /// Terse.
+    Low,
+    /// Normal.
+    Medium,
+    /// Expansive.
+    High,
+}
+
+/// How much of the reasoning to summarise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Summary {
+    /// The provider decides.
+    Auto,
+    /// Short.
+    Concise,
+    /// Long.
+    Detailed,
+}
+
+/// The cost/latency trade a session prefers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceTier {
+    /// Let the provider decide.
+    Auto,
+    /// The default tier.
+    Default,
+    /// Cheaper, slower.
+    Flex,
+    /// More expensive, faster.
+    Priority,
+}
+
+/// What to do when the conversation does not fit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Truncation {
+    /// Drop the oldest items.
+    Auto,
+    /// Fail instead of dropping silently.
+    Disabled,
+}
+
+/// How visible a tool is, as distinct from whether it may be used.
+///
+/// The ceiling (`config.tools`) is the application's to narrow and only ever narrows. Exposure is
+/// what is in the prompt right now: it may grow up to the ceiling, by configuration or by a search
+/// tool asking. Keeping the two apart is what makes dynamic tool loading safe.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Exposure {
+    /// In the prompt every turn. Keep this set small: it is the stable baseline.
+    Always,
+    /// In the prompt once it has been found or used, and while it stays in the pool.
+    Direct,
+    /// Invisible until a search surfaces it. The default, and the reason discovery exists.
+    #[default]
+    Deferred,
+    /// Never in the prompt, not even via search. Still callable by name — hiding a tool is not
+    /// forbidding it.
+    Hidden,
+}
+
+impl Exposure {
+    /// Which of two visible tools to keep when the budget cannot hold both. Lower wins.
+    ///
+    /// `Always` outranks `Direct`, which outranks `Deferred`: a baseline that disappears because
+    /// the model searched too much is worse than a found tool that expires.
+    #[must_use]
+    pub fn rank(self) -> u8 {
+        match self {
+            Self::Always => 0,
+            Self::Direct => 1,
+            Self::Deferred => 2,
+            Self::Hidden => 3,
+        }
+    }
+
+    /// Whether a search may surface it.
+    #[must_use]
+    pub fn searchable(self) -> bool {
+        matches!(self, Self::Direct | Self::Deferred)
+    }
+}
+
+/// How many tool definitions may reach the model per turn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DefinitionBudget {
+    /// How many definitions, counted before the prompt is built.
+    pub max_definitions: usize,
+    /// What they may weigh together, in bytes of name, description and schema.
+    pub max_bytes: u64,
+}
+
+impl Default for DefinitionBudget {
+    /// Thirty-two definitions or 16 KiB, whichever comes first.
+    ///
+    /// Both caps, because the two failures are different: forty one-line tools are cheap and
+    /// confusing, four tools with enormous schemas are expensive and clear.
+    fn default() -> Self {
+        Self {
+            max_definitions: 32,
+            max_bytes: 16 * 1024,
+        }
+    }
+}
+
+/// What a session remembers having found.
+///
+/// Separate from the per-turn budget on purpose: the budget caps what a prompt shows, the pool caps
+/// what the session remembers. A session that can only show eight tools may still have discovered
+/// thirty, and re-searching for one it used two turns ago is the waste this prevents.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DiscoveryPolicy {
+    /// How many discovered tools stay remembered.
+    pub max_tools: usize,
+    /// What they may weigh together.
+    pub max_bytes: u64,
+    /// How many turns without a use before a tool is forgotten.
+    pub idle_rounds: u64,
+}
+
+impl Default for DiscoveryPolicy {
+    fn default() -> Self {
+        Self {
+            max_tools: 32,
+            max_bytes: 16 * 1024,
+            idle_rounds: 10,
+        }
+    }
+}
+
+/// The host's exposure policy for one session.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ToolPolicy {
+    /// The exposure of every tool without an entry in `exposures`. Defaults to `Deferred`.
+    #[serde(default)]
+    pub default: Exposure,
+    /// Per-tool overrides.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub exposures: BTreeMap<String, Exposure>,
+    /// What a prompt may carry this turn.
+    #[serde(default)]
+    pub budget: DefinitionBudget,
+    /// What the session remembers.
+    #[serde(default)]
+    pub discovery: DiscoveryPolicy,
+}
+
+impl ToolPolicy {
+    /// The exposure of one tool.
+    #[must_use]
+    pub fn exposure_of(&self, name: &str) -> Exposure {
+        self.exposures.get(name).copied().unwrap_or(self.default)
+    }
+
+    /// Refuse a policy that would make discovery impossible.
+    ///
+    /// A hidden or deferred `tool_search` is a catalog nobody can reach: the model is told to search
+    /// with a tool it cannot see. Absence is not a refusal — an unconfigured search tool is seeded
+    /// to `Always` by the kernel, so the default policy discovers rather than hides.
+    pub fn validate(&self, search_tool: &str) -> crate::error::Result<()> {
+        if self
+            .exposures
+            .get(search_tool)
+            .is_some_and(|exposure| *exposure != Exposure::Always)
+        {
+            return Err(crate::error::Error::invalid(format!(
+                "{search_tool} must be exposed as always; any other exposure disables discovery"
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// A partial update to a session's mutable configuration.
+///
+/// The wiring — kind, sandbox, workspace — is not here, because it is decided when the session
+/// opens and is not the application's to change while it runs. Everything in this struct is
+/// content or strategy, and every field is optional: absent means unchanged, `null` (where the
+/// field is doubly optional) means cleared.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigPatch {
+    /// Standing instructions. `Some(None)` clears them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system: Option<Option<String>>,
+    /// Generation parameters. Replaces the whole block, because every field is already optional.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<GenerateParams>,
+    /// Adapter hints. Merged field by field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hints: Option<Hints>,
+    /// The sandbox, when the change only narrows it.
+    ///
+    /// Widening is refused here on purpose: more room for the whole session is an escalation, and an
+    /// escalation is a gated decision about one command, not a field in a configuration call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<SandboxPolicy>,
+    /// The tool allow-list. Empty means every registered tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<String>>,
+    /// The exposure policy. Absent leaves it unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_policy: Option<ToolPolicy>,
+    /// The route this session takes. Absent means unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing: Option<Routing>,
+}
+
+// ---------------------------------------------------------------------------
+// Listing processes
+// ---------------------------------------------------------------------------
+
+/// What a listing asks for.
+///
+/// A keyset cursor rather than an offset: sessions are created and retired constantly, and an
+/// offset would skip or repeat rows exactly when a process ends — which is the moment a caller is
+/// most likely to be paging.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ProcessQuery {
+    /// Only sessions in this phase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<ProcessPhase>,
+    /// How many to return. Zero asks for the default.
+    #[serde(default)]
+    pub limit: u32,
+    /// Continue after this session id. Absent starts at the beginning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<SessionId>,
+}
+
+impl ProcessQuery {
+    /// The page size this query asks for.
+    #[must_use]
+    pub fn page_size(&self) -> usize {
+        match self.limit {
+            0 => 50,
+            limit => usize::try_from(limit.min(500)).unwrap_or(50),
+        }
+    }
+}
+
+/// One process, as a listing reports it.
+///
+/// Not the whole [`ProcessState`]: a listing is a cross-session view, and the environment a caller
+/// passed to its command is a credential as often as it is a setting. What an operator needs to
+/// identify a process is what it runs and where it is, so that is what a page carries — the full spec
+/// stays behind `GET /v1/sessions/{id}`, which already answers only to the session's owner.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessSummary {
+    /// The session that owns it.
+    pub session: SessionId,
+    /// The command line.
+    pub argv: Vec<String>,
+    /// Where it runs, when the caller said.
+    pub cwd: Option<String>,
+    /// Where it is now.
+    pub status: ProcessStatus,
+}
+
+/// One page of a listing.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ProcessPage {
+    /// The sessions in this page, in id order.
+    pub processes: Vec<ProcessSummary>,
+    /// Where to continue. Absent means this was the last page.
+    pub next: Option<SessionId>,
 }

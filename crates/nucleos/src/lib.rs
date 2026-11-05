@@ -5,31 +5,37 @@
 //! which tools, who may call what, how much anything costs — is injected through the
 //! traits in [`adapter`].
 //!
-//! The module graph is one-way and is pinned by `tests/layering.rs`:
+//! The module graph is one-way and is pinned by `tests/layering.rs`, which reads the `use`
+//! statements rather than the declaration order:
 //!
 //! ```text
-//! contract → engine → adapter → (host)
+//! contract ← adapter ← kernel
 //! ```
 //!
-//! Nothing here knows about protobuf, sockets, or authentication. The wire contract lives
-//! in `nucleos-proto` and is translated in `nucleosd`; see `docs/abi.md`.
+//! `kernel` is the syscall surface. The loop that drives it belongs to the application, because a
+//! kernel that runs your application's loop has taken a position on what your application should be.
 //!
-//! ```
-//! // Not yet: the engine lands in P1.
-//! ```
+//! The kernel is driven entirely through [`adapter`], which is what lets most of the tests run
+//! without a network. The kernel's own types are also the wire format: [`wire`] holds the HTTP envelopes and
+//! the published schema, and no transport appears in this crate.
 
 pub mod adapter;
 pub mod contract;
-pub mod engine;
+pub mod error;
+pub mod kernel;
+pub mod wire;
 
 pub use contract::{
-    Budget, Content, Event, EventKind, Message, Part, PartKind, PermissionKind, PermissionOption,
-    Role, SessionId, SessionState, StopReason, ToolCall, ToolResult, Usage,
+    Budget, Capability, Content, Event, EventKind, Generation, Message, Part, PartKind,
+    PermissionKind, PermissionOption, Principal, Role, SessionId, SessionState, Snapshot,
+    StopReason, ToolCall, ToolResult, ToolSpec, Usage,
 };
+pub use error::{Error, Result};
+pub use kernel::Kernel;
 
 /// The kernel's own version.
 ///
-/// The ABI version is a separate thing and lives in `nucleos-proto`: a kernel release may
+/// The ABI version is a separate thing and lives in [`wire`]: a kernel release may
 /// keep speaking an older ABI, and conflating the two is how "we upgraded the daemon and
 /// the SDK broke" happens.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
