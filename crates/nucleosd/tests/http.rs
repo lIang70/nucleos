@@ -922,6 +922,18 @@ async fn a_configured_token_is_required_on_every_route() {
 #[tokio::test]
 async fn metrics_count_what_an_operator_asks_about() {
     let (app, token) = guarded().await;
+    // Metrics is an administrator's view: the fixture's bearer token is not enough for it.
+    let admin_key = nucleos_auth::KeyPair::generate();
+    let public = admin_key.public("acme", "admin");
+    let key_id = public.id.clone();
+    app.system()
+        .unwrap()
+        .set(
+            nucleosd::admin::ADMIN_KEYS_KEY,
+            &serde_json::to_string(&vec![public]).unwrap(),
+        )
+        .await
+        .unwrap();
 
     // One allowed request, one refused, one reload attempt with no source.
     let _ = router(Arc::clone(&app))
@@ -946,20 +958,8 @@ async fn metrics_count_what_an_operator_asks_about() {
         .await
         .unwrap();
 
-    let body = body_json(
-        router(Arc::clone(&app))
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/v1/metrics")
-                    .header("authorization", format!("Bearer {token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap(),
-    )
-    .await;
+    let (status, body) = signed(&app, &admin_key, &key_id, "GET", "/v1/metrics", "").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 
     // Keyed by route template, so a thousand sessions are one counter rather than a thousand.
     assert_eq!(body["requests"]["GET /v1/describe"], 2);
@@ -2643,5 +2643,142 @@ async fn an_http_source_is_added_by_url_rather_than_refused_for_a_missing_comman
             .unwrap_or_default()
             .contains("needs a name and a command"),
         "a url-only source is not malformed: {error}"
+    );
+}
+
+/// An administrator cannot enrol a key or issue a token for another tenant.
+///
+/// Both are identity minting, not configuration: the gate asks whether this caller may manage keys,
+/// not whose identities they may create. Without the boundary, an `acme` administrator could enrol a
+/// key for `default/admin` and inherit the bootstrap policy's system scope.
+#[tokio::test]
+async fn identity_minting_stays_inside_the_callers_tenant() {
+    let (app, key, key_id) = governable().await;
+    let other = nucleos_auth::KeyPair::generate().public("other", "bob");
+
+    let (status, refused) = signed(
+        &app,
+        &key,
+        &key_id,
+        "POST",
+        "/v1/admin/keys",
+        &serde_json::json!({"key": other.key, "tenant": "other", "subject": "bob"}).to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+
+    // The same key, for the caller's own tenant, is fine.
+    let (status, enrolled) = signed(
+        &app,
+        &key,
+        &key_id,
+        "POST",
+        "/v1/admin/keys",
+        &serde_json::json!({"key": other.key, "tenant": "acme", "subject": "bob"}).to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{enrolled}");
+
+    // Re-enrolling the same public key is a duplicate id, not a second identity.
+    let (status, duplicate) = signed(
+        &app,
+        &key,
+        &key_id,
+        "POST",
+        "/v1/admin/keys",
+        &serde_json::json!({"key": other.key, "tenant": "acme", "subject": "alice"}).to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{duplicate}");
+
+    // Tokens follow the same boundary.
+    let (status, refused) = signed(
+        &app,
+        &key,
+        &key_id,
+        "POST",
+        "/v1/tokens",
+        r#"{"tenant":"other","subject":"bob"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+
+    let (status, issued) = signed(
+        &app,
+        &key,
+        &key_id,
+        "POST",
+        "/v1/tokens",
+        r#"{"tenant":"acme","subject":"alice"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{issued}");
+}
+
+/// An HTTP source must use TLS, and a token for it is sealed and never returned.
+#[tokio::test]
+async fn an_http_source_uses_tls_and_seals_its_token() {
+    let (app, key, key_id) = governable().await;
+    let (status, error) = signed(
+        &app,
+        &key,
+        &key_id,
+        "POST",
+        "/v1/sources",
+        r#"{"name":"remote","url":"http://example.invalid/mcp"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+    assert!(
+        error["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("https"),
+        "{error}"
+    );
+
+    // With a seal key, a token is stored sealed — before the connection is attempted.
+    let (app, key, key_id) = governable_with(Some(nucleos_auth::SealKey::generate().0)).await;
+    let (status, _) = signed(
+        &app,
+        &key,
+        &key_id,
+        "POST",
+        "/v1/sources",
+        r#"{"name":"remote","url":"https://example.invalid/mcp","auth_token":"a-real-secret"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+
+    let sealed = app
+        .system()
+        .unwrap()
+        .get("config/keys/source/remote")
+        .await
+        .unwrap()
+        .expect("the token was stored");
+    assert!(
+        !sealed.contains("a-real-secret"),
+        "stored in the clear: {sealed}"
+    );
+
+    // Without one, a token cannot be stored at all.
+    let (app, key, key_id) = governable().await;
+    let (status, error) = signed(
+        &app,
+        &key,
+        &key_id,
+        "POST",
+        "/v1/sources",
+        r#"{"name":"remote","url":"https://example.invalid/mcp","auth_token":"a-real-secret"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(
+        error["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no seal key"),
+        "{error}"
     );
 }

@@ -295,7 +295,7 @@ impl App {
         })?;
         let store: Arc<dyn nucleos::adapter::Store> =
             Arc::new(SqliteStore::open(layout.session_store())?);
-        let sources = crate::sources::SourceSet::load(&system).await?;
+        let sources = crate::sources::SourceSet::load(&system, seal.as_ref()).await?;
         for source in sources.views() {
             tracing::info!(
                 event = "source_loaded",
@@ -1382,9 +1382,34 @@ async fn delete_session(
     Ok(Json(DeletedResponse { deleted: true }))
 }
 
-async fn metrics(caller: Caller, State(app): State<Arc<App>>) -> Json<MetricsResponse> {
-    let _ = caller;
-    Json(app.metrics().snapshot())
+async fn metrics(
+    State(app): State<Arc<App>>,
+    admin: crate::admin::Admin,
+) -> Result<Json<MetricsResponse>, ApiError> {
+    // Metrics are a deployment-level view: per-route request counts, refusal counts, session counts,
+    // and how much retention has deleted. They are not a tenant's view of their own traffic, so they
+    // need an administrator's signature rather than a tenant's bearer token.
+    let kernel = app.kernel()?.clone();
+    match kernel
+        .check_config(
+            &admin.principal,
+            nucleos::adapter::ConfigScope::System,
+            "metrics",
+        )
+        .await
+        .map_err(|error| ApiError::from_error(&error))?
+    {
+        nucleos::adapter::Verdict::Allow => {}
+        nucleos::adapter::Verdict::Deny { code, reason } => {
+            return Err(ApiError::from_error(&nucleos::Error::new(code, reason)));
+        }
+        nucleos::adapter::Verdict::AskHuman { question, .. } => {
+            return Err(ApiError::from_error(&nucleos::Error::denied(format!(
+                "metrics needs a human ({question}), and configuration cannot wait for one"
+            ))));
+        }
+    }
+    Ok(Json(app.metrics().snapshot()))
 }
 
 /// Reconnect the tool source and publish what it advertises now.
@@ -1428,7 +1453,17 @@ async fn reload(
     }
 
     let before = app.tools_now();
-    let reconnected = app.sources().write().await.reconnect().await;
+    let Some(system) = app.system().cloned() else {
+        return Err(ApiError::from_error(&nucleos::Error::unavailable(
+            "this daemon has no system store",
+        )));
+    };
+    let reconnected = app
+        .sources()
+        .write()
+        .await
+        .reconnect(&system, app.seal())
+        .await;
     let generation = crate::sources::publish(&app, &kernel).await?;
     app.metrics().reloaded();
 

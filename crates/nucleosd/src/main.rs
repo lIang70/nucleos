@@ -78,6 +78,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let _ = stop.send(true);
     });
 
+    // TCP without tokens is an open door: the socket's permissions are the authentication only on a
+    // unix socket, and a TCP listener has no such thing. Refuse to start rather than attribute every
+    // remote caller to one principal.
+    if parsed.tls.is_some()
+        && let Some(system) = app.system()
+        && !system.tokens_required().await?
+    {
+        return Err(Box::from(
+            "TCP requires at least one token: run `nucleos tokens add --tenant <t> --subject <s>` first",
+        ));
+    }
+
     let app = Arc::new(app);
     // Retention runs for as long as the daemon does, and stops with it. It reads its policy from the
     // store on every pass, so `PUT /v1/config` takes effect without a restart.

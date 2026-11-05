@@ -32,6 +32,10 @@ use std::sync::Arc;
 /// Where source definitions live in the system store.
 pub const SOURCES_KEY: &str = "config/sources";
 
+/// Where a source's bearer token lives, sealed. A credential is not configuration, so it does not
+/// travel with the source's row in the deployment document.
+pub const SEALED_SOURCE_KEY_PREFIX: &str = "config/keys/source/";
+
 /// One MCP server, as the store keeps it.
 ///
 /// A source is either a command this daemon runs or a URL somebody else runs, and which one is a
@@ -54,6 +58,9 @@ pub struct SourceSpec {
     /// The endpoint, for a source this daemon does not spawn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// Whether the endpoint has a bearer token, sealed under `config/keys/source/<name>`.
+    #[serde(default)]
+    pub has_auth_token: bool,
 }
 
 impl SourceSpec {
@@ -64,9 +71,10 @@ impl SourceSpec {
     /// connection attempt to find out.
     pub fn transport(&self) -> Result<nucleos_mcp::Transport> {
         if let Some(url) = &self.url {
-            if !url.starts_with("http://") && !url.starts_with("https://") {
+            if !url.starts_with("https://") {
                 return Err(Error::invalid(format!(
-                    "source {:?}: a url must be http or https, not {url:?}",
+                    "source {:?}: a url must be https, not {url:?}: an MCP token in cleartext is a \
+                     credential on the wire",
                     self.name
                 )));
             }
@@ -118,6 +126,7 @@ impl SourceSet {
                 command: entry.spec.command.clone(),
                 args: entry.spec.args.clone(),
                 url: entry.spec.url.clone(),
+                has_auth_token: entry.spec.has_auth_token,
                 tools: entry.tools.iter().map(|tool| tool.spec().name).collect(),
             })
             .collect()
@@ -127,7 +136,7 @@ impl SourceSet {
     ///
     /// A source that cannot start is logged and skipped: a daemon that refuses to boot because one MCP
     /// server is down turns a missing tool into an outage.
-    pub async fn load(system: &SystemStore) -> Result<Self> {
+    pub async fn load(system: &SystemStore, seal: Option<&nucleos_auth::SealKey>) -> Result<Self> {
         let Some(raw) = system.get(SOURCES_KEY).await? else {
             return Ok(Self::default());
         };
@@ -136,7 +145,7 @@ impl SourceSet {
 
         let mut set = Self::default();
         for spec in specs {
-            match connect(&spec).await {
+            match connect(&spec, system, seal).await {
                 Ok(entry) => set.entries.push(entry),
                 Err(error) => tracing::warn!(
                     event = "source_unavailable",
@@ -157,6 +166,8 @@ impl SourceSet {
         &mut self,
         system: &SystemStore,
         spec: SourceSpec,
+        auth_token: Option<String>,
+        seal: Option<&nucleos_auth::SealKey>,
         by: &Principal,
     ) -> Result<SourceView> {
         if spec.name.trim().is_empty() {
@@ -165,12 +176,28 @@ impl SourceSet {
         // A command *or* a url, validated in the one place both entry points use: requiring a command
         // here while the document accepted a url made HTTP sources impossible to add by request.
         spec.transport()?;
-        let entry = connect(&spec).await?;
+        if let Some(token) = &auth_token {
+            // A token is sealed before it is stored, and a deployment with no seal key cannot store
+            // one at all — writing it in the clear would be worse than refusing.
+            let Some(seal) = seal else {
+                return Err(Error::unavailable(
+                    "this deployment has no seal key, so an MCP auth token cannot be stored: create                      one with `nucleos seal rotate`, or add the source without a token",
+                ));
+            };
+            system
+                .set(
+                    &format!("{SEALED_SOURCE_KEY_PREFIX}{}", spec.name),
+                    &seal.seal(token)?,
+                )
+                .await?;
+        }
+        let entry = connect(&spec, system, seal).await?;
         let view = SourceView {
             name: entry.spec.name.clone(),
             command: entry.spec.command.clone(),
             args: entry.spec.args.clone(),
             url: entry.spec.url.clone(),
+            has_auth_token: entry.spec.has_auth_token,
             tools: entry.tools.iter().map(|tool| tool.spec().name).collect(),
         };
         self.entries
@@ -201,10 +228,14 @@ impl SourceSet {
     ///
     /// Nothing is persisted: the stored spec is the truth, and a reconnect that rewrote it would let a
     /// server's current mood become configuration.
-    pub async fn reconnect(&mut self) -> usize {
+    pub async fn reconnect(
+        &mut self,
+        system: &SystemStore,
+        seal: Option<&nucleos_auth::SealKey>,
+    ) -> usize {
         let mut alive = Vec::new();
         for entry in &self.entries {
-            match connect(&entry.spec).await {
+            match connect(&entry.spec, system, seal).await {
                 Ok(connected) => alive.push(connected),
                 Err(error) => tracing::warn!(
                     event = "source_reconnect_failed",
@@ -237,10 +268,35 @@ impl SourceSet {
 }
 
 /// Start one server and take what it advertises.
-async fn connect(spec: &SourceSpec) -> Result<Connected> {
+async fn connect(
+    spec: &SourceSpec,
+    system: &SystemStore,
+    seal: Option<&nucleos_auth::SealKey>,
+) -> Result<Connected> {
+    let mut transport = spec.transport()?;
+    if let nucleos_mcp::Transport::Http { auth, .. } = &mut transport
+        && spec.has_auth_token
+    {
+        let Some(seal) = seal else {
+            return Err(Error::unavailable(format!(
+                "source {:?} has an auth token but no seal key to open it with",
+                spec.name
+            )));
+        };
+        let sealed = system
+            .get(&format!("{SEALED_SOURCE_KEY_PREFIX}{}", spec.name))
+            .await?
+            .ok_or_else(|| {
+                Error::unavailable(format!(
+                    "source {:?} names an auth token but no credential is stored for it",
+                    spec.name
+                ))
+            })?;
+        *auth = Some(seal.open(&sealed)?);
+    }
     let source = nucleos_mcp::McpSource {
         name: spec.name.clone(),
-        transport: spec.transport()?,
+        transport,
         call_timeout: Some(std::time::Duration::from_secs(60)),
     };
     let tools: Vec<Arc<dyn Tool>> = source
@@ -285,12 +341,19 @@ pub async fn post_source(
         args: request.args,
         env: request.env,
         url: request.url,
+        has_auth_token: request.auth_token.is_some(),
     };
     let view = app
         .sources()
         .write()
         .await
-        .add(&system, spec, &admin.principal)
+        .add(
+            &system,
+            spec,
+            request.auth_token,
+            app.seal(),
+            &admin.principal,
+        )
         .await
         .map_err(|error| ApiError::from_error(&error))?;
     let generation = publish(&app, &kernel).await?;

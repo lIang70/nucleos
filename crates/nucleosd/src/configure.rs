@@ -473,6 +473,17 @@ pub async fn post_admin_key(
     })?;
     permit(&app, &admin, "admin_keys").await?;
 
+    // Identity minting is not configuration: the gate asks whether this caller may enrol keys, not
+    // whose keys they may enrol. Without this, an `acme` administrator could register a key for
+    // `default/admin` and inherit the bootstrap policy's system scope. Only the default tenant may
+    // mint across tenants; everyone else mints inside their own.
+    if admin.principal.tenant != "default" && request.tenant != admin.principal.tenant {
+        return Err(ApiError::from_error(&Error::denied(format!(
+            "you may only enrol keys for your own tenant ({})",
+            admin.principal.tenant
+        ))));
+    }
+
     let key = nucleos_auth::PublicKey::from_public(
         &request.key,
         request.tenant.clone(),
@@ -484,6 +495,17 @@ pub async fn post_admin_key(
     if keys.iter().any(|existing| existing.id == key.id) {
         return Err(ApiError::from_error(&Error::invalid(format!(
             "key {} is already enrolled",
+            key.id
+        ))));
+    }
+    // A prefix collision is not an enrolment: it would shadow the existing key's verification path,
+    // so refuse rather than shadow it. The id is only an index, never part of the signature.
+    if keys
+        .iter()
+        .any(|existing| existing.id.starts_with(&key.id) || key.id.starts_with(&existing.id))
+    {
+        return Err(ApiError::from_error(&Error::invalid(format!(
+            "key id {} collides with an enrolled key's prefix",
             key.id
         ))));
     }
@@ -603,6 +625,15 @@ pub async fn post_token(
         )));
     }
     permit(&app, &admin, "tokens").await?;
+
+    // Same boundary as key enrolment: a token *is* an identity, so only the default tenant may mint
+    // across tenants. Everyone else issues inside their own.
+    if admin.principal.tenant != "default" && request.tenant != admin.principal.tenant {
+        return Err(ApiError::from_error(&Error::denied(format!(
+            "you may only issue tokens for your own tenant ({})",
+            admin.principal.tenant
+        ))));
+    }
 
     let issued = nucleos_auth::token::issue();
     // Sticky: from here on this deployment always needs a token, whatever the table holds later.
@@ -814,6 +845,7 @@ pub async fn document_of(system: &SystemStore) -> Result<nucleos::wire::api::Dep
                 command: spec.command,
                 args: spec.args,
                 url: spec.url,
+                has_auth_token: spec.has_auth_token,
                 tools: Vec::new(),
             })
             .collect(),
@@ -1046,6 +1078,7 @@ pub async fn apply(
             args: source.args.clone(),
             env: std::collections::BTreeMap::new(),
             url: source.url.clone(),
+            has_auth_token: source.has_auth_token,
         })
         .collect();
     entries.push((
@@ -1164,7 +1197,7 @@ async fn rehydrate(
 
     // Sources: reconnected from the store, then published as one generation. A source that cannot
     // start is logged and skipped, the same way start-up treats it.
-    let reloaded = crate::sources::SourceSet::load(system).await?;
+    let reloaded = crate::sources::SourceSet::load(system, app.seal()).await?;
     *app.sources().write().await = reloaded;
     crate::sources::publish(app, kernel)
         .await

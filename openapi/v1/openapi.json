@@ -3419,6 +3419,13 @@
             },
             "type": "array"
           },
+          "auth_token": {
+            "description": "A bearer token for that endpoint. Sealed before it is stored, and never returned in a view.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "command": {
             "default": "",
             "description": "The command that starts it. Ignored when `url` is set.",
@@ -3464,6 +3471,11 @@
             "default": "",
             "description": "The command that starts it. Empty for an HTTP source.",
             "type": "string"
+          },
+          "has_auth_token": {
+            "default": false,
+            "description": "Whether this endpoint was given a bearer token. The token itself is sealed and never shown.",
+            "type": "boolean"
           },
           "name": {
             "description": "Its name.",

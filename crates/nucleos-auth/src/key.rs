@@ -156,9 +156,11 @@ impl PublicKey {
 /// accident, and a re-enrolment of the same key is recognisable.
 #[must_use]
 pub fn fingerprint(verifying: &[u8]) -> String {
+    // 16 bytes, not 4: an id is an index into the enrolled set, and four bytes of a public key
+    // collides after a few hundred keys. Widening it costs nothing but length in the display.
     verifying
         .iter()
-        .take(4)
+        .take(16)
         .map(|byte| format!("{byte:02x}"))
         .collect()
 }
@@ -225,9 +227,11 @@ mod tests {
     }
 
     #[test]
-    fn the_identifier_is_short_and_derived_from_the_key() {
+    fn the_identifier_is_derived_from_the_key_and_long_enough_to_index() {
         let key = KeyPair::generate().public("acme", "alice");
-        assert_eq!(key.id.len(), 8, "{}", key.id);
+        // 16 bytes of the public key, hex-encoded: long enough that an enrolment set has no
+        // practical collision risk, and still short enough to quote in a command.
+        assert_eq!(key.id.len(), 32, "{}", key.id);
         assert!(key.id.chars().all(|c| c.is_ascii_hexdigit()));
 
         // Same key, same name; different key, different name.

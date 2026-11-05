@@ -301,6 +301,9 @@ pub struct SourceRequest {
     /// An HTTP endpoint, for a source this daemon does not spawn. Takes precedence over `command`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// A bearer token for that endpoint. Sealed before it is stored, and never returned in a view.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_token: Option<String>,
 }
 
 /// A source, as the daemon reports it.
@@ -317,6 +320,9 @@ pub struct SourceView {
     /// The endpoint, when this daemon does not spawn it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// Whether this endpoint was given a bearer token. The token itself is sealed and never shown.
+    #[serde(default)]
+    pub has_auth_token: bool,
     /// The tools it currently advertises.
     #[serde(default)]
     pub tools: Vec<String>,

@@ -272,10 +272,15 @@ fn profile(
          ; Reading is not restricted by any policy in this ABI: every program loads a library\n\
          ; before it does anything, and a sandbox that breaks that is a sandbox nobody keeps.\n\
          (allow file-read*)\n\
-         (allow process*)\n\
+         ; process* is not one permission: a command may fork and exec, but it may not inspect or\n\
+         ; signal other processes.\n\
+         (allow process-fork)\n\
+         (allow process-exec)\n\
          (allow signal (target self))\n\
          (allow sysctl-read)\n\
-         (allow mach-lookup)\n\
+         ; mach-lookup is XPC's open door. These are the services a normal program needs; anything\n\
+         ; else has to be named by policy, not granted by default.\n\
+         (allow mach-lookup (global-name \"com.apple.securityd\" \"com.apple.logd\" \"com.apple.system.logger\" \"com.apple.system.opendirectoryd\"))\n\
          (allow ipc-posix-shm)\n\
          ; A program that cannot write to its own standard devices fails at start-up, for a reason\n\
          ; that has nothing to do with the command.\n\
@@ -659,5 +664,34 @@ mod bwrap_tests {
     fn path_lookup_finds_what_exists_and_not_what_does_not() {
         assert!(on_path("sh"), "every unix has a shell on PATH");
         assert!(!on_path("definitely-not-a-real-command-xyz"));
+    }
+}
+
+#[cfg(test)]
+mod profile_shape {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    /// The profile is not the blanket permissions it used to be: process inspection and XPC are
+    /// enumerated, not granted wholesale.
+    #[test]
+    fn process_and_mach_lookup_are_enumerated() {
+        let profile = profile(
+            &SandboxPolicy::WorkspaceWrite {
+                extra_writable_roots: Vec::new(),
+                network_access: false,
+            },
+            &SandboxPermissions::UseDefault,
+            Some(&"/srv/ws".to_owned()),
+        );
+        assert!(!profile.contains("(allow process*)\n"), "{profile}");
+        assert!(profile.contains("(allow process-fork)"), "{profile}");
+        assert!(profile.contains("(allow process-exec)"), "{profile}");
+        assert!(
+            !profile.contains("(allow mach-lookup)\n"),
+            "XPC is not an open door: {profile}"
+        );
+        assert!(profile.contains("com.apple.securityd"), "{profile}");
     }
 }
