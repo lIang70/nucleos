@@ -629,3 +629,46 @@ async fn an_append_that_cannot_be_checkpointed_is_an_error() {
         "a durable checkpoint that was refused must not report success"
     );
 }
+
+/// Opening an id that already exists is a conflict, not a fresh empty session over a live log.
+#[tokio::test]
+async fn opening_an_existing_session_is_refused_with_an_instruction() {
+    let store = store();
+    let kernel = kernel(&store);
+    let id = SessionId::new("s1");
+    kernel.open(&principal(), id.clone(), spec()).await.unwrap();
+
+    let before = kernel.events(&principal(), &id, 0).await.unwrap().len();
+    let error = kernel
+        .open(&principal(), id.clone(), spec())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), ErrorCode::Conflict);
+    assert!(error.reason().contains("resume"), "{error}");
+    assert_eq!(
+        kernel.events(&principal(), &id, 0).await.unwrap().len(),
+        before,
+        "a refused open wrote to the existing log"
+    );
+
+    // Closed is a different instruction: this id is used, not resumable.
+    let mut session = kernel.load(&principal(), &id).await.unwrap();
+    kernel
+        .close(&mut session, nucleos::contract::StopReason::Completed)
+        .await
+        .unwrap();
+    let error = kernel
+        .open(&principal(), id.clone(), spec())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), ErrorCode::Conflict);
+    assert!(error.reason().contains("closed"), "{error}");
+
+    // Another subject's id is answered as absent, so opening cannot be used to enumerate ids.
+    let other = Principal {
+        tenant: "acme".to_owned(),
+        subject: "bob".to_owned(),
+    };
+    let error = kernel.open(&other, id, spec()).await.unwrap_err();
+    assert_eq!(error.code(), ErrorCode::NotFound);
+}

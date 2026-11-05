@@ -20,12 +20,26 @@ impl Kernel {
             tenant: principal.tenant.clone(),
             id: id.clone(),
         };
-        if let Some(existing) = self.store.snapshot(&key).await?
-            && existing.principal.subject != principal.subject
-        {
-            return Err(Error::denied(format!(
-                "session {id} belongs to another subject"
-            )));
+        if let Some(existing) = self.store.snapshot(&key).await? {
+            // "Already exists" is not "not yours". An id another subject owns is answered as absent,
+            // so opening a session cannot be used to enumerate other people's ids; an id this caller
+            // owns is a conflict with an instruction, not a fresh empty session over a live log.
+            if existing.principal.subject != principal.subject {
+                return Err(Error::not_found(format!("no session {id}")));
+            }
+            if existing.state == crate::contract::SessionState::Closed {
+                return Err(Error::new(
+                    crate::contract::ErrorCode::Conflict,
+                    format!(
+                        "session {id} already exists and is closed: choose another id, or prune it \
+                         before reusing this one"
+                    ),
+                ));
+            }
+            return Err(Error::new(
+                crate::contract::ErrorCode::Conflict,
+                format!("session {id} already exists: resume it with `resume: true`"),
+            ));
         }
 
         // The isolation a caller asks for is a privilege, not a field: without this, any tenant could
@@ -268,6 +282,25 @@ impl Kernel {
                     .map_or(event.seq, |through| through.max(event.seq)),
             );
         }
+
+        // The fold may have moved the generation, and the set must move with it. The session was
+        // restored from the checkpoint's generation, so a migration in the tail used to leave the
+        // number new and the tool set old — which made the next migration a no-op and the next
+        // checkpoint write the pairing down as fact. Resolved the same way as at the top, with the
+        // same fallback for a number this process never published.
+        let resolved = session.generation;
+        let (tools, generation) = {
+            let generations = self.generations();
+            let set = generations.set(resolved);
+            let generation = if generations.contains(resolved) {
+                resolved
+            } else {
+                generations.current()
+            };
+            (set, generation)
+        };
+        session.toolset = super::generation::Pinned::new(tools);
+        session.generation = generation;
 
         // A turn the runtime did not survive is recorded rather than inferred. Nothing else in the
         // log says it happened: the deltas are there, but they look the same as a turn that is still

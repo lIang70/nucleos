@@ -231,6 +231,39 @@ async fn a_tool_reached_differently_does_not_migrate() {
     );
 }
 
+/// A migration recorded in the log restores the set, not just the number.
+///
+/// The fold used to update `session.generation` and leave `session.toolset` pointing at the set the
+/// checkpoint named. The next migration then looked finished (`generation == current`), so the session
+/// kept answering from the old set — and the next checkpoint wrote the false pairing down.
+#[tokio::test]
+async fn a_migration_in_the_log_restores_the_tool_set() {
+    let (kernel, _store) = build();
+    let mut session = kernel
+        .open(&principal(), SessionId::new("s1"), spec())
+        .await
+        .unwrap();
+
+    kernel
+        .publish(vec![tool(
+            "read_file",
+            TAKE_PATH_AND_OFFSET,
+            "from generation 2",
+        )])
+        .unwrap();
+    // Migrate at a turn boundary: the event is in the log, and no checkpoint is owed yet.
+    kernel.inference(&mut session, &[]).await.unwrap();
+
+    // A fresh handle has to answer from the set the migration named, not the one the checkpoint did.
+    let mut restored = kernel.load(&principal(), session.id()).await.unwrap();
+    assert_eq!(restored.generation(), session.generation());
+    let output = kernel
+        .invoke_tool(&mut restored, &call("read_file"))
+        .await
+        .unwrap();
+    assert_eq!(output.content.text(), "from generation 2");
+}
+
 #[tokio::test]
 async fn an_incompatible_change_leaves_the_session_where_it_is() {
     let (kernel, store) = build();
