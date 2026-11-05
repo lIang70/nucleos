@@ -222,7 +222,12 @@ impl Kernel {
         // The head of the log, not a copy of its counter. A supervisor may still be writing to this
         // session, in which case its counter is current and this handle must join it rather than
         // re-derive a number from the checkpoint.
-        let head = self.log_head(&key, snapshot.seq.saturating_add(1));
+        let head = if conversation {
+            self.log_head(&key, snapshot.seq.saturating_add(1))
+        } else {
+            // A view is a reader, not a writer: do not register a head for it.
+            self.peek_log_head(&key, snapshot.seq.saturating_add(1))
+        };
         let mut session = session::Session::from_snapshot(
             snapshot.clone(),
             principal.clone(),

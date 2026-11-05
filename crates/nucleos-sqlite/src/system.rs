@@ -95,7 +95,9 @@ impl SystemStore {
                      key_id         text    not null,
                      key            text    not null,
                      value          text    not null
-                 );",
+                 );
+                 -- `history` is read newest-first on every `config history` call, and it only grows.
+                 create index if not exists history_by_time on history (at_unix_millis);",
             )
             .map_err(failed)?;
 

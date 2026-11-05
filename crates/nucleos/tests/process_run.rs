@@ -766,3 +766,26 @@ async fn the_same_id_in_two_tenants_is_two_processes() -> nucleos::Result<()> {
     assert_eq!(output.exit_code, -1);
     Ok(())
 }
+
+/// Output past the budget is cut, and the caller is told it was cut.
+#[tokio::test]
+async fn output_beyond_the_budget_is_marked_as_truncated() -> nucleos::Result<()> {
+    let (kernel, _) = kernel();
+    let session = kernel
+        .spawn(
+            &principal(),
+            SessionId::new("p1"),
+            spec(
+                &["sh", "-c", "yes 0123456789 | head -c 200000"],
+                SandboxPolicy::DangerFullAccess,
+            ),
+        )
+        .await?;
+    let output = kernel.wait(&session).await?;
+    assert!(
+        output.stdout.truncated_after_lines.is_some(),
+        "a shorter output with no explanation is the failure this field exists for"
+    );
+    assert!(output.stdout.text.len() <= 64 * 1024);
+    Ok(())
+}

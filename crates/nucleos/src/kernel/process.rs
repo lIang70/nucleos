@@ -58,7 +58,23 @@ enum Control {
 struct Captured {
     stdout: String,
     stderr: String,
-    truncated_after_lines: Option<u32>,
+    /// Where each stream was cut, if it was. Per stream, because a chatty stdout says nothing about
+    /// whether stderr was also cut.
+    stdout_truncated_after_lines: Option<u32>,
+    stderr_truncated_after_lines: Option<u32>,
+}
+
+impl Captured {
+    /// Record that one stream was cut, once, with the number of lines that survived.
+    fn truncate(&mut self, stream: ExecStream) {
+        let (text, flag) = match stream {
+            ExecStream::Stdout => (&self.stdout, &mut self.stdout_truncated_after_lines),
+            ExecStream::Stderr => (&self.stderr, &mut self.stderr_truncated_after_lines),
+        };
+        if flag.is_none() {
+            *flag = Some(u32::try_from(text.lines().count()).unwrap_or(u32::MAX));
+        }
+    }
 }
 
 /// One running process: a mailbox, and the exit it will eventually report.
@@ -422,11 +438,11 @@ async fn supervise(
         timed_out: false,
         stdout: OutputChunk {
             text: captured.stdout.clone(),
-            truncated_after_lines: captured.truncated_after_lines,
+            truncated_after_lines: captured.stdout_truncated_after_lines,
         },
         stderr: OutputChunk {
             text: captured.stderr.clone(),
-            truncated_after_lines: captured.truncated_after_lines,
+            truncated_after_lines: captured.stderr_truncated_after_lines,
         },
     };
     drop(captured);
@@ -491,6 +507,9 @@ async fn reader(
     // streamed, and EOF flushes whatever is left.
     let mut pending: Vec<EventKind> = Vec::new();
     let mut last_flush = std::time::Instant::now();
+    // Bytes read but not yet decodable. A multi-byte character may straddle two reads, and decoding
+    // each read on its own would write replacement characters into the log forever.
+    let mut undecoded: Vec<u8> = Vec::new();
     loop {
         let read = tokio::time::timeout(OUTPUT_FLUSH_AFTER, pipe.read(&mut buffer)).await;
         let chunk = match read {
@@ -507,11 +526,22 @@ async fn reader(
             Ok(Ok(0)) | Ok(Err(_)) => break,
             Ok(Ok(read)) => {
                 if written >= OUTPUT_BUDGET_BYTES {
-                    continue; // drain the pipe; the budget is spent
+                    // The budget is spent, and the caller is told rather than being handed a shorter
+                    // output with no explanation.
+                    captured.lock().await.truncate(stream);
+                    continue; // drain the pipe
                 }
                 let take = read.min(OUTPUT_BUDGET_BYTES - written);
                 written += take;
-                String::from_utf8_lossy(&buffer[..take]).into_owned()
+                undecoded.extend_from_slice(&buffer[..take]);
+                let valid = valid_utf8_prefix(&undecoded);
+                if valid == 0 {
+                    // An incomplete character: wait for the rest of it.
+                    continue;
+                }
+                let chunk = String::from_utf8_lossy(&undecoded[..valid]).into_owned();
+                undecoded.drain(..valid);
+                chunk
             }
         };
         {
@@ -530,6 +560,18 @@ async fn reader(
             last_flush = std::time::Instant::now();
         }
     }
+    // EOF: whatever bytes are left are output too, even if the last character was incomplete.
+    if !undecoded.is_empty() {
+        let chunk = String::from_utf8_lossy(&undecoded).into_owned();
+        {
+            let mut captured = captured.lock().await;
+            match stream {
+                ExecStream::Stdout => captured.stdout.push_str(&chunk),
+                ExecStream::Stderr => captured.stderr.push_str(&chunk),
+            }
+        }
+        pending.push(EventKind::ExecOutput { stream, chunk });
+    }
     // EOF or a failed append: whatever is left goes out, so the log ends with the output the process
     // actually produced rather than with a gap a reader has to explain.
     if !pending.is_empty() {
@@ -537,6 +579,17 @@ async fn reader(
     }
     // EOF: every byte this stream will ever produce has been appended.
     let _ = drained.send(()).await;
+}
+
+/// How much of a byte string is valid UTF-8.
+///
+/// `valid_up_to` is the length of the valid prefix, which is exactly the part that may be decoded now;
+/// the rest is a character that has not finished arriving.
+fn valid_utf8_prefix(bytes: &[u8]) -> usize {
+    match std::str::from_utf8(bytes) {
+        Ok(_) => bytes.len(),
+        Err(error) => error.valid_up_to(),
+    }
 }
 
 impl Kernel {
@@ -781,5 +834,22 @@ fn status_of(
             // claiming `Pending` would make it look like it is about to.
             _ => crate::contract::ProcessStatus::Lost,
         },
+    }
+}
+
+#[cfg(test)]
+mod utf8 {
+    use super::valid_utf8_prefix;
+
+    /// A character that straddles two reads is not decoded into replacement characters.
+    #[test]
+    fn an_incomplete_character_waits_for_the_rest_of_it() {
+        let bytes = "你好".as_bytes();
+        assert_eq!(valid_utf8_prefix(&bytes[..2]), 0);
+        assert_eq!(valid_utf8_prefix(bytes), bytes.len());
+
+        // One ASCII byte and half a character: the ASCII may go out now, the rest may not.
+        let mixed = [b'a', 0xE4, 0xBD];
+        assert_eq!(valid_utf8_prefix(&mixed), 1);
     }
 }

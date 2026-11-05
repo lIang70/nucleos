@@ -515,7 +515,8 @@ pub enum EventKind {
     StateChanged {
         /// The state entered.
         state: SessionState,
-        /// Set when the state is terminal.
+        /// Set when the state is terminal. Omitted otherwise: `null` is not used on this wire.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         stop: Option<StopReason>,
     },
     /// A fragment of assistant text.
@@ -638,8 +639,10 @@ pub enum EventKind {
     /// stopped.
     Credited {
         /// How much was granted. `None` means the limit was removed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         amount: Option<u64>,
         /// The balance after the grant. `None` means unlimited.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         remaining: Option<u64>,
     },
     /// Something failed.

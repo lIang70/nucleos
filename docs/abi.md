@@ -419,14 +419,15 @@ being an unchecked claim.
 
 - **Reload is explicit.** Nothing watches the filesystem. A caller decides when the
   generation changes, so a half-written config never becomes a generation.
-- **Reload reports partial success.** Individual sources may fail to connect or advertise
-  nothing; the response names them rather than failing the whole swap.
+- **Reload is best-effort per source.** A source that will not reconnect is logged and skipped; the
+  response carries the generation and the tools that came back, not a per-source error list.
 
 ```text
 ReloadResponse {
-  generation:      uint64
-  failed:          repeated SourceFailure   // source, reason, code
-  pinned_sessions: uint32                   // sessions that cannot migrate
+  generation: uint64
+  tools:      repeated string   // every tool name in the new generation
+  added:      repeated string   // names that were not in the previous one
+  removed:    repeated string
 }
 ```
 
@@ -487,7 +488,7 @@ client stops on empty, never on a short page.
 
 | nucleos              | MCP                                                                                       |
 | -------------------- | ----------------------------------------------------------------------------------------- |
-| tool source          | server (stdio; HTTP is not carried yet)                                                   |
+| tool source          | server (stdio child, or a streamable-HTTP endpoint)                                       |
 | `Tools` (allow-list) | `tools/list` snapshot                                                                     |
 | `ToolCallStarted`    | `tools/call`                                                                              |
 | `ToolFinished`       | `tools/call` result: `content` blocks → `Content.parts`, `isError` → `is_error`           |

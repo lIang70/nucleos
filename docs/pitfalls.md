@@ -353,10 +353,11 @@ policy that names it as anything but `always` is refused rather than obeyed.
 
 ## 29. A field nothing reads is a field that can lie
 
-**Decision.** `Tool::isolation()` and `contract::Isolation` are deleted.
+**Decision.** `Tool::isolation()` was deleted; `ToolSpec.isolation` now carries the fact instead, and
+`compatible()` reads it.
 
-**Why.** They were a declaration with no consumer: nothing in the kernel read the value, and it
-never reached the wire. The doc comment on the method described refusing to migrate a session into
+**Why.** The old field was a declaration with no consumer: nothing in the kernel read the value, and
+it never reached the wire. The doc comment on the method described refusing to migrate a session into
 a generation where isolation changed — a check that did not exist, because generations do not
 exist yet.
 

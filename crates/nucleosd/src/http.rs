@@ -2283,7 +2283,7 @@ async fn events(
     // question here: a session id is caller-chosen and short, so within one tenant every subject can
     // guess every other subject's, and the log is the whole conversation including tool output. This
     // is the one line between "I can read my session's events" and "I can read yours".
-    let _ = load(&kernel, &caller, &id).await?;
+    let _ = load_head(&kernel, &caller, &id).await?;
 
     // Paged and lazy. The old shape read the whole log into a `Vec` before sending the first frame,
     // so both the latency to first byte and the memory were functions of the session's age. A pump

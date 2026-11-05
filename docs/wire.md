@@ -53,7 +53,7 @@ accept: text/event-stream
 
 event: nucleos.v1.tool_finished
 id: 42
-data: {"seq":42,"session":"s1","kind":{"kind":"tool_finished", …}}
+data: {"seq":42,"session":"s1","at_unix_millis":0,"schema_version":1,"kind":"tool_finished", …}
 
 ```
 

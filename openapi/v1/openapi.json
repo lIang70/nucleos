@@ -942,7 +942,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "Set when the state is terminal."
+                "description": "Set when the state is terminal. Omitted otherwise: `null` is not used on this wire."
               }
             },
             "required": [

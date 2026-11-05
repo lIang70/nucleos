@@ -495,6 +495,28 @@ impl Kernel {
             .remove(key);
     }
 
+    /// The head for a read, without registering it.
+    ///
+    /// `load_head` is the view path, and a view writes nothing: creating a head in the map for every
+    /// session anybody ever looked at would keep one counter per session for the daemon's life, even
+    /// for sessions that are never driven again. An existing head is shared; an absent one is
+    /// constructed for this read and dropped with it.
+    pub(crate) fn peek_log_head(
+        &self,
+        key: &crate::adapter::SessionKey,
+        next_seq: u64,
+    ) -> std::sync::Arc<log::LogHead> {
+        if let Some(head) = self
+            .logs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(key)
+        {
+            return std::sync::Arc::clone(head);
+        }
+        log::LogHead::new(next_seq)
+    }
+
     /// Remove a session: its log, its checkpoint, and the head this kernel was holding for it.
     ///
     /// Only a closed session may be removed — deleting an open one would destroy a conversation

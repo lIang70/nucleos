@@ -177,7 +177,8 @@ impl SqliteStore {
         // A database written by a newer build is refused before anything below runs: a migration that
         // rewrites rows into a shape it does not understand is how a downgrade corrupts a durable
         // record. The check is repeated in `check_version`, which is the one that records a version.
-        if let Some(version) = read_version(&connection)?
+        let stored_version = read_version(&connection)?;
+        if let Some(version) = stored_version
             && version > SCHEMA_VERSION
         {
             return Err(Error::invalid(format!(
@@ -232,7 +233,12 @@ impl SqliteStore {
                      on sessions (closed, last_activity_unix_millis, tenant, session);",
             )
             .map_err(failed)?;
-        split_checkpoints(&mut connection)?;
+        // Only while there is something to migrate. After version 3 the split is a full-table read
+        // with no work in it, and running it on every open made restart cost grow with the number of
+        // sessions the store had ever held.
+        if stored_version.is_none_or(|version| version < 3) {
+            split_checkpoints(&mut connection)?;
+        }
         let store = Self {
             pool: Arc::new(match path {
                 // An in-memory store has no WAL to read through, and a second connection to
@@ -1023,6 +1029,15 @@ impl SqliteStore {
                         "session store is schema {version}, this build understands {SCHEMA_VERSION}; \
                          upgrade nucleosd rather than downgrading the store"
                     )));
+                }
+                if version < SCHEMA_VERSION {
+                    // The migration ran at open; recording it is what makes it happen once.
+                    connection
+                        .execute(
+                            "update meta set value = ?1 where key = 'schema_version'",
+                            params![SCHEMA_VERSION.to_string()],
+                        )
+                        .map_err(failed)?;
                 }
                 Ok(())
             }
