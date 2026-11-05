@@ -144,5 +144,14 @@ pub(crate) fn configure(connection: &Connection) -> Result<()> {
     connection
         .busy_timeout(std::time::Duration::from_secs(5))
         .map_err(|error| Error::internal(format!("store: {error}")))?;
+    // Retention deletes rows; without these the file only ever grew. `incremental` lets SQLite return
+    // pages to the filesystem gradually instead of requiring a blocking VACUUM, and the WAL is capped
+    // so a large prune cannot leave a write-ahead log bigger than the data it deleted.
+    connection
+        .pragma_update(None, "auto_vacuum", "incremental")
+        .map_err(|error| Error::internal(format!("store: {error}")))?;
+    connection
+        .pragma_update(None, "journal_size_limit", 64 * 1024 * 1024)
+        .map_err(|error| Error::internal(format!("store: {error}")))?;
     Ok(())
 }

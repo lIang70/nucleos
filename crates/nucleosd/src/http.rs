@@ -1992,7 +1992,13 @@ async fn list_sessions(
         }
     };
 
-    let limit = if query.limit == 0 { 20 } else { query.limit };
+    // Bounded, like the process listing: an unbounded `?limit=` makes one request read a whole
+    // tenant's sessions one snapshot at a time.
+    let limit = if query.limit == 0 {
+        20
+    } else {
+        query.limit.min(500)
+    };
     let page = store
         .sessions(&nucleos::adapter::SessionQuery {
             tenant: caller.0.tenant.clone(),
@@ -2016,8 +2022,10 @@ async fn list_sessions(
             tenant: caller.0.tenant.clone(),
             id: id.clone(),
         };
+        // The head, not the whole session: a summary needs kind, state, stop and cursor, and reading
+        // the full snapshot would reassemble every message and every attempt to answer those four.
         let Some(snapshot) = store
-            .snapshot(&key)
+            .snapshot_head(&key)
             .await
             .map_err(|error| ApiError::from_error(&error))?
         else {

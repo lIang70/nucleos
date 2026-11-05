@@ -30,7 +30,10 @@ pub struct Metrics {
     ///
     /// Keyed by the matched *route template*, not the raw path: a thousand sessions would otherwise
     /// be a thousand keys, and the counter would be a memory leak shaped like a metric.
-    requests: RwLock<BTreeMap<String, u64>>,
+    ///
+    /// The value is an atomic behind a read lock, so incrementing a counter the daemon already knows
+    /// costs a read lock and an atomic add — not a write lock shared by every request in flight.
+    requests: RwLock<BTreeMap<String, std::sync::Arc<AtomicU64>>>,
     /// Refused by authentication.
     unauthorized: AtomicU64,
     /// Sessions opened, agent and process alike.
@@ -62,26 +65,30 @@ impl Metrics {
     /// One request, however it ended.
     pub fn observe(&self, method: &str, route: &str, status: u16) {
         let key = format!("{method} {route}");
-        // A read lock first, and a write lock only for a route seen for the first time. Almost every
-        // request increments a counter that already exists, and the set of keys is the route table,
-        // not the traffic — so the write path is the rare one.
-        let seen = self
-            .requests
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .contains_key(&key);
-        if !seen {
-            let mut requests = self
+        // A read lock and an atomic add for a route the daemon already knows. The write lock is only
+        // for a route seen for the first time, and the set of keys is the route table, not the traffic.
+        let counter = {
+            let requests = self
                 .requests
-                .write()
+                .read()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            requests.entry(key.clone()).or_insert(0);
-        }
-        let mut requests = self
-            .requests
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *requests.entry(key).or_insert(0) += 1;
+            requests.get(&key).cloned()
+        };
+        let counter = match counter {
+            Some(counter) => counter,
+            None => {
+                let mut requests = self
+                    .requests
+                    .write()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                std::sync::Arc::clone(
+                    requests
+                        .entry(key)
+                        .or_insert_with(|| std::sync::Arc::new(AtomicU64::new(0))),
+                )
+            }
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
         if status == 401 {
             self.unauthorized.fetch_add(1, Ordering::Relaxed);
         }
@@ -114,7 +121,12 @@ impl Metrics {
         let requests = self
             .requests
             .read()
-            .map(|requests| requests.clone())
+            .map(|requests| {
+                requests
+                    .iter()
+                    .map(|(route, counter)| (route.clone(), counter.load(Ordering::Relaxed)))
+                    .collect()
+            })
             .unwrap_or_default();
         let now = nucleos::adapter::Clock::now_unix_millis(&nucleos::adapter::SystemClock);
         MetricsResponse {

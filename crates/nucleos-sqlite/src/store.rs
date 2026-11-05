@@ -221,6 +221,17 @@ impl SqliteStore {
                 "update snapshots set version = json_extract(body, '$.version') where version = 0",
             )
             .map_err(failed)?;
+        // Created only once the columns exist: a database written before retention has to be migrated
+        // first, and an index on a column that is not there yet fails at open.
+        connection
+            .execute_batch(
+                "-- Retention's question, in the order it asks it: closed sessions, oldest activity
+                 -- first. Without this the sweeper scanned every session ever created and sorted the
+                 -- result in a temporary b-tree, on a timer, forever.
+                 create index if not exists sessions_by_retention
+                     on sessions (closed, last_activity_unix_millis, tenant, session);",
+            )
+            .map_err(failed)?;
         split_checkpoints(&mut connection)?;
         let store = Self {
             pool: Arc::new(match path {
@@ -625,19 +636,25 @@ impl Store for SqliteStore {
                 .await;
         }
         self.run(move |connection| {
-            let transaction = connection.transaction().map_err(failed)?;
-            let report = candidates(&transaction, &query)?;
-            for key in &report.candidates {
-                for table in ["events", "snapshots", "messages", "attempts", "sessions"] {
-                    transaction
-                        .execute(
-                            &format!("delete from {table} where tenant = ?1 and session = ?2"),
-                            params![key.tenant, key.id.as_str()],
-                        )
-                        .map_err(failed)?;
+            let report = candidates(connection, &query)?;
+            // A batch at a time, not one transaction for the whole pass: the writer is a single
+            // connection, and holding it across a thousand sessions' deletes would stall every turn
+            // in the process for the duration. Between batches other writers get through, and a
+            // failed batch leaves earlier ones committed — retention is incremental by nature.
+            for chunk in report.candidates.chunks(32) {
+                let transaction = connection.transaction().map_err(failed)?;
+                for key in chunk {
+                    for table in ["events", "snapshots", "messages", "attempts", "sessions"] {
+                        transaction
+                            .execute(
+                                &format!("delete from {table} where tenant = ?1 and session = ?2"),
+                                params![key.tenant, key.id.as_str()],
+                            )
+                            .map_err(failed)?;
+                    }
                 }
+                transaction.commit().map_err(failed)?;
             }
-            transaction.commit().map_err(failed)?;
             Ok(report)
         })
         .await
@@ -789,7 +806,9 @@ pub const SCHEMA_VERSION: u32 = 3;
 /// Which closed sessions a retention pass would remove, and what they hold.
 ///
 /// The count is per candidate rather than one `group by`: the limit is small by design, and this
-/// keeps the selection and the deletion looking at exactly the same rows.
+/// keeps the selection and the deletion looking at exactly the same rows. It is `max(seq) + 1` rather
+/// than `count(*)` because the log is dense — the store refuses a gap on append — so the end of the
+/// log *is* its length, and that is a descent into the primary key instead of a scan of every event.
 fn candidates(
     connection: &Connection,
     query: &nucleos::adapter::PruneQuery,
@@ -797,7 +816,7 @@ fn candidates(
     let mut statement = connection
         .prepare(
             "select s.tenant, s.session,
-                    (select count(*) from events e
+                    (select coalesce(max(e.seq) + 1, 0) from events e
                      where e.tenant = s.tenant and e.session = s.session)
              from sessions s
              where s.closed = 1
