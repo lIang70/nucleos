@@ -726,3 +726,68 @@ async fn a_checkpoint_carries_the_tail_and_the_store_counts_the_whole() {
         "a checkpoint with no work rewrote or duplicated rows"
     );
 }
+
+/// A tail longer than one request should carry is folded in pages, and its progress is recorded.
+///
+/// The fold used to read the whole tail into one vector. It still folds everything — the log is the
+/// truth and refusing would lose work — but the memory is one page, and past a budget the folded state
+/// is checkpointed so the next request starts closer instead of repeating it.
+#[tokio::test]
+async fn a_long_tail_is_folded_in_pages_and_its_progress_recorded() {
+    let store = store();
+    let kernel = kernel(&store);
+    let id = SessionId::new("s1");
+    kernel.open(&principal(), id.clone(), spec()).await.unwrap();
+
+    let before = store.snapshot(&key(&id)).await.unwrap().unwrap().seq;
+
+    // More than one budget's worth of narrative events: an ordinary production tail is a few hundred,
+    // and this is what a checkpoint that fell far behind leaves behind.
+    let start = kernel.load(&principal(), &id).await.unwrap().next_seq();
+    let mut batch = Vec::new();
+    for index in 0..9_000u64 {
+        batch.push(Event {
+            seq: start + index,
+            session: id.clone(),
+            at_unix_millis: index,
+            schema_version: Event::SCHEMA_VERSION,
+            kind: EventKind::TextDelta {
+                part_index: 0,
+                text: "x".to_owned(),
+            },
+            meta: Default::default(),
+        });
+        if batch.len() == 512 {
+            store.append(&key(&id), &batch).await.unwrap();
+            batch.clear();
+        }
+    }
+    if !batch.is_empty() {
+        store.append(&key(&id), &batch).await.unwrap();
+    }
+
+    // The first load folds all of it, and checkpoints what it had folded when it hit the budget.
+    let loaded = kernel.load(&principal(), &id).await.unwrap();
+    assert_eq!(loaded.next_seq(), start + 9_000);
+    let after = store.snapshot(&key(&id)).await.unwrap().unwrap();
+    assert!(
+        after.seq > before,
+        "the load folded twice the budget and recorded nothing: {} is still {}",
+        after.seq,
+        before
+    );
+    assert!(
+        after.seq < start + 8_999,
+        "the progress checkpoint should be mid-tail, not the whole thing: {}",
+        after.seq
+    );
+
+    // A second load picks up from there and has less than a budget left, so it records nothing new.
+    let again = kernel.load(&principal(), &id).await.unwrap();
+    assert_eq!(again.next_seq(), start + 9_000);
+    assert_eq!(
+        store.snapshot(&key(&id)).await.unwrap().unwrap().seq,
+        after.seq,
+        "a load with nothing to record wrote a checkpoint anyway"
+    );
+}

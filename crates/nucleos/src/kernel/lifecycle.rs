@@ -243,49 +243,83 @@ impl Kernel {
         // The checkpoint is a cache; the log is the truth. Everything written after it — the tokens
         // a turn spent, the messages it completed, a configuration change — is folded in here, or a
         // reload hands back a session that owes money it forgets and forgets work it was told.
-        let tail = self.store.events_since(&key, snapshot.seq + 1).await?;
         let mut unfinished = false;
         let mut warned_about_the_future = false;
-        for event in &tail {
-            // The version is read, not just written. It cannot make an event readable that is not, but
-            // it can say why a session is behaving oddly after a downgrade — and once per load is
-            // enough, because the alternative is one line per event on a long log.
-            if event.schema_version > crate::contract::Event::SCHEMA_VERSION
-                && !warned_about_the_future
-            {
-                warned_about_the_future = true;
+        let mut folded = 0usize;
+        let mut next = snapshot.seq.saturating_add(1);
+        // Paged, because the tail has no bound the kernel can promise: a checkpoint that keeps losing
+        // the version race, or a process session that only checkpoints when its command exits, leaves
+        // whatever the log accumulated. Reading it whole would make one request's memory a function of
+        // the session's history.
+        while let Ok(page) = self
+            .store
+            .events_page(&key, next, super::state::TAIL_PAGE)
+            .await
+        {
+            if page.is_empty() {
+                break;
+            }
+            for event in &page {
+                // The version is read, not just written. It cannot make an event readable that is not, but
+                // it can say why a session is behaving oddly after a downgrade — and once per load is
+                // enough, because the alternative is one line per event on a long log.
+                if event.schema_version > crate::contract::Event::SCHEMA_VERSION
+                    && !warned_about_the_future
+                {
+                    warned_about_the_future = true;
+                    tracing::warn!(
+                        event = "event_from_a_newer_build",
+                        session = %session.id,
+                        written = event.schema_version,
+                        understood = crate::contract::Event::SCHEMA_VERSION,
+                        consequence = "events this build does not recognise are carried, not applied",
+                    );
+                }
+                if super::replay::fold(&mut session, event) == super::replay::Applied::AbandonedTurn
+                {
+                    unfinished = true;
+                }
+                // A completed unit ends any evidence before it: a turn that finished is not abandoned,
+                // whatever deltas preceded it. This is also what makes a second recovery a no-op — the
+                // record written the first time is itself such an event.
+                if super::replay::completes_a_unit(&event.kind) {
+                    unfinished = false;
+                }
+                // `fetch_max`, not `store`: another writer (a supervisor, a concurrent request) may have
+                // moved the head past this event while the tail was being read, and rewinding it would
+                // hand out a number that is already in the log.
+                session
+                    .log
+                    .seq
+                    .fetch_max(event.seq + 1, std::sync::atomic::Ordering::SeqCst);
+                // Folded *and* materialised: the state now contains this event, so a checkpoint taken
+                // from here must say so. Claiming less would write a snapshot whose messages carry events
+                // its `seq` denies, and the next `load` would fold them a second time.
+                session.materialised_through = Some(
+                    session
+                        .materialised_through
+                        .map_or(event.seq, |through| through.max(event.seq)),
+                );
+                next = event.seq.saturating_add(1);
+            }
+            folded = folded.saturating_add(page.len());
+            if folded < super::state::TAIL_BUDGET {
+                continue;
+            }
+            // Further behind than one request should carry. Record what has been folded, so the next
+            // request starts from here instead of repeating it — and if that checkpoint loses the
+            // version race, keep folding: correctness first, and the next load finds the progress it
+            // managed to write.
+            if conversation && let Err(error) = self.write_checkpoint(&mut session).await {
                 tracing::warn!(
-                    event = "event_from_a_newer_build",
+                    event = "tail_checkpoint_refused",
                     session = %session.id,
-                    written = event.schema_version,
-                    understood = crate::contract::Event::SCHEMA_VERSION,
-                    consequence = "events this build does not recognise are carried, not applied",
+                    folded,
+                    detail = %error.reason(),
+                    consequence = "the fold continues; the tail is read again by the next load",
                 );
             }
-            if super::replay::fold(&mut session, event) == super::replay::Applied::AbandonedTurn {
-                unfinished = true;
-            }
-            // A completed unit ends any evidence before it: a turn that finished is not abandoned,
-            // whatever deltas preceded it. This is also what makes a second recovery a no-op — the
-            // record written the first time is itself such an event.
-            if super::replay::completes_a_unit(&event.kind) {
-                unfinished = false;
-            }
-            // `fetch_max`, not `store`: another writer (a supervisor, a concurrent request) may have
-            // moved the head past this event while the tail was being read, and rewinding it would
-            // hand out a number that is already in the log.
-            session
-                .log
-                .seq
-                .fetch_max(event.seq + 1, std::sync::atomic::Ordering::SeqCst);
-            // Folded *and* materialised: the state now contains this event, so a checkpoint taken
-            // from here must say so. Claiming less would write a snapshot whose messages carry events
-            // its `seq` denies, and the next `load` would fold them a second time.
-            session.materialised_through = Some(
-                session
-                    .materialised_through
-                    .map_or(event.seq, |through| through.max(event.seq)),
-            );
+            folded = 0;
         }
 
         // The fold may have moved the generation, and the set must move with it. The session was

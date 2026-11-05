@@ -262,6 +262,20 @@ pub(crate) const CHECKPOINT_EVENTS: u64 = 512;
 /// ...and how long a checkpoint may be skipped, so a session on a slow trickle still bounds its tail.
 pub(crate) const CHECKPOINT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 
+/// How many events one page of a reload's tail holds.
+///
+/// A reload folds what the checkpoint does not cover. Normally that is a few hundred events; it is
+/// paged anyway, because "normally" is not a bound and a log that fell far behind the checkpoint would
+/// otherwise be materialised whole to fold one event at a time.
+pub(crate) const TAIL_PAGE: usize = 512;
+
+/// How many events one reload folds before it writes down how far it got.
+///
+/// Past this, the checkpoint is far enough behind that the next request would repeat the work, so the
+/// folded state is checkpointed and the next load starts closer. The cap bounds one request; recording
+/// progress is what stops the same cap being paid on every request after it.
+pub(crate) const TAIL_BUDGET: usize = 8_192;
+
 /// How many streamed fragments go into one append.
 ///
 /// Sixteen is a compromise measured against the store: a batch of sixteen costs about a quarter of the
