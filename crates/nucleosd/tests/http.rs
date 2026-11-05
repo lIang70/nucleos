@@ -2614,3 +2614,34 @@ async fn a_policy_that_says_nothing_about_isolation_opens_no_sessions() {
     let (status, _) = request(&app, "GET", "/v1/sessions/s1", "", "").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+/// An HTTP source can be added by request, not only through a document.
+///
+/// The endpoint used to require `command` even when `url` was present, so the one transport added this
+/// cycle could not be added through its own route. A url-only source now gets as far as the connection
+/// attempt — which fails, here, because the host does not exist — instead of being refused as malformed.
+#[tokio::test]
+async fn an_http_source_is_added_by_url_rather_than_refused_for_a_missing_command() {
+    let (app, key, key_id) = governable().await;
+    let (status, error) = signed(
+        &app,
+        &key,
+        &key_id,
+        "POST",
+        "/v1/sources",
+        r#"{"name":"remote","url":"https://example.invalid/mcp"}"#,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "it reached the connection, not a validation error: {error}"
+    );
+    assert!(
+        !error["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("needs a name and a command"),
+        "a url-only source is not malformed: {error}"
+    );
+}

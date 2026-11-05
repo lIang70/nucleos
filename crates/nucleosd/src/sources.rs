@@ -159,9 +159,12 @@ impl SourceSet {
         spec: SourceSpec,
         by: &Principal,
     ) -> Result<SourceView> {
-        if spec.name.trim().is_empty() || spec.command.trim().is_empty() {
-            return Err(Error::invalid("a source needs a name and a command"));
+        if spec.name.trim().is_empty() {
+            return Err(Error::invalid("a source needs a name"));
         }
+        // A command *or* a url, validated in the one place both entry points use: requiring a command
+        // here while the document accepted a url made HTTP sources impossible to add by request.
+        spec.transport()?;
         let entry = connect(&spec).await?;
         let view = SourceView {
             name: entry.spec.name.clone(),
