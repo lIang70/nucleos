@@ -772,6 +772,18 @@ pub struct ToolBatchRequest {
     pub calls: Vec<ToolCall>,
 }
 
+/// A human's answer to a parked question.
+///
+/// One route for both kinds of question — a tool call the policy asked about, and a command it asked
+/// about — because approval is about the question, not about what the question is for.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AnswerRequest {
+    /// Which pending question. A tool call's id, or the session's for a command.
+    pub pending_id: String,
+    /// Which offered option was picked.
+    pub option_id: String,
+}
+
 /// What the batch produced.
 ///
 /// A failure is a result with `is_error`, not an HTTP error: the model reads why and decides.
@@ -977,15 +989,6 @@ pub struct CreditResponse {
     pub credit_tokens: Option<u64>,
     /// The cursor a client resumes from.
     pub next_seq: u64,
-}
-
-/// What a caller sends to answer a parked call.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct VerdictRequest {
-    /// Which call was gated.
-    pub tool_call_id: String,
-    /// Which offered option was picked.
-    pub option_id: String,
 }
 
 /// The body of a failed request.

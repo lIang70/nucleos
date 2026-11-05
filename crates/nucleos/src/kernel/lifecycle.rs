@@ -400,51 +400,78 @@ impl Kernel {
         Ok(())
     }
 
-    /// Apply a human's answer to a parked call.
+    /// Answer the question a session is parked on.
     ///
-    /// A verdict is a syscall, not a loop: it finds the call, runs it if the human allowed it or
-    /// records the refusal, and checkpoints. Whether to drive another turn afterwards is the caller's
-    /// business, and this crate does not have an opinion about it.
-    pub async fn answer_verdict(
+    /// One syscall for two kinds of question: a tool call the policy asked about, and a command the
+    /// policy asked about. The answer is consumed before anything runs — tools and commands are not
+    /// idempotent, and a client that never saw the first response retries the same answer.
+    pub async fn answer(
         &self,
         session: &mut session::Session,
-        verdict: super::HitlVerdict,
+        approval: super::Approval,
     ) -> Result<()> {
         let id = session.id().clone();
         let pending = session
             .pending()
             .iter()
-            .find(|pending| pending.call.id == verdict.tool_call_id)
+            .find(|pending| pending.id == approval.pending_id)
             .cloned()
             .ok_or_else(|| {
                 Error::invalid(format!(
-                    "session {id} has no call {} waiting on a human",
-                    verdict.tool_call_id
+                    "session {id} has no question {} waiting on a human",
+                    approval.pending_id
                 ))
             })?;
         let option = pending
             .options
             .iter()
-            .find(|option| option.id == verdict.option_id)
+            .find(|option| option.id == approval.option_id)
             .cloned()
             .ok_or_else(|| {
-                Error::invalid(format!("option {:?} was not offered", verdict.option_id))
+                Error::invalid(format!("option {:?} was not offered", approval.option_id))
             })?;
-
         let allowed = matches!(
             option.kind,
             crate::contract::PermissionKind::AllowOnce
                 | crate::contract::PermissionKind::AllowAlways
         );
-        if allowed {
-            // The verdict *is* the policy answer.
-            self.invoke_approved(session, std::slice::from_ref(&pending.call))
+
+        // Consumed, and written down, before the work it authorises: an entry left behind invites the
+        // retry that runs the side effect twice.
+        session
+            .pending
+            .retain(|pending| pending.id != approval.pending_id);
+        self.write_checkpoint(session).await?;
+
+        match (pending.action, allowed) {
+            (crate::contract::PendingAction::Tool { call }, true) => {
+                // The verdict *is* the policy answer, so the gate is not asked again.
+                let verdicts = vec![None];
+                self.execute_calls(session, std::slice::from_ref(&call), verdicts)
+                    .await?;
+                Ok(())
+            }
+            (crate::contract::PendingAction::Tool { call }, false) => {
+                self.record_refusal(session, &call, "refused by a human")
+                    .await?;
+                self.write_checkpoint(session).await
+            }
+            (crate::contract::PendingAction::Exec { spec }, true) => {
+                // Approved: the command runs with the escalation the gate was asked about.
+                self.launch_approved(session, spec).await
+            }
+            (crate::contract::PendingAction::Exec { .. }, false) => {
+                self.emit(
+                    session,
+                    EventKind::Failed {
+                        code: crate::contract::ErrorCode::Denied,
+                        reason: "a human refused to run this command".to_owned(),
+                    },
+                )
                 .await?;
-        } else {
-            self.record_refusal(session, &pending.call, "refused by a human")
-                .await?;
+                self.close(session, StopReason::Denied).await
+            }
         }
-        self.checkpoint(session).await
     }
 
     // -- syscalls -------------------------------------------------------------

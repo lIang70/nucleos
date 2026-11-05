@@ -49,7 +49,7 @@ impl Kernel {
             session,
             EventKind::AwaitingHuman {
                 question: pending.question.clone(),
-                tool_call_id: pending.call.id.clone(),
+                pending_id: pending.id.clone(),
                 options: pending.options.clone(),
                 default_if_unanswered: crate::contract::PermissionKind::Reject,
             },

@@ -30,8 +30,8 @@ pub struct Abi {
     pub start_request: api::StartRequest,
     /// What that returns.
     pub start_response: api::StartResponse,
-    /// `POST /v1/sessions/{id}/verdict`.
-    pub verdict_request: api::VerdictRequest,
+    /// `POST /v1/sessions/{id}/answer`.
+    pub answer_request: api::AnswerRequest,
     /// The body of every failure.
     pub error: api::ErrorBody,
     /// The conversation model, for a client that sends `initial` messages.

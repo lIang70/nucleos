@@ -104,11 +104,11 @@ impl Outcome {
     }
 }
 
-/// A human's answer to a parked call.
+/// A human's answer to a parked question.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HitlVerdict {
-    /// Which call was gated.
-    pub tool_call_id: String,
+pub struct Approval {
+    /// Which pending question — a tool call's id, or the session's for a command.
+    pub pending_id: String,
     /// Which option was offered and picked.
     pub option_id: String,
 }

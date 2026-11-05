@@ -619,8 +619,8 @@ pub enum EventKind {
     AwaitingHuman {
         /// What the host should ask.
         question: String,
-        /// The call being gated.
-        tool_call_id: String,
+        /// Which parked question this is. A tool call's id, or the session's for a command.
+        pending_id: String,
         /// Typed answers, so a client can render "once" and "always" differently and the
         /// verdict can say which was chosen.
         options: Vec<PermissionOption>,
@@ -976,12 +976,33 @@ pub struct Capability {
 /// it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PendingCall {
-    /// The call that has not run.
-    pub call: ToolCall,
+    /// What this question is about, and how it is identified in a log.
+    pub id: String,
+    /// What has not run yet.
+    pub action: PendingAction,
     /// What may be answered.
     pub options: Vec<PermissionOption>,
     /// What was asked.
     pub question: String,
+}
+
+/// What a parked question is about.
+///
+/// Approval is not a tool concept: a policy can ask a human about a tool call *or* about running a
+/// command outside its sandbox, and both are answered the same way.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PendingAction {
+    /// A tool call the policy asked about.
+    Tool {
+        /// The call.
+        call: ToolCall,
+    },
+    /// A command the policy asked about — an escalation, or a program nobody has allowed yet.
+    Exec {
+        /// What would run, exactly.
+        spec: ProcessSpec,
+    },
 }
 
 /// A session's state, materialised at a point in its log.

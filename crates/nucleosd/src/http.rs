@@ -15,14 +15,14 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{MethodRouter, delete, get, post, put};
 use axum::{Json, Router};
 use nucleos::contract::{ErrorCode, Event, EventKind, Principal, SessionId, SessionState};
-use nucleos::kernel::{HitlVerdict, Kernel, SessionSpec, StateWrite};
+use nucleos::kernel::{Kernel, SessionSpec, StateWrite};
 use nucleos::wire::api::{
-    AppliedDeployment, CancelResponse, ChangeListResponse, ChangeView, ConfigKey, ConfigResponse,
-    CreditRequest, CreditResponse, DeletedResponse, Deployment, DescribeResponse, ErrorBody,
-    InferenceRequest, InferenceResponse, MetricsResponse, ProcessInfo, ProcessListResponse,
-    ProcessStartRequest, ProcessStartResponse, ReloadResponse, RetireResponse, SessionListResponse,
-    SessionSummary, SessionView, StartRequest, StartResponse, StateRequest, StdinRequest,
-    ToolBatchRequest, ToolBatchResponse, VerdictRequest,
+    AnswerRequest, AppliedDeployment, CancelResponse, ChangeListResponse, ChangeView, ConfigKey,
+    ConfigResponse, CreditRequest, CreditResponse, DeletedResponse, Deployment, DescribeResponse,
+    ErrorBody, InferenceRequest, InferenceResponse, MetricsResponse, ProcessInfo,
+    ProcessListResponse, ProcessStartRequest, ProcessStartResponse, ReloadResponse, RetireResponse,
+    SessionListResponse, SessionSummary, SessionView, StartRequest, StartResponse, StateRequest,
+    StdinRequest, ToolBatchRequest, ToolBatchResponse,
 };
 use nucleos::wire::openapi::{self, Kind, Parameter};
 use nucleos_sqlite::SqliteStore;
@@ -972,6 +972,18 @@ pub const ROUTES: &[Route] = &[
         meta: openapi::Route {
             parameters: &[],
             method: "post",
+            path: "/v1/sessions/{id}/answer",
+            operation: "answerPending",
+            summary: "Answer the question a session is parked on: a tool call, or a command.",
+            request: Some("AnswerRequest"),
+            reply: openapi::Reply::Json("StartResponse"),
+        },
+        build: || post(answer),
+    },
+    Route {
+        meta: openapi::Route {
+            parameters: &[],
+            method: "post",
             path: "/v1/sessions/{id}/close",
             operation: "closeSession",
             summary: "Close a session. Further calls are refused.",
@@ -979,18 +991,6 @@ pub const ROUTES: &[Route] = &[
             reply: openapi::Reply::Json("StartResponse"),
         },
         build: || post(close),
-    },
-    Route {
-        meta: openapi::Route {
-            parameters: &[],
-            method: "post",
-            path: "/v1/sessions/{id}/verdict",
-            operation: "verdict",
-            summary: "Answer a call parked on a human, then run the reference loop on.",
-            request: Some("VerdictRequest"),
-            reply: openapi::Reply::Json("StartResponse"),
-        },
-        build: || post(verdict),
     },
     Route {
         meta: openapi::Route {
@@ -2203,6 +2203,41 @@ async fn credit(
     }))
 }
 
+/// Answer the question a session is parked on.
+///
+/// One route for a tool call and for a command: both are questions the kernel asked, and both are
+/// answered the same way. Nothing is driven afterwards — whether another turn follows is the caller's
+/// decision.
+async fn answer(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    Path(id): Path<String>,
+    Json(request): Json<AnswerRequest>,
+) -> Result<Json<StartResponse>, ApiError> {
+    let kernel = app.kernel()?.clone();
+    let mut session = load(&kernel, &caller, &id).await?;
+    kernel
+        .answer(
+            &mut session,
+            nucleos::kernel::Approval {
+                pending_id: request.pending_id,
+                option_id: request.option_id,
+            },
+        )
+        .await
+        .map_err(|error| ApiError::from_error(&error))?;
+    Ok(Json(StartResponse {
+        session: session.id().as_str().to_owned(),
+        state: if session.is_closed() {
+            SessionState::Closed
+        } else {
+            SessionState::Open
+        },
+        stop: session.stop_reason(),
+        next_seq: session.next_seq(),
+    }))
+}
+
 async fn close(
     State(app): State<Arc<App>>,
     caller: Caller,
@@ -2218,36 +2253,6 @@ async fn close(
         session: session.id().as_str().to_owned(),
         state: SessionState::Closed,
         stop: Some(nucleos::contract::StopReason::Cancelled),
-        next_seq: session.next_seq(),
-    }))
-}
-
-async fn verdict(
-    State(app): State<Arc<App>>,
-    caller: Caller,
-    Path(id): Path<String>,
-    Json(request): Json<VerdictRequest>,
-) -> Result<Json<StartResponse>, ApiError> {
-    let kernel = app.kernel()?.clone();
-    let mut session = load(&kernel, &caller, &id).await?;
-    kernel
-        .answer_verdict(
-            &mut session,
-            HitlVerdict {
-                tool_call_id: request.tool_call_id,
-                option_id: request.option_id,
-            },
-        )
-        .await
-        .map_err(|error| ApiError::from_error(&error))?;
-    Ok(Json(StartResponse {
-        session: session.id().as_str().to_owned(),
-        state: if session.is_closed() {
-            SessionState::Closed
-        } else {
-            SessionState::Open
-        },
-        stop: session.stop_reason(),
         next_seq: session.next_seq(),
     }))
 }

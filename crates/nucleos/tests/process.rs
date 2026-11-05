@@ -232,3 +232,105 @@ async fn a_filter_that_matches_nothing_is_bounded_and_returns_a_cursor() -> nucl
     );
     Ok(())
 }
+
+/// A command the policy asks about is parked, not refused, and a human's answer runs it.
+///
+/// Approval is about the question, not about what the question is for: a tool call and a command are
+/// answered through the same syscall. Before this, an `ask` verdict on a command closed the session,
+/// which made an escalation gate nothing more than a refusal with extra steps.
+#[tokio::test]
+async fn a_command_the_policy_asks_about_is_parked_and_can_be_approved() -> nucleos::Result<()> {
+    /// Asks about `sh`, and allows everything else.
+    struct AskForSh;
+
+    #[async_trait::async_trait]
+    impl nucleos::adapter::Policy for AskForSh {
+        async fn check(
+            &self,
+            request: nucleos::adapter::PolicyRequest<'_>,
+        ) -> nucleos::adapter::Verdict {
+            use nucleos::adapter::{Gated, Verdict};
+            match request.subject {
+                Gated::Exec { argv, .. } if argv.first().is_some_and(|arg| arg == "sh") => {
+                    Verdict::AskHuman {
+                        question: "run sh?".to_owned(),
+                        options: vec![
+                            nucleos::contract::PermissionOption {
+                                id: "allow_once".to_owned(),
+                                kind: nucleos::contract::PermissionKind::AllowOnce,
+                                label: "Allow once".to_owned(),
+                            },
+                            nucleos::contract::PermissionOption {
+                                id: "reject".to_owned(),
+                                kind: nucleos::contract::PermissionKind::Reject,
+                                label: "Refuse".to_owned(),
+                            },
+                        ],
+                    }
+                }
+                _ => Verdict::Allow,
+            }
+        }
+    }
+
+    let store = Arc::new(SqliteStore::in_memory().expect("an in-memory database"));
+    let kernel = Kernel::builder()
+        .model("primary", Arc::new(FakeModel::text(["unused"])))
+        .store(Arc::clone(&store) as Arc<dyn Store>)
+        .policy(Arc::new(AskForSh))
+        .clock(Arc::new(FixedClock::at(0)))
+        .routing(Routing {
+            chain: vec!["primary".to_owned()],
+            retries: 0,
+        })
+        .build()
+        .unwrap();
+
+    let id = SessionId::new("p1");
+    let parked = kernel
+        .spawn(
+            &principal(),
+            id.clone(),
+            SessionSpec {
+                kind: SessionKind::Process,
+                process: Some(ProcessSpec {
+                    argv: vec!["sh".to_owned(), "-c".to_owned(), "printf hi".to_owned()],
+                    ..ProcessSpec::default()
+                }),
+                sandbox: SandboxPolicy::DangerFullAccess,
+                ..SessionSpec::default()
+            },
+        )
+        .await;
+    let error = parked.expect_err("the command did not start");
+    assert_eq!(error.code(), ErrorCode::Unavailable);
+
+    // Parked, and open: the question has somewhere to land.
+    let mut session = kernel.load(&principal(), &id).await?;
+    assert!(!session.is_closed());
+    let pending = session.pending()[0].clone();
+    assert_eq!(
+        pending.id,
+        id.as_str(),
+        "a command is identified by its session"
+    );
+    assert!(matches!(
+        pending.action,
+        nucleos::contract::PendingAction::Exec { .. }
+    ));
+
+    kernel
+        .answer(
+            &mut session,
+            nucleos::kernel::Approval {
+                pending_id: pending.id.clone(),
+                option_id: "allow_once".to_owned(),
+            },
+        )
+        .await?;
+    assert!(session.pending().is_empty(), "the answer was consumed");
+
+    let output = kernel.wait(&session).await?;
+    assert_eq!(output.stdout.text, "hi");
+    Ok(())
+}

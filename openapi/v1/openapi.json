@@ -63,6 +63,24 @@
         ],
         "type": "object"
       },
+      "AnswerRequest": {
+        "description": "A human's answer to a parked question.\n\nOne route for both kinds of question — a tool call the policy asked about, and a command it asked\nabout — because approval is about the question, not about what the question is for.",
+        "properties": {
+          "option_id": {
+            "description": "Which offered option was picked.",
+            "type": "string"
+          },
+          "pending_id": {
+            "description": "Which pending question. A tool call's id, or the session's for a command.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pending_id",
+          "option_id"
+        ],
+        "type": "object"
+      },
       "AppliedDeployment": {
         "description": "What applying a document did.",
         "properties": {
@@ -1233,19 +1251,19 @@
                 },
                 "type": "array"
               },
-              "question": {
-                "description": "What the host should ask.",
+              "pending_id": {
+                "description": "Which parked question this is. A tool call's id, or the session's for a command.",
                 "type": "string"
               },
-              "tool_call_id": {
-                "description": "The call being gated.",
+              "question": {
+                "description": "What the host should ask.",
                 "type": "string"
               }
             },
             "required": [
               "kind",
               "question",
-              "tool_call_id",
+              "pending_id",
               "options",
               "default_if_unanswered"
             ],
@@ -2412,12 +2430,57 @@
         },
         "type": "object"
       },
+      "PendingAction": {
+        "description": "What a parked question is about.\n\nApproval is not a tool concept: a policy can ask a human about a tool call *or* about running a\ncommand outside its sandbox, and both are answered the same way.",
+        "oneOf": [
+          {
+            "description": "A tool call the policy asked about.",
+            "properties": {
+              "call": {
+                "$ref": "#/components/schemas/ToolCall",
+                "description": "The call."
+              },
+              "kind": {
+                "const": "tool",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "call"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A command the policy asked about — an escalation, or a program nobody has allowed yet.",
+            "properties": {
+              "kind": {
+                "const": "exec",
+                "type": "string"
+              },
+              "spec": {
+                "$ref": "#/components/schemas/ProcessSpec",
+                "description": "What would run, exactly."
+              }
+            },
+            "required": [
+              "kind",
+              "spec"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "PendingCall": {
         "description": "How strongly a tool's execution is separated from the kernel.\n\nA call waiting on a human.\n\nPart of the snapshot because the wait outlives any process: a session parked on a\nconfirmation must be resumable tomorrow, and the call it is holding has to come back with\nit.",
         "properties": {
-          "call": {
-            "$ref": "#/components/schemas/ToolCall",
-            "description": "The call that has not run."
+          "action": {
+            "$ref": "#/components/schemas/PendingAction",
+            "description": "What has not run yet."
+          },
+          "id": {
+            "description": "What this question is about, and how it is identified in a log.",
+            "type": "string"
           },
           "options": {
             "description": "What may be answered.",
@@ -2432,7 +2495,8 @@
           }
         },
         "required": [
-          "call",
+          "id",
+          "action",
           "options",
           "question"
         ],
@@ -4182,24 +4246,6 @@
             "type": "string"
           }
         ]
-      },
-      "VerdictRequest": {
-        "description": "What a caller sends to answer a parked call.",
-        "properties": {
-          "option_id": {
-            "description": "Which offered option was picked.",
-            "type": "string"
-          },
-          "tool_call_id": {
-            "description": "Which call was gated.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "tool_call_id",
-          "option_id"
-        ],
-        "type": "object"
       }
     }
   },
@@ -5844,6 +5890,105 @@
         "summary": "Where a session is, what it has spent, and what it waits on."
       }
     },
+    "/v1/sessions/{id}/answer": {
+      "post": {
+        "operationId": "answerPending",
+        "parameters": [
+          {
+            "description": "The session this addresses.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnswerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartResponse"
+                }
+              }
+            },
+            "description": "The result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was malformed."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Policy refused."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The thing named does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A budget was exhausted."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A bug."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A dependency was not reachable."
+          }
+        },
+        "summary": "Answer the question a session is parked on: a tool call, or a command."
+      }
+    },
     "/v1/sessions/{id}/cancel": {
       "post": {
         "operationId": "cancelTurn",
@@ -6794,105 +6939,6 @@
           }
         },
         "summary": "Run a batch of tool calls. Policy is asked about all of them first."
-      }
-    },
-    "/v1/sessions/{id}/verdict": {
-      "post": {
-        "operationId": "verdict",
-        "parameters": [
-          {
-            "description": "The session this addresses.",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/VerdictRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/StartResponse"
-                }
-              }
-            },
-            "description": "The result."
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "The request was malformed."
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Policy refused."
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "The thing named does not exist."
-          },
-          "429": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "A budget was exhausted."
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "A bug."
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "A dependency was not reachable."
-          }
-        },
-        "summary": "Answer a call parked on a human, then run the reference loop on."
       }
     },
     "/v1/sessions/{id}/wait": {

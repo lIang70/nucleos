@@ -20,7 +20,7 @@ make every session call carry node-wide authority.
 | Agent loop         | `POST /v1/agents`                                                                                                                                                                                                                                                                                                | `StartResponse` — runs the reference loop to completion                                                                 |
 | Sessions           | `POST /v1/sessions`, `GET /v1/sessions`, `GET /v1/sessions/{id}`                                                                                                                                                                                                                                                 | `StartResponse` — opens a session and drives nothing; `SessionListResponse`; `SessionView`                              |
 | Turn               | `POST /v1/sessions/{id}/inference`, `POST /v1/sessions/{id}/tools`, `POST /v1/sessions/{id}/state`                                                                                                                                                                                                               | `InferenceResponse` (JSON or SSE), `ToolBatchResponse`, `204`                                                           |
-| Session control    | `POST /v1/sessions/{id}/cancel`, `POST /v1/sessions/{id}/credit`, `POST /v1/sessions/{id}/configure`, `POST /v1/sessions/{id}/verdict`, `POST /v1/sessions/{id}/close`, `DELETE /v1/sessions/{id}`, `POST /v1/sessions/prune`                                                                                                                                                | `CancelResponse`, `ConfigureResponse`, `StartResponse`, `DeletedResponse`                                               |
+| Session control    | `POST /v1/sessions/{id}/cancel`, `POST /v1/sessions/{id}/credit`, `POST /v1/sessions/{id}/configure`, `POST /v1/sessions/{id}/answer`, `POST /v1/sessions/{id}/close`, `DELETE /v1/sessions/{id}`, `POST /v1/sessions/prune`                                                                                                                                                | `CancelResponse`, `ConfigureResponse`, `StartResponse`, `DeletedResponse`                                               |
 | Events             | `GET /v1/sessions/{id}/events?from_seq=`                                                                                                                                                                                                                                                                         | `text/event-stream` of `Event`                                                                                          |
 | Processes          | `POST /v1/processes`, `GET /v1/processes`, `POST /v1/sessions/{id}/stdin`, `POST /v1/sessions/{id}/signal`, `POST /v1/sessions/{id}/wait`                                                                                                                                                                        | `ProcessStartResponse`, `ProcessListResponse`, `204`, `ExecOutput`                                                      |
 | Models             | `GET /v1/models`, `POST /v1/models`, `DELETE /v1/models/{name}`                                                                                                                                                                                                                                                  | `ModelListResponse`, `ModelView`                                                                                        |
@@ -540,6 +540,21 @@ A stream that can be wrong about order is a stream nobody can build a UI on, so:
 - The terminal `state` event is the last event of a session, and `Run` ends immediately
   after it. No event ever follows a terminal state.
 - Two concurrent `Run` streams never disagree about the order of events they both see.
+
+## 10.2 Parked questions
+
+A policy that answers `ask` parks the session instead of failing it, and the question is one of two
+kinds: a **tool call** (`pending_id` is the call's id) or a **command** (`pending_id` is the session's).
+`POST /v1/sessions/{id}/answer` answers either:
+
+```json
+{ "pending_id": "call-1", "option_id": "allow_once" }
+```
+
+The answer is consumed before the work runs — tools and commands are not idempotent, and a client that
+never saw the first response retries the same answer. Allowing a command runs it; refusing it records the
+refusal and closes the session with `denied`. Nothing is driven afterwards: whether another turn follows
+is the caller's decision, which is why this is one route and not a loop.
 
 ## 11. Not served, and why
 

@@ -71,12 +71,20 @@ fn call() -> ToolCall {
 
 fn pending() -> PendingCall {
     PendingCall {
-        call: call(),
-        options: vec![PermissionOption {
-            id: "once".to_owned(),
-            kind: PermissionKind::AllowOnce,
-            label: "Allow once".to_owned(),
-        }],
+        id: call().id,
+        action: nucleos::contract::PendingAction::Tool { call: call() },
+        options: vec![
+            PermissionOption {
+                id: "once".to_owned(),
+                kind: PermissionKind::AllowOnce,
+                label: "Allow once".to_owned(),
+            },
+            PermissionOption {
+                id: "reject".to_owned(),
+                kind: PermissionKind::Reject,
+                label: "Refuse".to_owned(),
+            },
+        ],
         question: "Run echo?".to_owned(),
     }
 }
@@ -101,7 +109,13 @@ async fn answering_a_parked_call_removes_it() {
     assert_eq!(session.pending().len(), 1);
 
     kernel
-        .invoke_approved(&mut session, &[call()])
+        .answer(
+            &mut session,
+            nucleos::kernel::Approval {
+                pending_id: call().id,
+                option_id: "once".to_owned(),
+            },
+        )
         .await
         .expect("the answer runs the call");
     assert!(
@@ -137,7 +151,13 @@ async fn a_retried_verdict_finds_nothing_to_answer() {
         .unwrap();
     kernel.park(&mut session, pending()).await.unwrap();
     kernel
-        .invoke_approved(&mut session, &[call()])
+        .answer(
+            &mut session,
+            nucleos::kernel::Approval {
+                pending_id: call().id,
+                option_id: "once".to_owned(),
+            },
+        )
         .await
         .unwrap();
 
@@ -161,4 +181,71 @@ async fn a_retried_verdict_finds_nothing_to_answer() {
         })
         .count();
     assert_eq!(finished, 1, "the tool ran once");
+}
+
+/// A parked call is answered by the tool route, with the approval as one of its inputs.
+///
+/// There is no verdict endpoint: an answer says the gate has already been asked about one call, and
+/// the call then runs like any other. A refusal is content the model can read, not an error.
+#[tokio::test]
+async fn a_tool_batch_can_carry_the_humans_answer() {
+    let (kernel, store) = kernel();
+    let id = SessionId::new("s1");
+    let mut session = kernel
+        .open(
+            &principal(),
+            id.clone(),
+            SessionSpec {
+                credit_tokens: Some(1_000),
+                ..SessionSpec::default()
+            },
+        )
+        .await
+        .unwrap();
+    kernel.park(&mut session, pending()).await.unwrap();
+
+    // A refusal: the call answers with `is_error`, and the parked entry is consumed either way.
+    let outputs = kernel
+        .answer(
+            &mut session,
+            nucleos::kernel::Approval {
+                pending_id: call().id,
+                option_id: "never-offered".to_owned(),
+            },
+        )
+        .await;
+    assert!(outputs.is_err(), "an option that was not offered is a bug");
+    assert_eq!(
+        session.pending().len(),
+        1,
+        "a refused *request* does not consume the answer"
+    );
+
+    // An option that was offered, and refuses.
+    kernel
+        .answer(
+            &mut session,
+            nucleos::kernel::Approval {
+                pending_id: call().id,
+                option_id: "reject".to_owned(),
+            },
+        )
+        .await
+        .expect("a refusal is an answer");
+    assert!(session.pending().is_empty());
+
+    let events = store
+        .events_since(&nucleos::adapter::SessionKey::new("acme", id.clone()), 0)
+        .await
+        .unwrap();
+    let finished = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.kind,
+                nucleos::contract::EventKind::ToolFinished { .. }
+            )
+        })
+        .count();
+    assert_eq!(finished, 1, "the refusal is recorded as the call's result");
 }

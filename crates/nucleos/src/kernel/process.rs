@@ -732,13 +732,26 @@ impl Kernel {
                 self.close(&mut session, StopReason::Failed).await?;
                 return Err(Error::new(code, reason));
             }
-            crate::adapter::Verdict::AskHuman { question, .. } => {
-                self.close(&mut session, StopReason::Cancelled).await?;
-                // A human decision on a command that has not started is a refusal until somebody
-                // says otherwise; the approval flow lands with the daemon.
-                return Err(Error::denied(format!(
-                    "a human must approve this: {question}"
-                )));
+            crate::adapter::Verdict::AskHuman { question, options } => {
+                // A command has no call id; the session's is the answer's correlation.
+                let pending_id = session.id.as_str().to_owned();
+                // Parked, not refused: a command that needs a human is a question, and the session
+                // stays open so the answer has somewhere to land.
+                self.park(
+                    &mut session,
+                    crate::contract::PendingCall {
+                        id: pending_id,
+                        action: crate::contract::PendingAction::Exec {
+                            spec: process.spec.clone(),
+                        },
+                        options,
+                        question,
+                    },
+                )
+                .await?;
+                return Err(Error::unavailable(
+                    "policy asked a human; the command is parked and has not started",
+                ));
             }
         }
 
@@ -763,6 +776,36 @@ impl Kernel {
         );
         Ok(session)
     }
+    /// Start a command a human has approved.
+    ///
+    /// The gate is not asked again: the answer *is* the gate's verdict, which is the whole reason an
+    /// escalation becomes a question. Everything else is the same launch as an allowed command.
+    pub(crate) async fn launch_approved(
+        &self,
+        session: &mut Session,
+        spec: crate::contract::ProcessSpec,
+    ) -> Result<()> {
+        let started = self
+            .supervisor
+            .spawn(Launch {
+                store: Arc::clone(&self.store),
+                session: &session.id,
+                spec: &spec,
+                workspace: session.workspace.as_ref(),
+                sandbox: &session.sandbox,
+                head: session.log_head(),
+                tenant: &session.principal.tenant,
+                clock: Arc::clone(&self.clock),
+            })
+            .await?;
+        session.process = Some(
+            self.supervisor
+                .state(&session.key(), &spec, started.pid)
+                .await,
+        );
+        self.write_checkpoint(session).await
+    }
+
     /// Write to a running process's stdin.
     pub async fn write_stdin(&self, session: &Session, chunk: &str) -> Result<()> {
         self.supervisor.write_stdin(&session.key(), chunk).await
