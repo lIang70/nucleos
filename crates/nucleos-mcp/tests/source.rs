@@ -371,6 +371,7 @@ fn a_stored_source_names_exactly_one_way_to_reach_it() {
         args: vec!["server.py".to_owned()],
         env: Default::default(),
         url: None,
+        has_auth_token: false,
     };
     assert!(matches!(
         stdio.transport().unwrap(),

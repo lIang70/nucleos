@@ -25,7 +25,6 @@ use nucleos::wire::api::{
     ToolBatchRequest, ToolBatchResponse, VerdictRequest,
 };
 use nucleos::wire::openapi::{self, Kind, Parameter};
-use nucleos_agent as agent;
 use nucleos_sqlite::SqliteStore;
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -499,18 +498,6 @@ pub const ROUTES: &[Route] = &[
             reply: openapi::Reply::Json("DescribeResponse"),
         },
         build: || get(describe),
-    },
-    Route {
-        meta: openapi::Route {
-            parameters: &[],
-            method: "post",
-            path: "/v1/agents",
-            operation: "runAgent",
-            summary: "Open a session and run the reference loop to completion.",
-            request: Some("StartRequest"),
-            reply: openapi::Reply::Json("StartResponse"),
-        },
-        build: || post(run_agent),
     },
     Route {
         meta: openapi::Route {
@@ -1495,25 +1482,6 @@ async fn reload(
     }))
 }
 
-/// Open a session and run the reference loop to completion.
-async fn run_agent(
-    State(app): State<Arc<App>>,
-    caller: Caller,
-    Json(request): Json<StartRequest>,
-) -> Result<Json<StartResponse>, ApiError> {
-    let kernel = app.kernel()?.clone();
-    app.metrics().session_opened();
-    let spec: SessionSpec = request.clone().into();
-    let id = SessionId::new(request.session_id());
-    let outcome = if request.resume {
-        agent::resume(&kernel, &caller.0, &id).await
-    } else {
-        agent::start(&kernel, &caller.0, id, spec).await
-    }
-    .map_err(|error| ApiError::from_error(&error))?;
-    Ok(Json(StartResponse::from(&outcome)))
-}
-
 /// Open a session without driving it.
 async fn open(
     State(app): State<Arc<App>>,
@@ -2261,18 +2229,27 @@ async fn verdict(
     Json(request): Json<VerdictRequest>,
 ) -> Result<Json<StartResponse>, ApiError> {
     let kernel = app.kernel()?.clone();
-    let outcome = agent::answer(
-        &kernel,
-        &caller.0,
-        &SessionId::new(id),
-        HitlVerdict {
-            tool_call_id: request.tool_call_id,
-            option_id: request.option_id,
+    let mut session = load(&kernel, &caller, &id).await?;
+    kernel
+        .answer_verdict(
+            &mut session,
+            HitlVerdict {
+                tool_call_id: request.tool_call_id,
+                option_id: request.option_id,
+            },
+        )
+        .await
+        .map_err(|error| ApiError::from_error(&error))?;
+    Ok(Json(StartResponse {
+        session: session.id().as_str().to_owned(),
+        state: if session.is_closed() {
+            SessionState::Closed
+        } else {
+            SessionState::Open
         },
-    )
-    .await
-    .map_err(|error| ApiError::from_error(&error))?;
-    Ok(Json(StartResponse::from(&outcome)))
+        stop: session.stop_reason(),
+        next_seq: session.next_seq(),
+    }))
 }
 
 /// How many events one page of a replay holds.

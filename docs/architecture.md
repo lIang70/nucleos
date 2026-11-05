@@ -201,7 +201,6 @@ policy:
 ```text
 crates/
   nucleos/         contract/ · adapter/ · kernel/ (syscalls) · wire/
-  nucleos-agent/   the reference loop, built on those syscalls
   nucleos-openai/  one provider adapter: the OpenAI-compatible family
   nucleos-mcp/     MCP tool sources (stdio child processes)
   nucleos-policy/  deny-by-default policy document, layered system + tenant
@@ -220,8 +219,8 @@ without touching the kernel.
 `nucleos-openai` exists as its own crate because the kernel must not depend on an HTTP client: the
 kernel owns the mechanism, and a provider's dialect is an adapter like any other.
 
-`nucleos-agent` depends on `nucleos` and nothing depends on `nucleos-agent` except the daemon:
-the loop is the application's, and the kernel must not learn it.
+The loop is the application's: the daemon exposes only syscalls, and any driver — a reference loop,
+a plan-execute runner, a test harness — lives outside it. Nothing in the daemon embeds an agent loop.
 
 The module graph inside `nucleos` is one-way: `contract → kernel → adapter`, with `wire` beside
 `contract` because it is the same types plus the HTTP envelopes.

@@ -1,8 +1,8 @@
 //! The kernel's syscall surface.
 //!
 //! An agent loop is a driver: `open`, then some number of `inference` and `invoke_tools` calls,
-//! then `close`. That loop is not here — it is in `nucleos-agent` — because a kernel that runs
-//! your application's loop has taken a position on what your application should be.
+//! then `close`. That loop is not here, because a kernel that runs your application's loop has taken
+//! a position on what your application should be.
 //!
 //! What stays is everything a driver cannot be trusted to reimplement: the route walk with its
 //! retries and its ledger (`route.rs`), the session's state and its checkpoint (`session.rs`),

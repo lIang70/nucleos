@@ -400,5 +400,52 @@ impl Kernel {
         Ok(())
     }
 
+    /// Apply a human's answer to a parked call.
+    ///
+    /// A verdict is a syscall, not a loop: it finds the call, runs it if the human allowed it or
+    /// records the refusal, and checkpoints. Whether to drive another turn afterwards is the caller's
+    /// business, and this crate does not have an opinion about it.
+    pub async fn answer_verdict(
+        &self,
+        session: &mut session::Session,
+        verdict: super::HitlVerdict,
+    ) -> Result<()> {
+        let id = session.id().clone();
+        let pending = session
+            .pending()
+            .iter()
+            .find(|pending| pending.call.id == verdict.tool_call_id)
+            .cloned()
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "session {id} has no call {} waiting on a human",
+                    verdict.tool_call_id
+                ))
+            })?;
+        let option = pending
+            .options
+            .iter()
+            .find(|option| option.id == verdict.option_id)
+            .cloned()
+            .ok_or_else(|| {
+                Error::invalid(format!("option {:?} was not offered", verdict.option_id))
+            })?;
+
+        let allowed = matches!(
+            option.kind,
+            crate::contract::PermissionKind::AllowOnce
+                | crate::contract::PermissionKind::AllowAlways
+        );
+        if allowed {
+            // The verdict *is* the policy answer.
+            self.invoke_approved(session, std::slice::from_ref(&pending.call))
+                .await?;
+        } else {
+            self.record_refusal(session, &pending.call, "refused by a human")
+                .await?;
+        }
+        self.checkpoint(session).await
+    }
+
     // -- syscalls -------------------------------------------------------------
 }

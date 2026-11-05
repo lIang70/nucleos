@@ -11,9 +11,8 @@
 //! contract → kernel → adapter
 //! ```
 //!
-//! `kernel` is the syscall surface; the loop that drives it lives in `nucleos-agent`, one crate
-//! up, because a kernel that runs your application's loop has taken a position on what your
-//! application should be.
+//! `kernel` is the syscall surface. The loop that drives it belongs to the application, because a
+//! kernel that runs your application's loop has taken a position on what your application should be.
 //!
 //! The kernel is driven entirely through [`adapter`], which is what lets most of the tests run
 //! without a network. The kernel's own types are also the wire format: [`wire`] holds the HTTP envelopes and

@@ -1197,19 +1197,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nucleos-agent"
-version = "0.0.1-preview"
-dependencies = [
- "async-trait",
- "nucleos",
- "nucleos-sqlite",
- "nucleos-testkit",
- "tokio",
- "tokio-stream",
- "tracing",
-]
-
-[[package]]
 name = "nucleos-auth"
 version = "0.0.1-preview"
 dependencies = [
@@ -1318,7 +1305,6 @@ dependencies = [
  "fs2",
  "http-body-util",
  "nucleos",
- "nucleos-agent",
  "nucleos-auth",
  "nucleos-cli",
  "nucleos-mcp",

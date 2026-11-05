@@ -2,7 +2,6 @@
 resolver = "3"
 members = [
     "crates/nucleos",
-    "crates/nucleos-agent",
     "crates/nucleos-auth",
     "crates/nucleos-cli",
     "crates/nucleos-mcp",
@@ -23,7 +22,6 @@ repository = "https://github.com/lIang70/nucleos"
 
 [workspace.dependencies]
 nucleos = { path = "crates/nucleos", version = "0.0.1-preview" }
-nucleos-agent = { path = "crates/nucleos-agent", version = "0.0.1-preview" }
 nucleos-mcp = { path = "crates/nucleos-mcp", version = "0.0.1-preview" }
 nucleos-openai = { path = "crates/nucleos-openai", version = "0.0.1-preview" }
 

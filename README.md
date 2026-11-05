@@ -35,7 +35,6 @@ as the goals.
 ```text
 crates/
   nucleos/         the kernel library — contracts, kernel (syscalls), adapters, wire
-  nucleos-agent/   the reference loop, built on those syscalls
   nucleos-openai/  one provider adapter (the whole OpenAI-compatible family)
   nucleos-mcp/     MCP tool sources
   nucleos-policy/  deny-by-default policy, layered system + tenant

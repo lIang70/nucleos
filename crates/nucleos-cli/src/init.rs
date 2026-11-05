@@ -255,7 +255,7 @@ mod tests {
         let root = scratch("init");
         let options = options(&root);
         let done = run(&options).await.unwrap();
-        assert_eq!(done.key_id.len(), 8);
+        assert_eq!(done.key_id.len(), 32);
 
         let system = SystemStore::open(root.join("system.db")).unwrap();
         // The password is verifiable and is not stored in the clear.

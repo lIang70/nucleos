@@ -38,13 +38,10 @@ NUCLEOS_OPENAPI=1 cargo test -p nucleosd --test openapi   # regenerate
 cargo test -p nucleosd --test openapi                     # fail if stale
 ```
 
-Two layers, deliberately:
-
-- **The driver** (`/v1/agents`, `/v1/sessions/{id}/verdict`) runs the reference loop from
-  `nucleos-agent`. One call, an agent happens.
-- **The syscalls** (`open`, `inference`, `tools`, `state`, `close`) are one turn each, in an
-  order the caller chooses. An application that wants a different loop — plan-execute,
-  verification turns, map-reduce over items, its own sub-agents — calls these and owns the loop.
+One layer, deliberately: **the syscalls** (`open`, `inference`, `tools`, `state`, `close`,
+`credit`, `verdict`) are one step each, in an order the caller chooses. An application that wants a
+loop — plan-execute, verification turns, map-reduce over items, its own sub-agents — calls these and
+owns the loop. The daemon does not embed one.
 
 `inference` takes its messages **in the request** and appends nothing: what you send is what you
 get, and whether the answer enters history is decided by the next `state` call. That is what makes
