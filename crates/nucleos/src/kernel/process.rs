@@ -83,7 +83,7 @@ struct Running {
 /// the sessions that own them say `Lost`.
 #[derive(Default)]
 pub(crate) struct Supervisor {
-    processes: Mutex<BTreeMap<String, Running>>,
+    processes: Mutex<BTreeMap<crate::adapter::SessionKey, Running>>,
 }
 
 /// What a caller gets back when it starts a process.
@@ -211,7 +211,7 @@ impl Supervisor {
         ));
 
         self.processes.lock().await.insert(
-            session.as_str().to_owned(),
+            crate::adapter::SessionKey::new(tenant, session.clone()),
             Running {
                 control: control_tx,
                 kill: kill_tx,
@@ -239,7 +239,11 @@ impl Supervisor {
     }
 
     /// Write to a process's stdin.
-    pub(crate) async fn write_stdin(&self, session: &SessionId, chunk: &str) -> Result<()> {
+    pub(crate) async fn write_stdin(
+        &self,
+        session: &crate::adapter::SessionKey,
+        chunk: &str,
+    ) -> Result<()> {
         // The sender is cloned out and the map released before the send. `send` waits when the
         // channel is full, and the channel fills exactly when the child is not reading its stdin — at
         // which point the map lock must not be held, or `signal` blocks behind the writer and nothing
@@ -247,7 +251,7 @@ impl Supervisor {
         let control = {
             let processes = self.processes.lock().await;
             processes
-                .get(session.as_str())
+                .get(session)
                 .ok_or_else(|| Error::not_found(format!("no process for session {session}")))?
                 .control
                 .clone()
@@ -259,14 +263,14 @@ impl Supervisor {
     }
 
     /// Ask a process to end.
-    pub(crate) async fn signal(&self, session: &SessionId) -> Result<()> {
+    pub(crate) async fn signal(&self, session: &crate::adapter::SessionKey) -> Result<()> {
         // A kill is a state change, not a queued message: a child that stopped reading its input
         // fills the stdin queue, and a kill behind it is a kill that never arrives. `send` on a
         // watch cannot block, so this returns whether or not the supervisor is stuck.
         let kill = {
             let processes = self.processes.lock().await;
             processes
-                .get(session.as_str())
+                .get(session)
                 .ok_or_else(|| Error::not_found(format!("no process for session {session}")))?
                 .kill
                 .clone()
@@ -276,14 +280,14 @@ impl Supervisor {
     }
 
     /// Wait for a process to end, and say how it ended.
-    pub(crate) async fn wait(&self, session: &SessionId) -> Result<ExecOutput> {
+    pub(crate) async fn wait(&self, session: &crate::adapter::SessionKey) -> Result<ExecOutput> {
         // The exit handle is taken, not the entry. Removing the entry first made a client that
         // disconnected mid-`wait` orphan a live process: `signal`, `stdin` and `state` all answered
         // "no process" while the child kept running.
         let exited = {
             let mut processes = self.processes.lock().await;
             processes
-                .get_mut(session.as_str())
+                .get_mut(session)
                 .ok_or_else(|| Error::not_found(format!("no process for session {session}")))?
                 .exited
                 .take()
@@ -295,7 +299,7 @@ impl Supervisor {
             .await
             .map_err(|_| Error::internal("the process ended without reporting an exit"))?;
         // Reaped, so the entry has nothing left to report; a second `wait` finds the log instead.
-        self.processes.lock().await.remove(session.as_str());
+        self.processes.lock().await.remove(session);
         Ok(output)
     }
 
@@ -304,22 +308,22 @@ impl Supervisor {
     /// What it answers is "what is running on this node right now". A process session that outlived
     /// a restart is *not* here — its own view says `Lost` — because this map is in memory and a
     /// process is not durable state.
-    pub(crate) async fn list(&self) -> Vec<(SessionId, Option<u32>)> {
+    pub(crate) async fn list(&self) -> Vec<(crate::adapter::SessionKey, Option<u32>)> {
         let processes = self.processes.lock().await;
         processes
             .iter()
-            .map(|(session, running)| (SessionId::new(session.clone()), running.pid))
+            .map(|(key, running)| (key.clone(), running.pid))
             .collect()
     }
 
     /// Whether the supervisor still holds this session, and where that leaves it.
     pub(crate) async fn state(
         &self,
-        session: &SessionId,
+        session: &crate::adapter::SessionKey,
         spec: &ProcessSpec,
         pid: Option<u32>,
     ) -> ProcessState {
-        let alive = self.processes.lock().await.contains_key(session.as_str());
+        let alive = self.processes.lock().await.contains_key(session);
         ProcessState {
             spec: spec.clone(),
             status: match (alive, pid) {
@@ -585,7 +589,7 @@ impl Kernel {
                 let Some(process) = snapshot.process.clone() else {
                     continue;
                 };
-                let status = status_of(&session, &process, &live);
+                let status = status_of(&key, &process, &live);
                 if query.phase.is_some_and(|phase| phase != status.phase()) {
                     continue;
                 }
@@ -680,18 +684,18 @@ impl Kernel {
 
         session.process = Some(
             self.supervisor
-                .state(&session.id, &process.spec, started.pid)
+                .state(&session.key(), &process.spec, started.pid)
                 .await,
         );
         Ok(session)
     }
     /// Write to a running process's stdin.
     pub async fn write_stdin(&self, session: &Session, chunk: &str) -> Result<()> {
-        self.supervisor.write_stdin(&session.id, chunk).await
+        self.supervisor.write_stdin(&session.key(), chunk).await
     }
     /// Ask a running process to end.
     pub async fn signal(&self, session: &Session) -> Result<()> {
-        self.supervisor.signal(&session.id).await
+        self.supervisor.signal(&session.key()).await
     }
     /// Wait for a process to end, and say how it ended.
     /// Wait for a process, or answer for one this runtime never saw.
@@ -702,7 +706,7 @@ impl Kernel {
     /// is the difference between "the session resumed" and "the session resumed and cannot tell you
     /// what it did".
     pub async fn wait(&self, session: &Session) -> Result<crate::contract::ExecOutput> {
-        match self.supervisor.wait(&session.id).await {
+        match self.supervisor.wait(&session.key()).await {
             Ok(output) => Ok(output),
             Err(error) if error.code() == crate::contract::ErrorCode::NotFound => {
                 self.wait_from_log(session).await
@@ -759,9 +763,9 @@ impl Kernel {
 
 /// Where a process is, from the two sources that each know half of it.
 fn status_of(
-    session: &SessionId,
+    session: &crate::adapter::SessionKey,
     process: &crate::contract::ProcessState,
-    live: &[(SessionId, Option<u32>)],
+    live: &[(crate::adapter::SessionKey, Option<u32>)],
 ) -> crate::contract::ProcessStatus {
     match live.iter().find(|(id, _)| id == session) {
         Some((_, Some(pid))) => crate::contract::ProcessStatus::Running { pid: *pid },

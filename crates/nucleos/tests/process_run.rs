@@ -721,3 +721,48 @@ async fn a_wait_in_flight_does_not_hide_the_process() -> nucleos::Result<()> {
     waiter.await.unwrap()?;
     Ok(())
 }
+
+/// The same caller-chosen id in two tenants is two processes, not one.
+///
+/// The supervisor used to key its table by session id alone, so a second tenant's spawn replaced the
+/// first's entry: a `signal` addressed to one of them reached the other, and a `wait` consumed the
+/// other's exit.
+#[tokio::test]
+async fn the_same_id_in_two_tenants_is_two_processes() -> nucleos::Result<()> {
+    let (kernel, _) = kernel();
+    let other = Principal {
+        tenant: "other".to_owned(),
+        subject: "bob".to_owned(),
+    };
+
+    let acme = kernel
+        .spawn(
+            &principal(),
+            SessionId::new("s1"),
+            spec(&["sh", "-c", "sleep 30"], SandboxPolicy::DangerFullAccess),
+        )
+        .await?;
+    let theirs = kernel
+        .spawn(
+            &other,
+            SessionId::new("s1"),
+            spec(&["sh", "-c", "sleep 30"], SandboxPolicy::DangerFullAccess),
+        )
+        .await?;
+
+    kernel.signal(&theirs).await?;
+    let output = tokio::time::timeout(Duration::from_secs(10), kernel.wait(&theirs))
+        .await
+        .expect("the second tenant's wait completes")
+        .unwrap();
+    assert_eq!(output.exit_code, -1, "it was killed");
+
+    // The first tenant's process is still there to be signalled: the second spawn did not replace it.
+    kernel.signal(&acme).await?;
+    let output = tokio::time::timeout(Duration::from_secs(10), kernel.wait(&acme))
+        .await
+        .expect("the first tenant's wait completes")
+        .unwrap();
+    assert_eq!(output.exit_code, -1);
+    Ok(())
+}

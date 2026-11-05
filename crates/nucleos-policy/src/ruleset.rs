@@ -185,15 +185,18 @@ fn matches(rule: &Rule, request: &PolicyRequest<'_>) -> bool {
         Gated::Exec {
             argv, permissions, ..
         } => {
-            // An escalation is a second question, and a rule answers it only if it says so. Without
-            // this, any caller that could name an allowed program could also remove its own sandbox by
-            // sending `require_escalated` — the gate would match the program and never look at the
-            // second half of the request.
-            if matches!(
-                permissions,
-                nucleos::contract::SandboxPermissions::RequireEscalated
-            ) && rule.escalation != Some(true)
-            {
+            // Widening is a second question, and a rule answers it only if it says so. Without this,
+            // any caller that could name an allowed program could also widen its own sandbox — by
+            // sending `require_escalated`, or by asking for extra writable roots and the network,
+            // which the gate previously never looked at.
+            let widening = match permissions {
+                nucleos::contract::SandboxPermissions::RequireEscalated => true,
+                nucleos::contract::SandboxPermissions::WithAdditionalPermissions { additional } => {
+                    !additional.writable_roots.is_empty() || additional.network_access
+                }
+                nucleos::contract::SandboxPermissions::UseDefault => false,
+            };
+            if widening && rule.escalation != Some(true) {
                 return false;
             }
             let Some(program) = &rule.program else {
@@ -819,7 +822,7 @@ mod sandbox_rules {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use nucleos::contract::{Principal, SandboxPolicy, SessionId};
+    use nucleos::contract::{Principal, SandboxPermissions, SandboxPolicy, SessionId};
 
     /// The same request the sibling module's helper builds, kept local so this module is self-contained.
     async fn check<'a>(document: Document, subject: Gated<'a>) -> Verdict {
@@ -929,6 +932,71 @@ mod sandbox_rules {
                 Gated::Sandbox {
                     policy: &networked,
                     workspace: None,
+                },
+            )
+            .await,
+            Verdict::Allow
+        );
+    }
+
+    /// Asking for more than the session's policy is a widening, and needs a rule that allows it.
+    ///
+    /// `with_additional_permissions` is additive, and the gate used to look only at
+    /// `require_escalated` — so a plain `program: "sh"` rule also granted whatever roots and network
+    /// the caller appended.
+    #[tokio::test]
+    async fn additional_permissions_need_an_escalation_rule() {
+        let argv = vec!["sh".to_owned(), "-c".to_owned(), "make".to_owned()];
+        let policy = SandboxPolicy::ReadOnly {
+            network_access: false,
+        };
+        let additional = nucleos::contract::AdditionalPermissions {
+            writable_roots: vec!["/".to_owned()],
+            network_access: true,
+        };
+        let permissions = SandboxPermissions::WithAdditionalPermissions { additional };
+
+        let plain =
+            Document::parse(r#"{"default":"deny","rules":[{"decision":"allow","program":"sh"}]}"#)
+                .unwrap();
+        assert!(matches!(
+            check(
+                Document::clone(&plain),
+                Gated::Exec {
+                    argv: &argv,
+                    policy: &policy,
+                    permissions: &permissions,
+                },
+            )
+            .await,
+            Verdict::Deny { .. }
+        ));
+
+        let widened = Document::parse(
+            r#"{"default":"deny","rules":[{"decision":"allow","program":"sh","escalation":true}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            check(
+                widened,
+                Gated::Exec {
+                    argv: &argv,
+                    policy: &policy,
+                    permissions: &permissions,
+                },
+            )
+            .await,
+            Verdict::Allow
+        );
+
+        // Running under the session's own policy is not a widening, and needs no such rule.
+        assert_eq!(
+            check(
+                plain,
+                Gated::Exec {
+                    argv: &argv,
+                    policy: &policy,
+                    permissions: &SandboxPermissions::UseDefault,
                 },
             )
             .await,
