@@ -335,8 +335,8 @@ async fn the_list_shows_the_exec_sessions_and_says_how_they_ended() {
     assert_eq!(processes.len(), 1);
     assert_eq!(processes[0]["session"], session.as_str());
     //  is a tagged union, so the tag is the field to read.
-    assert_eq!(processes[0]["process"]["status"]["status"], "running");
-    assert!(processes[0]["process"]["status"]["pid"].as_u64().is_some());
+    assert_eq!(processes[0]["status"]["status"], "running");
+    assert!(processes[0]["status"]["pid"].as_u64().is_some());
 
     // Ending it does not remove it: the list is the store, and an exec session that ran is a fact
     // worth keeping. What changes is the status.
@@ -379,10 +379,10 @@ async fn the_list_shows_the_exec_sessions_and_says_how_they_ended() {
         1,
         "an exec session that ran is still a fact"
     );
-    assert_eq!(processes[0]["process"]["status"]["status"], "exited");
+    assert_eq!(processes[0]["status"]["status"], "exited");
     // Killed by a signal: `-1`, because the platform gave no exit status. Not a failure of the
     // listing — a signalled process has no code.
-    assert_eq!(processes[0]["process"]["status"]["output"]["exit_code"], -1);
+    assert_eq!(processes[0]["status"]["output"]["exit_code"], -1);
 }
 
 #[tokio::test]
@@ -2780,5 +2780,77 @@ async fn an_http_source_uses_tls_and_seals_its_token() {
             .unwrap_or_default()
             .contains("no seal key"),
         "{error}"
+    );
+}
+
+/// A listing never carries the environment a command was given.
+///
+/// `spec.env` is a credential as often as it is a setting, and a listing is a cross-session view — one
+/// subject reading another's environment variables was the leak. The full spec stays behind
+/// `GET /v1/sessions/{id}`, which already answers only to the session's owner.
+#[tokio::test]
+async fn a_process_listing_does_not_carry_the_environment() {
+    let app = router(running());
+    let started = body_json(
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/processes")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"argv":["sh","-c","sleep 30"],
+                            "env":{"DATABASE_PASSWORD":"hunter2"},
+                            "sandbox":{"policy":{"kind":"danger_full_access"}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    let id = started["session"].as_str().unwrap().to_owned();
+
+    let listed = body_json(
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/processes")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    let text = listed.to_string();
+    assert!(
+        !text.contains("hunter2"),
+        "the environment travelled in the listing: {text}"
+    );
+    assert!(
+        !text.contains("DATABASE_PASSWORD"),
+        "even the key is a hint: {text}"
+    );
+    // What identifies the process is still there.
+    assert_eq!(listed["processes"][0]["argv"][0], "sh");
+
+    // The owner still gets the whole spec from the session, which is subject-checked.
+    let view = body_json(
+        app.oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/v1/sessions/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        view["process"]["spec"]["env"]["DATABASE_PASSWORD"], "hunter2",
+        "{view}"
     );
 }

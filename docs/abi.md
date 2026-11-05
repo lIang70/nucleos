@@ -210,6 +210,11 @@ misspelled filter is how a caller concludes the feature is broken. Another subje
 absent rather than refused — a listing that names what the caller may not open is a directory of other
 people's work.
 
+`GET /v1/processes` reports a **summary** per process — session, argv, cwd, status — and never the
+environment the command was given. A listing is a cross-session view, and `spec.env` is a credential as
+often as a setting; the full spec stays behind `GET /v1/sessions/{id}`, which answers only to the
+session's owner.
+
 ### 4.0.0 Streaming a turn
 
 `POST /v1/sessions/{id}/inference` with `Accept: text/event-stream`.

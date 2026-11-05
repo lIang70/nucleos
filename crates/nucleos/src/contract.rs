@@ -2039,11 +2039,29 @@ impl ProcessQuery {
     }
 }
 
+/// One process, as a listing reports it.
+///
+/// Not the whole [`ProcessState`]: a listing is a cross-session view, and the environment a caller
+/// passed to its command is a credential as often as it is a setting. What an operator needs to
+/// identify a process is what it runs and where it is, so that is what a page carries — the full spec
+/// stays behind `GET /v1/sessions/{id}`, which already answers only to the session's owner.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessSummary {
+    /// The session that owns it.
+    pub session: SessionId,
+    /// The command line.
+    pub argv: Vec<String>,
+    /// Where it runs, when the caller said.
+    pub cwd: Option<String>,
+    /// Where it is now.
+    pub status: ProcessStatus,
+}
+
 /// One page of a listing.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProcessPage {
     /// The sessions in this page, in id order.
-    pub processes: Vec<(SessionId, ProcessState)>,
+    pub processes: Vec<ProcessSummary>,
     /// Where to continue. Absent means this was the last page.
     pub next: Option<SessionId>,
 }

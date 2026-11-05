@@ -659,13 +659,13 @@ impl Kernel {
                 if query.phase.is_some_and(|phase| phase != status.phase()) {
                     continue;
                 }
-                page.processes.push((
-                    session.clone(),
-                    crate::contract::ProcessState {
-                        spec: process.spec,
-                        status,
-                    },
-                ));
+                // A summary, not the whole state: `spec.env` never leaves the session it belongs to.
+                page.processes.push(crate::contract::ProcessSummary {
+                    session: session.clone(),
+                    argv: process.spec.argv,
+                    cwd: process.spec.cwd,
+                    status,
+                });
                 if page.processes.len() >= page_size {
                     // The cursor is the last row *examined*, not the end of the store's page: a
                     // page that filled early would otherwise skip every row it never looked at.

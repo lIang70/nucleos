@@ -367,9 +367,9 @@ async fn the_listing_is_durable_and_only_counts_process_sessions() -> nucleos::R
         .processes("acme", &nucleos::contract::ProcessQuery::default())
         .await?;
     assert_eq!(listed.processes.len(), 1);
-    assert_eq!(listed.processes[0].0, id);
+    assert_eq!(listed.processes[0].session, id);
     assert!(matches!(
-        listed.processes[0].1.status,
+        listed.processes[0].status,
         nucleos::contract::ProcessStatus::Exited { .. }
     ));
 
@@ -389,7 +389,7 @@ async fn the_listing_is_durable_and_only_counts_process_sessions() -> nucleos::R
         .await?;
     assert_eq!(listed.processes.len(), 1);
     assert!(matches!(
-        listed.processes[0].1.status,
+        listed.processes[0].status,
         nucleos::contract::ProcessStatus::Exited { .. }
     ));
 
@@ -406,7 +406,7 @@ async fn the_listing_is_durable_and_only_counts_process_sessions() -> nucleos::R
         .processes("acme", &nucleos::contract::ProcessQuery::default())
         .await?;
     assert_eq!(
-        listed.processes[0].1.status,
+        listed.processes[0].status,
         nucleos::contract::ProcessStatus::Lost
     );
     Ok(())
@@ -493,7 +493,7 @@ async fn a_page_fills_through_a_phase_filter_and_says_where_to_continue() -> nuc
         after_running
             .processes
             .iter()
-            .map(|(session, _)| session.as_str())
+            .map(|summary| summary.session.as_str())
             .collect::<Vec<_>>(),
         ["zzz-done"],
         "the running row between them must be skipped, not duplicated or lost"
@@ -713,7 +713,7 @@ async fn a_wait_in_flight_does_not_hide_the_process() -> nucleos::Result<()> {
         .processes("acme", &nucleos::contract::ProcessQuery::default())
         .await?;
     assert!(
-        page.processes.iter().any(|info| info.0 == id),
+        page.processes.iter().any(|summary| summary.session == id),
         "a process being waited on is still a process: {:?}",
         page.processes
     );

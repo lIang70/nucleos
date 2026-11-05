@@ -2103,9 +2103,11 @@ async fn list_processes(
         processes: page
             .processes
             .into_iter()
-            .map(|(session, process)| ProcessInfo {
-                session: session.as_str().to_owned(),
-                process,
+            .map(|summary| ProcessInfo {
+                session: summary.session.as_str().to_owned(),
+                argv: summary.argv,
+                cwd: summary.cwd,
+                status: summary.status,
             })
             .collect(),
         next_page_token: page.next.map(|next| next.as_str().to_owned()),

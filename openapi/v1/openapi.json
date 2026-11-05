@@ -2548,18 +2548,33 @@
       "ProcessInfo": {
         "description": "One running process, as a listing sees it.",
         "properties": {
-          "process": {
-            "$ref": "#/components/schemas/ProcessState",
-            "description": "The command, and where it is."
+          "argv": {
+            "description": "The command line.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cwd": {
+            "description": "Where it runs, when the caller said.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "session": {
             "description": "The session that owns it.",
             "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ProcessStatus",
+            "description": "Where it is now."
           }
         },
         "required": [
           "session",
-          "process"
+          "argv",
+          "status"
         ],
         "type": "object"
       },

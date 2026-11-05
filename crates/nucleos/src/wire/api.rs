@@ -850,8 +850,13 @@ pub struct ProcessStartRequest {
 pub struct ProcessInfo {
     /// The session that owns it.
     pub session: String,
-    /// The command, and where it is.
-    pub process: crate::contract::ProcessState,
+    /// The command line.
+    pub argv: Vec<String>,
+    /// Where it runs, when the caller said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Where it is now.
+    pub status: crate::contract::ProcessStatus,
 }
 
 /// The processes this node knows about.
