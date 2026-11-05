@@ -672,3 +672,57 @@ async fn opening_an_existing_session_is_refused_with_an_instruction() {
     let error = kernel.open(&other, id, spec()).await.unwrap_err();
     assert_eq!(error.code(), ErrorCode::NotFound);
 }
+
+/// A checkpoint hands the store its tail, not the conversation.
+///
+/// The store has always written only the rows it did not hold; the session used to clone the whole
+/// conversation to tell it so. What a checkpoint carries is now the delta, which is what makes the
+/// cost of a checkpoint proportional to what changed rather than to the session's age.
+#[tokio::test]
+async fn a_checkpoint_carries_the_tail_and_the_store_counts_the_whole() {
+    let store = store();
+    let kernel = kernel(&store);
+    let id = SessionId::new("s1");
+    kernel.open(&principal(), id.clone(), spec()).await.unwrap();
+
+    // Three turns, each appending one message through `state` — the only write with no event behind it.
+    for turn in 0..3u64 {
+        let mut session = kernel.load(&principal(), &id).await.unwrap();
+        let outcome = kernel.inference(&mut session, &[]).await.unwrap();
+        kernel
+            .append(
+                &mut session,
+                nucleos::kernel::StateWrite {
+                    messages: vec![outcome.message],
+                    ..nucleos::kernel::StateWrite::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            session.messages().len() as u64,
+            turn + 1,
+            "the live handle keeps the conversation"
+        );
+    }
+
+    // The store holds three rows, and the session read them back rather than re-sending them.
+    let stored = store.snapshot(&key(&id)).await.unwrap().unwrap();
+    assert_eq!(stored.messages.len(), 3);
+
+    let mut session = kernel.load(&principal(), &id).await.unwrap();
+    assert_eq!(session.messages().len(), 3);
+    // A checkpoint taken now owes the store nothing, and says so by carrying an empty tail.
+    kernel.checkpoint(&mut session).await.unwrap();
+    assert_eq!(
+        store
+            .snapshot(&key(&id))
+            .await
+            .unwrap()
+            .unwrap()
+            .messages
+            .len(),
+        3,
+        "a checkpoint with no work rewrote or duplicated rows"
+    );
+}

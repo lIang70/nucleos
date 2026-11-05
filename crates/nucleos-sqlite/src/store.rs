@@ -467,7 +467,16 @@ impl Store for SqliteStore {
         .await
     }
 
-    async fn write_snapshot(&self, mut snapshot: Snapshot) -> Result<()> {
+    async fn write_snapshot(&self, snapshot: Snapshot) -> Result<()> {
+        // A caller with no delta to offer: the store still binds only the rows it does not hold.
+        self.write_checkpoint(nucleos::adapter::Checkpoint::whole(snapshot))
+            .await
+    }
+
+    async fn write_checkpoint(&self, checkpoint: nucleos::adapter::Checkpoint) -> Result<()> {
+        let snapshot = checkpoint.snapshot;
+        let (messages_from, messages) = (checkpoint.messages_from, checkpoint.messages);
+        let (attempts_from, attempts) = (checkpoint.attempts_from, checkpoint.attempts);
         self.run(move |connection| {
             // Where the log ends, not how many rows it has. `count(*)` walked every event this session
             // ever wrote on every checkpoint; `max(seq)` is a descent into the primary key. The two
@@ -490,11 +499,8 @@ impl Store for SqliteStore {
                 )));
             }
 
-            // The two vectors that grow with a session's age are taken out of the body and written as
-            // rows of their own. A turn appends a message and an attempt; the checkpoint writes those,
-            // not the whole conversation.
-            let messages = std::mem::take(&mut snapshot.messages);
-            let attempts = std::mem::take(&mut snapshot.ledger.attempts);
+            // The body carries the state; the conversation and the ledger are rows. A caller hands over
+            // the tail it added, so the cost is what changed rather than what the session has.
             let body = serde_json::to_string(&snapshot)
                 .map_err(|error| Error::internal(format!("snapshot is not storable: {error}")))?;
             let transaction = connection.transaction().map_err(failed)?;
@@ -530,40 +536,59 @@ impl Store for SqliteStore {
                     ),
                 ));
             }
-            // A checkpoint adds to a conversation; it never takes away from one. A handle carrying
-            // fewer messages than the store holds is working from a snapshot it did not read, and
-            // writing it would delete somebody's history.
-            if u64::try_from(messages.len()).unwrap_or(u64::MAX) < held_messages {
+            // A checkpoint adds to a conversation; it never takes away from one. A caller that offers
+            // fewer rows than the store holds is working from a snapshot it did not read, and writing
+            // it would delete somebody's history.
+            let total_messages = u64::try_from(messages_from)
+                .unwrap_or(u64::MAX)
+                .saturating_add(u64::try_from(messages.len()).unwrap_or(u64::MAX));
+            let total_attempts = u64::try_from(attempts_from)
+                .unwrap_or(u64::MAX)
+                .saturating_add(u64::try_from(attempts.len()).unwrap_or(u64::MAX));
+            if total_messages < held_messages {
                 return Err(Error::invalid(format!(
-                    "checkpoint carries {} messages but the store holds {held_messages}: a checkpoint \
-                     may add to a conversation, never remove from it",
-                    messages.len()
+                    "checkpoint carries {total_messages} messages but the store holds \
+                     {held_messages}: a checkpoint may add to a conversation, never remove from it"
                 )));
             }
-            if u64::try_from(attempts.len()).unwrap_or(u64::MAX) < held_attempts {
+            if total_attempts < held_attempts {
                 return Err(Error::invalid(format!(
-                    "checkpoint carries {} attempts but the store holds {held_attempts}: a checkpoint \
-                     may add to a ledger, never remove from it",
-                    attempts.len()
+                    "checkpoint carries {total_attempts} attempts but the store holds \
+                     {held_attempts}: a checkpoint may add to a ledger, never remove from it"
                 )));
             }
 
-            append_rows(
-                &transaction,
-                &snapshot.principal.tenant,
-                snapshot.session.as_str(),
-                "messages",
-                &messages,
-                held_messages,
-            )?;
-            append_rows(
-                &transaction,
-                &snapshot.principal.tenant,
-                snapshot.session.as_str(),
-                "attempts",
-                &attempts,
-                held_attempts,
-            )?;
+            // The rows to bind start where the store left off, even when the caller offered a prefix
+            // it already knew about — a whole-snapshot caller offers everything, and re-inserting the
+            // first N would collide on the primary key.
+            for (table, from, rows, held) in [
+                ("messages", messages_from, messages.as_slice().len(), held_messages),
+                ("attempts", attempts_from, attempts.as_slice().len(), held_attempts),
+            ] {
+                let start = held.max(u64::try_from(from).unwrap_or(u64::MAX));
+                let skip = usize::try_from(start.saturating_sub(u64::try_from(from).unwrap_or(0)))
+                    .unwrap_or(usize::MAX)
+                    .min(rows);
+                let start = usize::try_from(start).unwrap_or(usize::MAX);
+                match table {
+                    "messages" => append_rows(
+                        &transaction,
+                        &snapshot.principal.tenant,
+                        snapshot.session.as_str(),
+                        table,
+                        &messages[skip.min(messages.len())..],
+                        start,
+                    )?,
+                    _ => append_rows(
+                        &transaction,
+                        &snapshot.principal.tenant,
+                        snapshot.session.as_str(),
+                        table,
+                        &attempts[skip.min(attempts.len())..],
+                        start,
+                    )?,
+                }
+            }
             transaction
                 .execute(
                     "insert into snapshots
@@ -579,8 +604,8 @@ impl Store for SqliteStore {
                         snapshot.session.as_str(),
                         i64::try_from(snapshot.seq).unwrap_or(i64::MAX),
                         i64::try_from(snapshot.version).unwrap_or(i64::MAX),
-                        i64::try_from(messages.len()).unwrap_or(i64::MAX),
-                        i64::try_from(attempts.len()).unwrap_or(i64::MAX),
+                        i64::try_from(total_messages).unwrap_or(i64::MAX),
+                        i64::try_from(total_attempts).unwrap_or(i64::MAX),
                         body
                     ],
                 )
@@ -897,15 +922,15 @@ fn append_rows<T: serde::Serialize>(
     session: &str,
     table: &str,
     values: &[T],
-    held: u64,
+    start: usize,
 ) -> Result<()> {
     let mut statement = transaction
         .prepare(&format!(
             "insert into {table} (tenant, session, ordinal, body) values (?1, ?2, ?3, ?4)"
         ))
         .map_err(failed)?;
-    let held = usize::try_from(held).unwrap_or(usize::MAX);
-    for (ordinal, value) in values.iter().enumerate().skip(held) {
+    for (offset, value) in values.iter().enumerate() {
+        let ordinal = start.saturating_add(offset);
         let body = serde_json::to_string(value)
             .map_err(|error| Error::internal(format!("a {table} row is not storable: {error}")))?;
         statement

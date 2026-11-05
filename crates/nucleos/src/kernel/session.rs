@@ -61,6 +61,14 @@ pub struct Session {
     /// event a minute would checkpoint every event on time alone, and a burst would never checkpoint
     /// on time alone. Count covers throughput, time covers idle.
     pub(crate) checkpointed_through: u64,
+    /// How many conversation rows the stored checkpoint already holds.
+    ///
+    /// The checkpoint writes the tail, so it has to know where the tail starts. Equal to
+    /// `messages.len()` right after a load (the store's snapshot reassembles every row) and right after
+    /// a successful checkpoint; anything else is the work a checkpoint still owes the store.
+    pub(crate) messages_held: usize,
+    /// The same, for the attempt ledger.
+    pub(crate) attempts_held: usize,
     /// The last sequence number this *handle* has materialised into its own state.
     ///
     /// Not the log's head: the log is shared, and another handle (a second request, a supervisor) can
@@ -332,6 +340,8 @@ impl Session {
             last_flush: std::time::Instant::now(),
             last_checkpoint: std::time::Instant::now(),
             checkpointed_through: 0,
+            messages_held: 0,
+            attempts_held: 0,
             materialised_through: None,
             written_through: None,
             log: init.log,
@@ -406,24 +416,34 @@ impl Session {
         None
     }
 
-    /// The checkpoint for the boundary the session is standing on.
+    /// The checkpoint for the boundary the session is standing on, and nothing it already has.
     ///
     /// `None` before anything has been recorded: a snapshot that includes no event would claim
-    /// a `seq` the log does not have.
-    pub(crate) fn snapshot(&self, now_unix_millis: u64, version: u64) -> Option<Snapshot> {
+    /// a `seq` the log does not have. The state is cloned; the conversation and the ledger are not —
+    /// only the tail the store does not hold yet, which for an ordinary turn is one message.
+    pub(crate) fn checkpoint_draft(
+        &self,
+        now_unix_millis: u64,
+        version: u64,
+    ) -> Option<crate::adapter::Checkpoint> {
         // What this handle actually folded in, not where the log's head is. A snapshot claiming the
         // head would skip every event another writer appended and this handle never applied.
         let through = self.materialised_through?;
-        Some(Snapshot {
+        let snapshot = Snapshot {
             session: self.id.clone(),
             principal: self.principal.clone(),
             seq: through,
             version,
             generation: self.generation,
             state: self.state,
-            messages: self.messages.clone(),
+            // Filled by `Checkpoint::into_snapshot` for a reader that wants the whole thing; the write
+            // path never materialises them here.
+            messages: Vec::new(),
             usage: self.usage.clone(),
-            ledger: self.ledger.clone(),
+            ledger: crate::contract::Ledger {
+                attempts: Vec::new(),
+                ..self.ledger.clone()
+            },
             inference_calls: self.steps,
             credit_tokens: self.credit_tokens,
             budget: self.budget.clone(),
@@ -446,6 +466,18 @@ impl Session {
             kind: self.kind,
             process: self.process.clone(),
             data: self.data.clone(),
+        };
+        // Only what the store does not hold. A conversation is append-only, so the rows past
+        // `messages_held` are exactly the ones this checkpoint adds.
+        let messages = self.messages[self.messages_held.min(self.messages.len())..].to_vec();
+        let attempts_held = self.attempts_held.min(self.ledger.attempts.len());
+        let attempts = self.ledger.attempts[attempts_held..].to_vec();
+        Some(crate::adapter::Checkpoint {
+            snapshot,
+            messages_from: self.messages_held,
+            messages,
+            attempts_from: attempts_held,
+            attempts,
         })
     }
 
@@ -458,6 +490,8 @@ impl Session {
         budget: Budget,
         now_unix_millis: u64,
     ) -> Self {
+        let (messages_held, attempts_held) =
+            (snapshot.messages.len(), snapshot.ledger.attempts.len());
         Self {
             id: snapshot.session,
             principal,
@@ -484,6 +518,9 @@ impl Session {
             // Checkpointing again immediately would rewrite a snapshot that is current.
             last_checkpoint: std::time::Instant::now(),
             checkpointed_through: snapshot.seq,
+            // Every row the store holds is in `messages`, because the read reassembles them.
+            messages_held,
+            attempts_held,
             // What the store's checkpoint already folded in. This handle's own writes advance it
             // from here; nothing else does.
             materialised_through: Some(snapshot.seq),
@@ -546,6 +583,6 @@ mod tests {
     #[test]
     fn a_checkpoint_before_any_event_is_not_written() {
         // A snapshot that includes no event would claim a seq the log does not have.
-        assert!(session().snapshot(0, 1).is_none());
+        assert!(session().checkpoint_draft(0, 1).is_none());
     }
 }

@@ -4,7 +4,7 @@
 //! last event it already includes, so recovery loads the snapshot and asks for everything
 //! *after* it.
 
-use crate::contract::{Event, SessionId, SessionKind, Snapshot};
+use crate::contract::{Attempt, Event, Message, SessionId, SessionKind, Snapshot};
 
 /// Which session, in whose tenant.
 ///
@@ -54,6 +54,55 @@ pub struct SessionQuery {
     pub limit: usize,
     /// Continue after this id. Absent starts at the beginning.
     pub after: Option<SessionId>,
+}
+
+/// A checkpoint to write: the state, and only the rows the store does not have yet.
+///
+/// `Snapshot` is the *read* shape — everything, reassembled. Writing it as it comes means cloning the
+/// whole conversation on every checkpoint and then throwing away all but the last message or two, which
+/// is what this type exists to stop: a session hands over the state plus the tail it added, and the
+/// tail is what the store binds.
+#[derive(Debug, Clone)]
+pub struct Checkpoint {
+    /// The state. `messages` and `ledger.attempts` are empty; the rows are in the fields below.
+    pub snapshot: Snapshot,
+    /// Where `messages` starts in the conversation, as an ordinal.
+    pub messages_from: usize,
+    /// The conversation from `messages_from` onward.
+    pub messages: Vec<Message>,
+    /// Where `attempts` starts in the ledger, as an ordinal.
+    pub attempts_from: usize,
+    /// The ledger from `attempts_from` onward.
+    pub attempts: Vec<Attempt>,
+}
+
+impl Checkpoint {
+    /// A checkpoint carrying the whole conversation, for a caller that has no delta to offer.
+    ///
+    /// What a test builds, and what a supervisor does when it reads a snapshot back, mutates one field
+    /// and writes it again. The store still writes only the rows it does not hold, so this costs the
+    /// same on disk; it costs a clone in the caller, which is why the kernel does not use it.
+    #[must_use]
+    pub fn whole(snapshot: Snapshot) -> Self {
+        let mut snapshot = snapshot;
+        let messages = std::mem::take(&mut snapshot.messages);
+        let attempts = std::mem::take(&mut snapshot.ledger.attempts);
+        Self {
+            snapshot,
+            messages_from: 0,
+            messages,
+            attempts_from: 0,
+            attempts,
+        }
+    }
+
+    /// The checkpoint as a reader would see it.
+    #[must_use]
+    pub fn into_snapshot(mut self) -> Snapshot {
+        self.snapshot.messages = self.messages;
+        self.snapshot.ledger.attempts = self.attempts;
+        self.snapshot
+    }
 }
 
 /// What a retention pass should remove.
@@ -144,6 +193,15 @@ pub trait Store: Send + Sync {
     /// The snapshot carries the whole session, and a store may write only what changed: it already
     /// holds a prefix of `messages` and of `ledger.attempts`, and the tail is what this call adds.
     async fn write_snapshot(&self, snapshot: Snapshot) -> Result<()>;
+
+    /// Write a checkpoint from a state and its tail.
+    ///
+    /// The default reassembles the whole snapshot and delegates, which is correct and no faster than
+    /// the call it replaces. A store that keeps the conversation as rows overrides it, so the session
+    /// can hand over two messages instead of cloning the conversation.
+    async fn write_checkpoint(&self, checkpoint: Checkpoint) -> Result<()> {
+        self.write_snapshot(checkpoint.into_snapshot()).await
+    }
 
     /// Remove one session: its events, its checkpoint and its listing row.
     ///

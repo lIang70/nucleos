@@ -44,5 +44,7 @@ pub use model::{
 };
 pub use policy::{AllowAll, ConfigScope, DenyAll, Gated, Policy, PolicyRequest, Verdict};
 pub use registry::ModelRegistry;
-pub use store::{PruneQuery, PruneReport, SessionKey, SessionPage, SessionQuery, Store};
+pub use store::{
+    Checkpoint, PruneQuery, PruneReport, SessionKey, SessionPage, SessionQuery, Store,
+};
 pub use tool::{NoProgress, Progress, Tool, ToolCtx, ToolOutput};

@@ -207,18 +207,24 @@ impl Kernel {
         what: Checkpoint,
     ) -> Result<()> {
         let next = session.version.saturating_add(1);
-        match session.snapshot(self.now(), next) {
-            Some(snapshot) => {
+        match session.checkpoint_draft(self.now(), next) {
+            Some(checkpoint) => {
                 // What this checkpoint actually includes, taken before it is moved into the store: a
                 // supervisor may advance the log while the write is in flight, and the throttle must
                 // count the events that are durable, not the ones that exist.
-                let through = snapshot.seq;
-                match self.store.write_snapshot(snapshot).await {
+                let through = checkpoint.snapshot.seq;
+                let (messages_held, attempts_held) = (
+                    checkpoint.messages_from + checkpoint.messages.len(),
+                    checkpoint.attempts_from + checkpoint.attempts.len(),
+                );
+                match self.store.write_checkpoint(checkpoint).await {
                     Ok(()) => {
                         session.version = next;
                         // Only on success: a refused checkpoint wrote nothing, so the events it would
                         // have covered are still the ones a `load` has to fold.
                         session.checkpointed_through = through;
+                        session.messages_held = messages_held;
+                        session.attempts_held = attempts_held;
                         session.last_checkpoint = std::time::Instant::now();
                         Ok(())
                     }
