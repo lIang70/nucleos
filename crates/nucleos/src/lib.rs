@@ -5,10 +5,11 @@
 //! which tools, who may call what, how much anything costs — is injected through the
 //! traits in [`adapter`].
 //!
-//! The module graph is one-way and is pinned by `tests/layering.rs`:
+//! The module graph is one-way and is pinned by `tests/layering.rs`, which reads the `use`
+//! statements rather than the declaration order:
 //!
 //! ```text
-//! contract → kernel → adapter
+//! contract ← adapter ← kernel
 //! ```
 //!
 //! `kernel` is the syscall surface. The loop that drives it belongs to the application, because a
