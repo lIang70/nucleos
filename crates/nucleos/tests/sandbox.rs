@@ -759,26 +759,72 @@ async fn narrowing_is_enforced_not_just_recorded() {
 // accident.
 // ---------------------------------------------------------------------------
 
+/// What the probe found, so the skip can say which of the two things went wrong.
 #[cfg(target_os = "linux")]
-fn bwrap_usable() -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Probe {
+    Usable,
+    /// No `bwrap` on `PATH`: a dependency that was never installed.
+    Missing,
+    /// `bwrap` exists and cannot start: the kernel is refusing unprivileged user namespaces.
+    Blocked,
+}
+
+#[cfg(target_os = "linux")]
+impl Probe {
+    fn is_usable(self) -> bool {
+        self == Self::Usable
+    }
+
+    fn describe(self) -> &'static str {
+        match self {
+            Self::Usable => "bubblewrap starts here",
+            Self::Missing => "bubblewrap is not on PATH",
+            Self::Blocked => {
+                "bubblewrap is installed but cannot start (unprivileged user namespaces are \
+                 probably disabled by this kernel)"
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn bwrap_probe() -> Probe {
     // The same probe a person would run by hand: can this kernel start a namespaced command at all?
     let probe = std::process::Command::new("bwrap")
         .args(["--unshare-all", "--ro-bind", "/", "/", "/bin/true"])
         .status();
     match probe {
-        Ok(status) => status.success(),
-        Err(_) => false,
+        Ok(status) if status.success() => Probe::Usable,
+        Ok(_) => Probe::Blocked,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Probe::Missing,
+        Err(_) => Probe::Blocked,
     }
 }
 
 #[cfg(target_os = "linux")]
 fn require_bwrap(test: &str) -> bool {
-    if bwrap_usable() {
+    let probe = bwrap_probe();
+    if probe.is_usable() {
         return true;
     }
+    // A skip is a decision, and a decision has to be visible in the run's result rather than in a
+    // line of captured stderr. CI installs bubblewrap explicitly, so a probe failure there is either
+    // a broken mechanism or a kernel that refuses — and both are facts this suite exists to report.
+    // An environment that genuinely cannot run it says so once, in configuration, with
+    // `NUCLEOS_SKIP_SANDBOX_TESTS=1`.
+    if std::env::var_os("CI").is_some() && std::env::var_os("NUCLEOS_SKIP_SANDBOX_TESTS").is_none()
+    {
+        panic!(
+            "{test}: {}. CI installs bubblewrap, so this is a mechanism failure here rather than a \
+             missing dependency. Set NUCLEOS_SKIP_SANDBOX_TESTS=1 to declare that this kernel cannot \
+             enforce a sandbox, on purpose.",
+            probe.describe()
+        );
+    }
     eprintln!(
-        "skipping {test}: bubblewrap cannot start here (missing, or unprivileged user namespaces \
-         are disabled). The mechanism is unverified in this environment rather than passing."
+        "skipping {test}: {}. The mechanism is unverified in this environment rather than passing.",
+        probe.describe()
     );
     false
 }

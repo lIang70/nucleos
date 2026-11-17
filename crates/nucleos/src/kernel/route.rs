@@ -187,7 +187,12 @@ impl Kernel {
         overrides: &crate::kernel::InferenceOverrides,
     ) -> Result<CallResult> {
         let retries = session.retries;
-        let mut attempt_index = 0u32;
+        // Session-scoped, not turn-scoped. The ledger's key is this number, and the fold keys by it
+        // (`replay.rs`), so a counter that restarts at zero every turn makes turn 2's attempt adopt
+        // turn 1's entry — silently replacing the earlier bill with the later one. Seeding from the
+        // ledger's length keeps one attempt per index for the whole session, which is what
+        // `Attempt::index` documents itself as.
+        let mut attempt_index = u32::try_from(session.ledger.len()).unwrap_or(u32::MAX);
         let mut last_error: Option<Error> = None;
 
         for (target_index, (name, model)) in targets.iter().enumerate() {

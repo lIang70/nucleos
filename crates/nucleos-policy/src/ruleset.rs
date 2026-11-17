@@ -159,15 +159,21 @@ fn matches(rule: &Rule, request: &PolicyRequest<'_>) -> bool {
                 return false;
             }
             match (&rule.scope, scope) {
-                (None, _) => true,
+                // A `config` rule that names no scope used to match every scope, which made the one
+                // field a policy author is most likely to omit the one that widened the grant. The
+                // document validator now refuses such a rule, and this arm refuses it too: a policy
+                // that reaches `matches` without validation must not fail open.
+                (None, _) => false,
                 (Some(wanted), nucleos::adapter::ConfigScope::System) => wanted == "system",
                 (Some(wanted), nucleos::adapter::ConfigScope::Tenant(tenant)) => {
-                    // `own` is the only scope value that compares against the caller rather than
-                    // against the request: it is how a deployment says "an administrator of a tenant
-                    // may change that tenant's settings, and nobody else's".
+                    // `tenant` and `own` both compare against the caller rather than against the
+                    // request: they are how a deployment says "an administrator of a tenant may
+                    // change that tenant's settings, and nobody else's". `tenant` used to return
+                    // `true` for any target, so a rule written to let one tenant administer itself
+                    // let it administer every tenant — and `PUT /v1/tenants/{t}/limits` with an empty
+                    // tool list is a denial of service against `t`.
                     match wanted.as_str() {
-                        "tenant" => true,
-                        "own" => *tenant == request.principal.tenant,
+                        "tenant" | "own" => *tenant == request.principal.tenant,
                         // Both spellings the documents use: a bare tenant name, and `tenant/<id>` as
                         // `docs/config.md` writes it. The split form was documented and matched
                         // nothing, which is worse than not documenting it.
@@ -773,6 +779,58 @@ mod config_tests {
             check(rules, ConfigScope::System, "models").await,
             Verdict::Deny { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn a_tenant_scope_rule_does_not_reach_another_tenant() {
+        // `scope: "tenant"` reads like a kind of scope and used to match *every* tenant, so a rule
+        // written to let one tenant administer itself let it administer all of them. The reachable
+        // impact is not just a policy rewrite: `PUT /v1/tenants/{victim}/limits` with an empty tool
+        // list disables every tool for that tenant.
+        let rules =
+            document(r#"{"rules":[{"decision":"allow","config":"policy","scope":"tenant"}]}"#);
+        assert_eq!(
+            check(rules.clone(), ConfigScope::Tenant("acme"), "policy").await,
+            Verdict::Allow,
+            "a tenant may reach its own configuration"
+        );
+        assert!(
+            matches!(
+                check(rules, ConfigScope::Tenant("victim"), "policy").await,
+                Verdict::Deny { .. }
+            ),
+            "a tenant reached another tenant's configuration"
+        );
+    }
+
+    #[test]
+    fn a_config_rule_without_a_scope_is_refused_when_the_document_is_read() {
+        // The one field a policy author is most likely to omit was the one that widened the grant:
+        // no scope meant every scope, so `{"config":"policy"}` let a tenant replace the deployment's
+        // policy. Refused at parse, and refused in `matches` as well, so a policy that reaches the
+        // engine without validation cannot fail open.
+        let document: Document =
+            serde_json::from_str(r#"{"rules":[{"decision":"allow","config":"policy"}]}"#)
+                .expect("the document parses");
+        let Err(error) = document.validate() else {
+            panic!("a config rule with no scope must be refused");
+        };
+        assert!(error.to_string().contains("must say which scope"));
+    }
+
+    #[test]
+    fn a_misspelled_key_is_refused_rather_than_ignored() {
+        // Without `deny_unknown_fields` a typo is dropped, and every narrowing field in this document
+        // fails open when absent: `"tenat"` made a rule match every tenant, and `"scpoe"` made a
+        // tenant-scoped config rule match the system scope. Silence in the permissive direction, on
+        // the fields a deployment uses to bound a grant.
+        let parsed = serde_json::from_str::<Document>(
+            r#"{"rules":[{"decision":"allow","tool":"*","tenat":"acme"}]}"#,
+        );
+        assert!(
+            parsed.is_err(),
+            "a misspelled matcher was read as a rule that matches everybody"
+        );
     }
 
     #[tokio::test]

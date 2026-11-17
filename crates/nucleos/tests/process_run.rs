@@ -241,10 +241,28 @@ async fn a_confining_policy_is_enforced_or_refused_never_ignored() {
 /// different question, and one that only a probe answers. The same probe `tests/sandbox.rs` uses.
 #[cfg(target_os = "linux")]
 fn mechanism_can_run() -> bool {
-    std::process::Command::new("bwrap")
+    let probe = std::process::Command::new("bwrap")
         .args(["--unshare-all", "--ro-bind", "/", "/", "/bin/true"])
-        .status()
-        .is_ok_and(|status| status.success())
+        .status();
+    match probe {
+        Ok(status) if status.success() => true,
+        other => {
+            // The same rule the sandbox suite applies: a skip is a visible decision. CI installs
+            // bubblewrap, so a probe failure there is the mechanism failing, not a dependency
+            // missing — and the enforcement half of this test is the only thing that would notice.
+            if std::env::var_os("CI").is_some()
+                && std::env::var_os("NUCLEOS_SKIP_SANDBOX_TESTS").is_none()
+            {
+                panic!(
+                    "bubblewrap cannot start here ({other:?}). CI installs bubblewrap, so this is \
+                     a mechanism failure rather than a missing dependency. Set \
+                     NUCLEOS_SKIP_SANDBOX_TESTS=1 to declare that this kernel cannot enforce a \
+                     sandbox, on purpose."
+                );
+            }
+            false
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]

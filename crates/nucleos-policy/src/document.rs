@@ -38,6 +38,7 @@ pub enum Unmatched {
 /// Every field is optional, and a rule that sets none of the matchers never matches: an empty rule
 /// is a mistake, and a mistake must not become permission.
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Rule {
     /// What it decides.
     pub decision: Option<Decision>,
@@ -112,6 +113,7 @@ pub struct Rule {
 
 /// A policy document, as shipped by a deployment.
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Document {
     /// What happens when no rule matches.
     #[serde(default, rename = "default")]
@@ -159,6 +161,16 @@ impl Document {
             if rule.scope.is_some() && rule.config.is_none() {
                 return Err(Error::invalid(
                     "a `scope` only narrows a `config` rule; on its own it names nothing",
+                ));
+            }
+            // The inverse, and the one that fails *open* if it is missing: a `config` rule with no
+            // scope is a rule whose author named a subject but not an authority. It used to match
+            // every scope, so `{"config":"policy"}` read as "may replace the deployment's policy"
+            // to the engine and as "may narrow its own" to almost every author who wrote it.
+            if rule.config.is_some() && rule.scope.is_none() {
+                return Err(Error::invalid(
+                    "a `config` rule must say which scope it narrows: `system`, `tenant`, `own` or \
+                     `tenant/<id>`",
                 ));
             }
             if rule.tool.is_none()

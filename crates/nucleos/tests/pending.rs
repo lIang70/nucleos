@@ -249,3 +249,53 @@ async fn a_tool_batch_can_carry_the_humans_answer() {
         .count();
     assert_eq!(finished, 1, "the refusal is recorded as the call's result");
 }
+
+#[tokio::test]
+async fn an_answer_on_a_closed_session_is_refused() {
+    // A session the kernel says is closed must take no calls, and `answer` runs a tool, launches a
+    // command and charges whatever it reports. It used to be the one door that skipped both the
+    // closed check and the budget check: park → close → answer executed the tool, wrote
+    // `tool_finished` into a log that had already recorded the ending, and grew the conversation of a
+    // session whose own record says it stopped.
+    let (kernel, _) = kernel();
+    let id = SessionId::new("s1");
+    let mut session = kernel
+        .open(
+            &principal(),
+            id.clone(),
+            SessionSpec {
+                credit_tokens: Some(1_000),
+                ..SessionSpec::default()
+            },
+        )
+        .await
+        .unwrap();
+    kernel.park(&mut session, pending()).await.unwrap();
+    kernel
+        .close(&mut session, nucleos::contract::StopReason::Completed)
+        .await
+        .unwrap();
+    assert!(session.is_closed());
+
+    let refused = kernel
+        .answer(
+            &mut session,
+            nucleos::kernel::Approval {
+                pending_id: call().id,
+                option_id: "once".to_owned(),
+            },
+        )
+        .await;
+    assert!(
+        refused.is_err(),
+        "a closed session answered, and ran a tool after its own ending"
+    );
+
+    // Refused *before* the entry was consumed, so a caller that retries after a legitimate refusal
+    // still finds its question: consuming first and then failing would turn a retry into a lost call.
+    assert_eq!(
+        session.pending().len(),
+        1,
+        "the park was consumed by an answer that never ran"
+    );
+}

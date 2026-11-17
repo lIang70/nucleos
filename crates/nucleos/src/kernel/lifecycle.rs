@@ -328,7 +328,7 @@ impl Kernel {
         // checkpoint write the pairing down as fact. Resolved the same way as at the top, with the
         // same fallback for a number this process never published.
         let resolved = session.generation;
-        let (tools, generation) = {
+        let (tools, generation, fell_back) = {
             let generations = self.generations();
             let set = generations.set(resolved);
             let generation = if generations.contains(resolved) {
@@ -336,10 +336,29 @@ impl Kernel {
             } else {
                 generations.current()
             };
-            (set, generation)
+            // Whether the number the checkpoint named is gone from this process. `retire` produces
+            // that condition in a *live* daemon — every request `load`s the session — so this is not
+            // only the restore-into-a-fresh-daemon case the comment above describes.
+            let fell_back = !generations.contains(snapshot.generation);
+            (set, generation, fell_back)
         };
         session.toolset = super::generation::Pinned::new(tools);
         session.generation = generation;
+        // Recorded, not inferred. `set` falls back to the current set for a number this process no
+        // longer has, so a session pinned to a retired generation lands on the current one even when
+        // the two are incompatible — the `Arc` pin cannot help, because the number is resolved before
+        // the pin is consulted. That is the failure `pitfalls` 77 says cannot happen; the honest
+        // repair is to write the jump down, so a replay can see that the tool set changed.
+        if fell_back && generation != snapshot.generation {
+            self.emit(
+                &mut session,
+                crate::contract::EventKind::GenerationMigrated {
+                    from: snapshot.generation,
+                    to: generation,
+                },
+            )
+            .await?;
+        }
 
         // A turn the runtime did not survive is recorded rather than inferred. Nothing else in the
         // log says it happened: the deltas are there, but they look the same as a turn that is still
@@ -360,6 +379,10 @@ impl Kernel {
                 duration_millis: 0,
                 degraded: Vec::new(),
             };
+            // In the ledger as well as the log, the way the cancel path does it. `load` returns a
+            // session whose ledger has to agree with the log it just read: an entry in one and not
+            // the other makes a second `load` return a different length for the same session.
+            session.ledger.record(attempt.clone());
             self.emit(
                 &mut session,
                 crate::contract::EventKind::AttemptFailed { attempt },
@@ -410,6 +433,12 @@ impl Kernel {
         session: &mut session::Session,
         approval: super::Approval,
     ) -> Result<()> {
+        // The same gate every other spending syscall passes. `answer` runs a tool, launches a command
+        // and charges whatever it reports, so it is a third door onto the budget — and `spend` is also
+        // the one place that refuses a closed session. Without this, a park → close → answer sequence
+        // executed a tool on a session that had already ended, and grew the conversation of a session
+        // whose log says it stopped.
+        self.spend(session).await?;
         let id = session.id().clone();
         let pending = session
             .pending()

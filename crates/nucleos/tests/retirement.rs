@@ -168,3 +168,52 @@ async fn a_compatible_session_still_migrates_after_the_old_set_is_retired() {
     // And it kept a tool to call: the migration moved it onto the current set, which was never retired.
     assert!(kernel.tool_in(&session, "read_file").is_some());
 }
+
+#[tokio::test]
+async fn a_reload_after_retirement_records_the_migration_it_cannot_prevent() {
+    // The other half of the pin. A session *handle* holds its set, so `tool_in` on that handle is
+    // answered by the Arc it took at `open`. But every request goes through `load`, and `load`
+    // resolves the pin by *number* — which `retire` has just forgotten. The set therefore falls back
+    // to the current one, and an incompatible session lands on it. That is the failure `pitfalls` 77
+    // says cannot happen; the honest repair is to write the jump into the log, because a session that
+    // changed its tool set without a `generation_migrated` is a replay that cannot see it happen.
+    let kernel = kernel();
+    let id = SessionId::new("s1");
+    let mut pinned = kernel.open(&principal(), id.clone(), spec()).await.unwrap();
+    assert_eq!(pinned.generation(), nucleos::contract::Generation(1));
+    kernel.checkpoint(&mut pinned).await.unwrap();
+
+    // Generation 2 swaps `read_file` for `write_file`: incompatible by design.
+    kernel
+        .publish(vec![tool(
+            "write_file",
+            r#"{"type":"object","properties":{"path":{}}}"#,
+        )])
+        .unwrap();
+    kernel.retire().unwrap();
+
+    let reloaded = kernel.load(&principal(), &id).await.unwrap();
+    assert_eq!(
+        reloaded.generation(),
+        nucleos::contract::Generation(2),
+        "the number the process no longer has resolves to the current one"
+    );
+
+    let migrated = kernel
+        .events(&principal(), &id, 0)
+        .await
+        .unwrap()
+        .into_iter()
+        .any(|event| {
+            matches!(
+                event.kind,
+                nucleos::contract::EventKind::GenerationMigrated { from, to }
+                    if from == nucleos::contract::Generation(1)
+                        && to == nucleos::contract::Generation(2)
+            )
+        });
+    assert!(
+        migrated,
+        "the session changed its tool set and the log does not say so"
+    );
+}

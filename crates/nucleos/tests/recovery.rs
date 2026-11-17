@@ -800,3 +800,116 @@ async fn a_long_tail_is_folded_in_pages_and_its_progress_recorded() {
         "a load with nothing to record wrote a checkpoint anyway"
     );
 }
+
+/// A model that bills on both calls and breaks the second one.
+///
+/// The two turns matter: the checkpoint is throttled (`state.rs`), so two short turns leave both of
+/// them in the tail, and that is the window a per-turn attempt index loses the first bill in.
+#[derive(Default)]
+struct BreakingOnTheSecondCall {
+    calls: std::sync::atomic::AtomicU32,
+}
+
+#[async_trait]
+impl nucleos::adapter::Model for BreakingOnTheSecondCall {
+    fn capability(&self) -> nucleos::contract::Capability {
+        nucleos::contract::Capability {
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            tool_calling: true,
+            tool_choice_required: false,
+            structured_output: true,
+            context_window: 100_000,
+            max_output_tokens: 4_096,
+            max_input_bytes: None,
+        }
+    }
+
+    fn count_tokens(
+        &self,
+        request: &nucleos::adapter::ModelRequest,
+    ) -> nucleos::error::Result<u64> {
+        Ok(request.text_len().div_ceil(4).max(1))
+    }
+
+    async fn invoke(
+        &self,
+        _prepared: nucleos::adapter::Prepared,
+    ) -> nucleos::error::Result<nucleos::adapter::ModelStream> {
+        let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let (tokens, breaks) = if call == 0 { (100, false) } else { (50, true) };
+        let mut deltas: Vec<nucleos::error::Result<nucleos::adapter::ModelDelta>> = vec![
+            Ok(nucleos::adapter::ModelDelta::Usage(Usage {
+                input_tokens: tokens,
+                output_tokens: 0,
+                micros_usd: None,
+            })),
+            Ok(nucleos::adapter::ModelDelta::PartAppend {
+                part_index: 0,
+                part: Part::text("ok"),
+            }),
+        ];
+        if breaks {
+            // Started and then failed. The provider bills it, so the ledger has to keep it.
+            deltas.push(Err(nucleos::error::Error::unavailable("the stream broke")));
+        } else {
+            deltas.push(Ok(nucleos::adapter::ModelDelta::Finished {
+                reason: nucleos::adapter::FinishReason::Stop,
+            }));
+        }
+        Ok(Box::pin(tokio_stream::iter(deltas)))
+    }
+}
+
+#[tokio::test]
+async fn two_turns_in_one_uncheckpointed_window_keep_both_bills() {
+    // The fold keys the ledger by `Attempt::index`, and `adopt` *replaces* the entry it finds. An
+    // index that restarted at zero every turn therefore let the second turn's `attempt_failed`
+    // overwrite the first turn's bill: the live session said 150 tokens and the reloaded one said 50.
+    // That is the one direction `pitfalls` 5 calls unforgivable, and two short turns is the common
+    // case, because a checkpoint is throttled to 512 events or 250 ms.
+    let store = store();
+    let kernel = Kernel::builder()
+        .model("primary", Arc::new(BreakingOnTheSecondCall::default()))
+        .store(Arc::clone(&store) as Arc<dyn Store>)
+        .policy(Arc::new(AllowAll))
+        .clock(Arc::new(FixedClock::at(0)))
+        .routing(Routing {
+            chain: vec!["primary".to_owned()],
+            retries: 0,
+        })
+        .build()
+        .unwrap();
+    let id = SessionId::new("s1");
+    let mut session = kernel.open(&principal(), id.clone(), spec()).await.unwrap();
+
+    kernel.inference(&mut session, &[]).await.unwrap();
+    assert!(
+        kernel.inference(&mut session, &[]).await.is_err(),
+        "the second call is meant to break"
+    );
+
+    let before = session.ledger().total.total_tokens();
+    assert_eq!(
+        before, 150,
+        "both attempts are billed while the session lives"
+    );
+    assert_eq!(
+        session.ledger().len(),
+        2,
+        "two attempts are two entries, not one"
+    );
+
+    // Reload folds both turns out of the tail. The bill has to survive that, or a crash is a discount.
+    let reloaded = kernel.load(&principal(), &id).await.unwrap();
+    assert_eq!(
+        reloaded.ledger().len(),
+        2,
+        "the reloaded session has one entry per attempt"
+    );
+    assert_eq!(
+        reloaded.ledger().total.total_tokens(),
+        150,
+        "the first turn's 100 tokens were dropped by the reload"
+    );
+}

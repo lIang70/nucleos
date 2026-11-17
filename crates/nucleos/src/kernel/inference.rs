@@ -121,7 +121,10 @@ impl Kernel {
                 // Taken before the event is built: one expression cannot borrow the session twice.
                 let spent = std::mem::take(&mut session.turn_usage);
                 let attempt = crate::contract::Attempt {
-                    index: u32::try_from(session.steps).unwrap_or(u32::MAX),
+                    // The ledger's position, not the step count: the step is a turn's number and an
+                    // attempt's index is the ledger's, and using one for the other made a cancel
+                    // adopt an entry a previous turn had already recorded.
+                    index: u32::try_from(session.ledger.len()).unwrap_or(u32::MAX),
                     model: routing.chain.first().cloned().unwrap_or_default(),
                     phase: crate::contract::AttemptPhase::Execute,
                     trigger: crate::contract::AttemptTrigger::Selection,
