@@ -1,3 +1,12 @@
+# Pinned, because a gate that changes without a commit is not a gate.
+#
+# This file exists because of a specific failure: the `Format` job ran on `stable`, the stable channel
+# moved between two pushes, and the new rustfmt reformatted thirty-odd files nobody had touched —
+# turning the check red on a commit that added TLS. The code had not changed; the ruler had.
+#
+# The same applies to clippy: a new lint on a new stable fails a build that was green yesterday, with no
+# diff to explain it. Pinning costs an occasional deliberate bump, and that bump is a commit somebody
+# can review, bisect and revert.
 [toolchain]
-channel = "1.93.0"
+channel = "1.99.1"
 components = ["rustfmt", "clippy"]
