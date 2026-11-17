@@ -561,40 +561,6 @@ fn definition_bytes(spec: &crate::contract::ToolSpec) -> u64 {
     (spec.name.len() + spec.description.len() + spec.input_schema_json.len() + 32) as u64
 }
 
-#[cfg(test)]
-mod definition_bytes_tests {
-    use super::*;
-
-    fn spec(name: &str, description: &str, schema: &str) -> crate::contract::ToolSpec {
-        crate::contract::ToolSpec {
-            name: name.to_owned(),
-            description: description.to_owned(),
-            input_schema_json: schema.to_owned(),
-            isolation: None,
-        }
-    }
-
-    #[test]
-    fn the_cost_is_the_sum_of_the_strings_plus_a_constant() {
-        let spec = spec("abc", "de", "f");
-        // 3 + 2 + 1 + 32 = 38
-        assert_eq!(definition_bytes(&spec), 38);
-    }
-
-    #[test]
-    fn an_empty_tool_still_costs_the_constant() {
-        let spec = spec("", "", "");
-        assert_eq!(definition_bytes(&spec), 32);
-    }
-
-    #[test]
-    fn a_larger_schema_costs_more() {
-        let small = spec("t", "d", "{}");
-        let large = spec("t", "d", &"x".repeat(1000));
-        assert!(definition_bytes(&large) > definition_bytes(&small));
-    }
-}
-
 /// One progress report, on its way to the log.
 struct Reported {
     token: String,
@@ -727,5 +693,39 @@ async fn heartbeat_loop(
                 return;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod definition_bytes_tests {
+    use super::*;
+
+    fn spec(name: &str, description: &str, schema: &str) -> crate::contract::ToolSpec {
+        crate::contract::ToolSpec {
+            name: name.to_owned(),
+            description: description.to_owned(),
+            input_schema_json: schema.to_owned(),
+            isolation: None,
+        }
+    }
+
+    #[test]
+    fn the_cost_is_the_sum_of_the_strings_plus_a_constant() {
+        let spec = spec("abc", "de", "f");
+        // 3 + 2 + 1 + 32 = 38
+        assert_eq!(definition_bytes(&spec), 38);
+    }
+
+    #[test]
+    fn an_empty_tool_still_costs_the_constant() {
+        let spec = spec("", "", "");
+        assert_eq!(definition_bytes(&spec), 32);
+    }
+
+    #[test]
+    fn a_larger_schema_costs_more() {
+        let small = spec("t", "d", "{}");
+        let large = spec("t", "d", &"x".repeat(1000));
+        assert!(definition_bytes(&large) > definition_bytes(&small));
     }
 }

@@ -211,7 +211,7 @@ mod tests {
 
     #[test]
     fn a_source_is_attached_but_not_shown_in_display() {
-        let cause = std::io::Error::new(std::io::ErrorKind::Other, "disk full");
+        let cause = std::io::Error::other("disk full");
         let error = Error::internal("checkpoint failed").with_source(cause);
         // The source is reachable through the Error trait, but Display shows only the reason.
         assert!(StdError::source(&error).is_some());
