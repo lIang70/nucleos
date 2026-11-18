@@ -31,6 +31,15 @@ pub struct Session {
     pub(crate) state: SessionState,
     pub(crate) messages: Vec<Message>,
     pub(crate) usage: Usage,
+    /// Whether `usage` holds any report yet.
+    ///
+    /// `Usage::add` cannot tell "nothing recorded" from "a report that said unknown", and it
+    /// resolves both the same way: an accumulator that starts at `Usage::default()` has
+    /// `micros_usd: None`, so folding the first real report into it leaves the cost unknown for the
+    /// rest of the session. The ledger already distinguishes the two, by wrapping its total in
+    /// `Option<Usage>`; this is the same distinction for the session's own accumulator, and without
+    /// it every cost ceiling was a check against a number that could never become known.
+    pub(crate) usage_reported: bool,
     pub(crate) steps: u64,
     pub(crate) ledger: Ledger,
     /// Tokens the caller has granted and not yet spent.
@@ -290,6 +299,22 @@ impl Session {
         &self.usage
     }
 
+    /// Fold a usage report into the session's accumulator.
+    ///
+    /// The first report *defines* the total rather than being added to it — the rule
+    /// [`crate::contract::Ledger::record`] applies for the same reason, and the one
+    /// [`Usage::add`](crate::contract::Usage::add) cannot express by itself. Folding into
+    /// `Usage::default()` instead made `micros_usd` permanently `None`, so a cost ceiling never
+    /// fired: `spent >= max` was a comparison against a number the session could not learn.
+    pub(crate) fn add_usage(&mut self, report: &Usage) {
+        if self.usage_reported {
+            self.usage.add(report);
+        } else {
+            self.usage = report.clone();
+            self.usage_reported = true;
+        }
+    }
+
     /// Every attempt, in order, with the sum.
     #[must_use]
     pub fn ledger(&self) -> &Ledger {
@@ -328,6 +353,7 @@ impl Session {
             state: SessionState::Open,
             messages: Vec::new(),
             usage: Usage::default(),
+            usage_reported: false,
             steps: 0,
             ledger: Ledger::default(),
             credit_tokens: init.credit_tokens,
@@ -499,6 +525,10 @@ impl Session {
     ) -> Self {
         let (messages_held, attempts_held) =
             (snapshot.messages.len(), snapshot.ledger.attempts.len());
+        // Read before the literal moves the field. A checkpoint that recorded no spend is a session
+        // that had none: an all-zero report and an absent one are the same thing on the wire, and
+        // treating it as recorded would make the first real report fold into zeros.
+        let usage_reported = snapshot.usage != Usage::default();
         Self {
             id: snapshot.session,
             principal,
@@ -507,6 +537,7 @@ impl Session {
             state: snapshot.state,
             messages: snapshot.messages,
             usage: snapshot.usage,
+            usage_reported,
             steps: snapshot.inference_calls,
             credit_tokens: snapshot.credit_tokens,
             ledger: snapshot.ledger,

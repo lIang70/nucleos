@@ -83,7 +83,7 @@ pub(crate) fn fold(session: &mut Session, event: &Event) -> Applied {
         } => {
             // The money was spent whether or not the turn finished. Rebuilding the session without
             // it would hand back credit that is already gone.
-            session.usage.add(usage);
+            session.add_usage(usage);
             if let Some(credit) = session.credit_tokens {
                 session.credit_tokens = Some(credit.saturating_sub(usage.total_tokens()));
             }
@@ -134,7 +134,7 @@ pub(crate) fn fold(session: &mut Session, event: &Event) -> Applied {
         }
         EventKind::ToolFinished { result, usage, .. } => {
             if let Some(usage) = usage {
-                session.usage.add(usage);
+                session.add_usage(usage);
                 if let Some(credit) = session.credit_tokens {
                     session.credit_tokens = Some(credit.saturating_sub(usage.total_tokens()));
                 }

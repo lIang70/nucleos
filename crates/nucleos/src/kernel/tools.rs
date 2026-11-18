@@ -313,7 +313,7 @@ impl Kernel {
         // A tool that reported a cost is charged for it; one that said nothing is not assumed
         // free. The ledger's rule is the same one model usage follows.
         if let Some(usage) = &output.usage {
-            session.usage.add(usage);
+            session.add_usage(usage);
             if let Some(credit) = session.credit_tokens {
                 session.credit_tokens = Some(credit.saturating_sub(usage.total_tokens()));
             }

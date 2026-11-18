@@ -1084,6 +1084,14 @@ pub enum EventKind {
     /// That is deliberate. Rewriting an event is something this kernel never does, so the only copy of
     /// the original body is the stored one, and the correct behaviour for a build that does not
     /// understand an event is to leave it exactly as it found it.
+    ///
+    /// **What this costs, stated where a client author will read it.** The sentinel is what a stream
+    /// delivers: an event whose kind this build does not know arrives as `type_name()`
+    /// `nucleos.v1.unknown` with `kind: "unknown"` and **no payload**, because the frame is built by
+    /// re-serialising the decoded value and the decoding kept only the tag's failure. The store is the
+    /// half that keeps the bytes; the stream is the half that loses them. So a client must treat
+    /// `unknown` as "a frame I cannot interpret" rather than as an error, and must not expect the
+    /// payload to survive a hop through an older daemon.
     #[serde(other)]
     Unknown,
 }

@@ -126,12 +126,36 @@ pub struct Route {
     pub operation: &'static str,
     /// One line a human reads in a generated client.
     pub summary: &'static str,
-    /// The request body's schema name, when the route takes one.
-    pub request: Option<&'static str>,
+    /// The request body, when the route takes one.
+    pub request: Option<Body>,
     /// What it answers with.
     pub reply: Reply,
     /// Query and header parameters. Path parameters come from the path itself.
     pub parameters: &'static [Parameter],
+}
+
+/// What a route takes as a request body.
+///
+/// A schema name was not enough. The two policy routes take a *text* body — the document the daemon
+/// parses itself — and declaring them with `request: None` published them with no `requestBody` at
+/// all, so a generated client produced `putPolicy()` with no argument and could not call the two
+/// administrative writes that replace the policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Body {
+    /// A JSON object whose schema is a published component.
+    Json(&'static str),
+    /// A text body with no schema: the daemon parses it, and the contract says only that it is text.
+    Text,
+}
+
+impl Body {
+    /// The component this body references, when it references one.
+    fn schema(self) -> Option<&'static str> {
+        match self {
+            Self::Json(name) => Some(name),
+            Self::Text => None,
+        }
+    }
 }
 
 /// The published document.
@@ -191,13 +215,14 @@ fn operation(route: &Route) -> Result<Value, serde_json::Error> {
         operation.insert("parameters".to_owned(), json!(parameters));
     }
 
-    if let Some(name) = route.request {
+    if let Some(body) = route.request {
+        let content = match body {
+            Body::Json(name) => json!({ "application/json": { "schema": reference(name) } }),
+            Body::Text => json!({ "text/plain": { "schema": { "type": "string" } } }),
+        };
         operation.insert(
             "requestBody".to_owned(),
-            json!({
-                "required": true,
-                "content": { "application/json": { "schema": reference(name) } },
-            }),
+            json!({ "required": true, "content": content }),
         );
     }
 
@@ -312,7 +337,7 @@ pub fn regenerate(routes: &[Route]) -> std::io::Result<()> {
 pub fn referenced_schemas(routes: &[Route]) -> Vec<&'static str> {
     let mut names = Vec::new();
     for route in routes {
-        names.extend(route.request);
+        names.extend(route.request.and_then(Body::schema));
         if let Reply::Json(name) = route.reply {
             names.push(name);
         }

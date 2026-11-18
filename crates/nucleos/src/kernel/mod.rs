@@ -83,6 +83,13 @@ pub struct SessionSpec {
     /// session can start in any state it could later be changed into — and there is one place that
     /// validates a configuration, not two.
     pub config: crate::contract::ConfigPatch,
+    /// Answer with the session that already exists instead of refusing.
+    ///
+    /// `Start` is the one write a client retries, because a network failure leaves it unable to tell
+    /// "the daemon never saw it" from "the answer was lost". Resuming makes the retry idempotent.
+    /// A resume that finds *nothing* is an error rather than a fresh session: silently creating one
+    /// would hide that the session it meant to continue is gone.
+    pub resume: bool,
 }
 
 /// What one inference call asks for on top of the session's configuration.

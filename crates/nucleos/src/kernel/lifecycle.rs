@@ -36,10 +36,26 @@ impl Kernel {
                     ),
                 ));
             }
+            if spec.resume {
+                // The retry this endpoint exists for: the first `POST` reached the daemon, its answer
+                // did not reach the client, and the client sends the same request again. Creating a
+                // second session over a live log would be a session nobody asked for; refusing would
+                // make the write impossible to retry. Resuming answers with what is there.
+                return self.load(principal, &id).await;
+            }
             return Err(Error::new(
                 crate::contract::ErrorCode::Conflict,
                 format!("session {id} already exists: resume it with `resume: true`"),
             ));
+        }
+        if spec.resume {
+            // The other half of the same promise. A resume that created a session would make "the id
+            // you meant is gone" indistinguishable from success, and the client would carry on
+            // writing into a session with no history behind it.
+            return Err(Error::not_found(format!(
+                "no session {id} to resume: `resume: true` continues an existing session, and \
+                 creating one would hide that it is gone"
+            )));
         }
 
         // The isolation a caller asks for is a privilege, not a field: without this, any tenant could
@@ -251,11 +267,18 @@ impl Kernel {
         // the version race, or a process session that only checkpoints when its command exits, leaves
         // whatever the log accumulated. Reading it whole would make one request's memory a function of
         // the session's history.
-        while let Ok(page) = self
-            .store
-            .events_page(&key, next, super::state::TAIL_PAGE)
-            .await
-        {
+        loop {
+            // A read that fails is not the end of the log. `while let Ok(page)` treated one
+            // unreadable row — a newer build's payload, a corrupt page — as "nothing more to fold",
+            // and `load` returned `Ok` with every later `usage`, `message_completed` and
+            // `state_changed` missing. The session then under-reported its spend on every request
+            // from then on, which is the direction `pitfalls` 5 calls unforgivable. `?` is what the
+            // events route already does, so the two readers now agree on whether a session is
+            // readable.
+            let page = self
+                .store
+                .events_page(&key, next, super::state::TAIL_PAGE)
+                .await?;
             if page.is_empty() {
                 break;
             }
@@ -272,7 +295,8 @@ impl Kernel {
                         session = %session.id,
                         written = event.schema_version,
                         understood = crate::contract::Event::SCHEMA_VERSION,
-                        consequence = "events this build does not recognise are carried, not applied",
+                        consequence = "this build applies v1 semantics, whatever the version says; \
+                                       a kind whose meaning changed must be a new kind"
                     );
                 }
                 if super::replay::fold(&mut session, event) == super::replay::Applied::AbandonedTurn

@@ -77,6 +77,7 @@ impl From<StartRequest> for crate::kernel::SessionSpec {
                 max_wall_millis: request.budget.max_wall_millis,
             },
             config: request.config,
+            resume: request.resume,
         }
     }
 }
@@ -335,6 +336,14 @@ pub struct SourceView {
     /// Its arguments.
     #[serde(default)]
     pub args: Vec<String>,
+    /// Extra environment the child is spawned with.
+    ///
+    /// Part of the document because `config export | config apply` is the documented rollback path,
+    /// and a rollback that dropped it left every MCP server that needs a variable in its environment
+    /// failing with no error and no record. It is configuration, not a credential: a secret belongs
+    /// in `has_auth_token` (sealed) or in the child's own environment.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
     /// The endpoint, when this daemon does not spawn it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,

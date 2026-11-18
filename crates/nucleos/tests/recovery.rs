@@ -913,3 +913,69 @@ async fn two_turns_in_one_uncheckpointed_window_keep_both_bills() {
         "the first turn's 100 tokens were dropped by the reload"
     );
 }
+
+#[tokio::test]
+async fn a_retried_start_resumes_instead_of_refusing_or_creating() {
+    // `Start` is the one write a client retries: a dropped connection leaves it unable to tell "the
+    // daemon never saw it" from "the answer was lost". The field was documented as the idempotency
+    // guarantee and nothing read it, so every retry answered 409 with an error message telling the
+    // caller to use the flag the daemon ignored.
+    let store = store();
+    let kernel = kernel(&store);
+    let id = SessionId::new("s1");
+
+    let first = kernel
+        .open(&principal(), id.clone(), spec())
+        .await
+        .expect("the first open creates it");
+    let next = first.next_seq();
+
+    // The retry: same id, `resume` set. It answers with the session that exists.
+    let resumed = kernel
+        .open(
+            &principal(),
+            id.clone(),
+            SessionSpec {
+                resume: true,
+                ..spec()
+            },
+        )
+        .await
+        .expect("a retried start resumes");
+    assert_eq!(resumed.id(), &id);
+    assert_eq!(
+        resumed.next_seq(),
+        next,
+        "resuming did not create a second session"
+    );
+
+    // Without it, the same request is still a conflict with an instruction — the behaviour the
+    // message always promised.
+    let refused = kernel.open(&principal(), id.clone(), spec()).await;
+    assert!(
+        refused.is_err(),
+        "an idempotent start must be asked for, not assumed"
+    );
+}
+
+#[tokio::test]
+async fn resuming_a_session_that_does_not_exist_is_an_error() {
+    // The other half. Answering with a fresh session would make "the id you meant is gone" look
+    // exactly like success, and the client would carry on writing into a session with no history.
+    let store = store();
+    let kernel = kernel(&store);
+    let missing = SessionId::new("gone");
+
+    let error = kernel
+        .open(
+            &principal(),
+            missing,
+            SessionSpec {
+                resume: true,
+                ..spec()
+            },
+        )
+        .await
+        .expect_err("a resume with nothing to resume is refused");
+    assert_eq!(error.code(), ErrorCode::NotFound);
+}

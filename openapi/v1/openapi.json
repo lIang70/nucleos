@@ -1824,7 +1824,7 @@
             "type": "object"
           },
           {
-            "description": "An event this build does not understand.\n\nWritten by a newer daemon and read by an older one: carried through loading rather than\nrefused, because a store is shared by whichever builds happen to run against it and \"cannot\nparse one row\" is not a state a durable log may have. `wire.md` says the same thing about the\nwire — an unknown union member is carried, not failed — and this is the half that applies to\nthe record.\n\nThe original kind name is **not** preserved: serde's `other` arm keeps the event, not the tag.\nThat is deliberate. Rewriting an event is something this kernel never does, so the only copy of\nthe original body is the stored one, and the correct behaviour for a build that does not\nunderstand an event is to leave it exactly as it found it.",
+            "description": "An event this build does not understand.\n\nWritten by a newer daemon and read by an older one: carried through loading rather than\nrefused, because a store is shared by whichever builds happen to run against it and \"cannot\nparse one row\" is not a state a durable log may have. `wire.md` says the same thing about the\nwire — an unknown union member is carried, not failed — and this is the half that applies to\nthe record.\n\nThe original kind name is **not** preserved: serde's `other` arm keeps the event, not the tag.\nThat is deliberate. Rewriting an event is something this kernel never does, so the only copy of\nthe original body is the stored one, and the correct behaviour for a build that does not\nunderstand an event is to leave it exactly as it found it.\n\n**What this costs, stated where a client author will read it.** The sentinel is what a stream\ndelivers: an event whose kind this build does not know arrives as `type_name()`\n`nucleos.v1.unknown` with `kind: \"unknown\"` and **no payload**, because the frame is built by\nre-serialising the decoded value and the decoding kept only the tag's failure. The store is the\nhalf that keeps the bytes; the stream is the half that loses them. So a client must treat\n`unknown` as \"a frame I cannot interpret\" rather than as an error, and must not expect the\npayload to survive a hop through an older daemon.",
             "properties": {
               "kind": {
                 "const": "unknown",
@@ -4053,6 +4053,13 @@
             "description": "The command that starts it. Empty for an HTTP source.",
             "type": "string"
           },
+          "env": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Extra environment the child is spawned with.\n\nPart of the document because `config export | config apply` is the documented rollback path,\nand a rollback that dropped it left every MCP server that needs a variable in its environment\nfailing with no error and no record. It is configuration, not a credential: a secret belongs\nin `has_auth_token` (sealed) or in the child's own environment.",
+            "type": "object"
+          },
           "has_auth_token": {
             "default": false,
             "description": "Whether this endpoint was given a bearer token. The token itself is sealed and never shown.",
@@ -5787,6 +5794,16 @@
     "/v1/policy": {
       "put": {
         "operationId": "putPolicy",
+        "requestBody": {
+          "content": {
+            "text/plain": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -5869,10 +5886,19 @@
           {
             "description": "How many rows; 20 when absent.",
             "in": "query",
-            "name": "page_size",
+            "name": "limit",
             "required": false,
             "schema": {
               "type": "integer"
+            }
+          },
+          {
+            "description": "`pending`, `running`, `exited` or `lost`.",
+            "in": "query",
+            "name": "phase",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -8009,6 +8035,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "text/plain": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {

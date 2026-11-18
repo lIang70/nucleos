@@ -564,6 +564,26 @@ pub async fn post_admin_key(
             admin.principal.tenant
         ))));
     }
+    // The tenant check above closes half of the attack the comment describes and leaves the other
+    // half open: for a caller in `default`, `request.subject` was unconstrained, so `{default, ops}`
+    // could mint `{default, admin}` and inherit what the bootstrap policy grants that principal —
+    // every model, every source, the policy.
+    //
+    // Asking the gate about one subject does not answer this: `{default, admin}` is allowed to change
+    // `admin_keys`, so "may the minted identity do this?" is yes for any delegated key manager. The
+    // question is whether the caller can do everything the minted identity can, subject by subject,
+    // because delegating `admin_keys` must not delegate everything any principal in the deployment
+    // holds.
+    let minted = nucleos::contract::Principal {
+        tenant: request.tenant.clone(),
+        subject: request.subject.clone(),
+    };
+    if !holds_at_least(&app, &admin.principal, &minted).await? {
+        return Err(ApiError::from_error(&Error::denied(format!(
+            "{} may not enrol a key for {}/{}: it would hold more than the caller does",
+            admin.principal.subject, minted.tenant, minted.subject
+        ))));
+    }
 
     let key = nucleos_auth::PublicKey::from_public(
         &request.key,
@@ -827,6 +847,44 @@ async fn permit(app: &Arc<App>, admin: &Admin, subject: &str) -> std::result::Re
     }
 }
 
+/// Whether `caller` may change everything `target` may change.
+///
+/// The subjects are a closed set, so "holds more than" is decidable: for each one the target is
+/// allowed to change, the caller must be allowed too. A single-subject question cannot answer this —
+/// the minted identity is usually allowed the very subject the enrolment itself needs.
+async fn holds_at_least(
+    app: &Arc<App>,
+    caller: &nucleos::contract::Principal,
+    target: &nucleos::contract::Principal,
+) -> std::result::Result<bool, ApiError> {
+    const SUBJECTS: [&str; 6] = [
+        "models",
+        "sources",
+        "policy",
+        "tokens",
+        "admin_keys",
+        "metrics",
+    ];
+    let kernel = app.kernel()?;
+    for subject in SUBJECTS {
+        let target_may = kernel
+            .check_config(target, ConfigScope::System, subject)
+            .await
+            .map_err(|error| ApiError::from_error(&error))?;
+        if target_may != Verdict::Allow {
+            continue;
+        }
+        let caller_may = kernel
+            .check_config(caller, ConfigScope::System, subject)
+            .await
+            .map_err(|error| ApiError::from_error(&error))?;
+        if caller_may != Verdict::Allow {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 fn system(app: &Arc<App>) -> std::result::Result<&Arc<SystemStore>, ApiError> {
     app.system()
         .ok_or_else(|| ApiError::from_error(&Error::unavailable("this daemon has no system store")))
@@ -925,6 +983,7 @@ pub async fn document_of(system: &SystemStore) -> Result<nucleos::wire::api::Dep
                 name: spec.name,
                 command: spec.command,
                 args: spec.args,
+                env: spec.env,
                 url: spec.url,
                 has_auth_token: spec.has_auth_token,
                 tools: Vec::new(),
@@ -1157,7 +1216,9 @@ pub async fn apply(
             name: source.name.clone(),
             command: source.command.clone(),
             args: source.args.clone(),
-            env: std::collections::BTreeMap::new(),
+            // Carried through, not emptied: `apply` is the rollback path, and a source whose
+            // environment vanished comes back as a server that cannot authenticate.
+            env: source.env.clone(),
             url: source.url.clone(),
             has_auth_token: source.has_auth_token,
         })

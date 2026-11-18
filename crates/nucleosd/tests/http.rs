@@ -2866,3 +2866,150 @@ async fn a_process_listing_does_not_carry_the_environment() {
         "{view}"
     );
 }
+
+#[tokio::test]
+async fn a_source_keeps_its_environment_across_export_and_apply() {
+    // `config export | config apply` is the documented rollback path, so what it drops is lost during
+    // an incident. `apply` rebuilt every source with `env: BTreeMap::new()`, which silently deleted
+    // the environment an MCP server needs to start — the server then failed with no error and no
+    // record. The document carries it now.
+    let (app, key, key_id) = governable().await;
+
+    let document = r#"{
+        "document_version": 1,
+        "policy": "{\"default\":\"deny\",\"rules\":[]}",
+        "models": [],
+        "sources": [{
+            "name": "search",
+            "command": "/nonexistent-nucleos-test-source",
+            "args": [],
+            "env": { "API_TOKEN": "not-a-secret", "REGION": "eu" },
+            "has_auth_token": false,
+            "tools": []
+        }],
+        "tenants": {}
+    }"#;
+    let (status, applied) = signed(&app, &key, &key_id, "PUT", "/v1/config", document).await;
+    assert_eq!(status, StatusCode::OK, "{applied}");
+
+    let (status, after) = signed(&app, &key, &key_id, "GET", "/v1/config", "").await;
+    assert_eq!(status, StatusCode::OK, "{after}");
+    let source = &after["sources"][0];
+    assert_eq!(source["name"], "search", "{after}");
+    assert_eq!(
+        source["env"],
+        serde_json::json!({ "API_TOKEN": "not-a-secret", "REGION": "eu" }),
+        "the apply emptied the source's environment: {after}"
+    );
+}
+
+/// A deployment where a second principal may enrol keys, but only keys that hold no more than it does.
+async fn delegated_key_management() -> (
+    Arc<App>,
+    nucleos_auth::KeyPair,
+    String,
+    nucleos_auth::KeyPair,
+    String,
+) {
+    let system = Arc::new(nucleos_sqlite::SystemStore::in_memory().unwrap());
+
+    // `ops` may change `admin_keys`. `admin` may change everything.
+    system
+        .set(
+            nucleosd::http::POLICY_KEY,
+            r#"{"default":"deny","rules":[
+                {"decision":"allow","config":"admin_keys","scope":"system","tenant":"default","subject":"ops"},
+                {"decision":"allow","config":"*","scope":"system","tenant":"default","subject":"admin"}
+            ]}"#,
+        )
+        .await
+        .unwrap();
+
+    let ops = nucleos_auth::KeyPair::generate();
+    let admin = nucleos_auth::KeyPair::generate();
+    let ops_id = ops.public("default", "ops").id.clone();
+    let admin_id = admin.public("default", "admin").id.clone();
+    system
+        .set(
+            nucleosd::admin::ADMIN_KEYS_KEY,
+            &serde_json::to_string(&vec![
+                ops.public("default", "ops"),
+                admin.public("default", "admin"),
+            ])
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // The kernel enforces the same policy the store holds, as the daemon does at start-up. A fixture
+    // whose gate is `AllowAll` tests the endpoints without testing the thing in front of them — and
+    // would have made this whole check a no-op.
+    let policy = nucleos_policy::Ruleset::new(
+        nucleos_policy::Document::parse(
+            r#"{"default":"deny","rules":[
+                {"decision":"allow","config":"admin_keys","scope":"system","tenant":"default","subject":"ops"},
+                {"decision":"allow","config":"*","scope":"system","tenant":"default","subject":"admin"}
+            ]}"#,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let kernel = nucleos::Kernel::builder()
+        .store(Arc::new(nucleos_sqlite::SqliteStore::in_memory().unwrap()))
+        .policy(Arc::new(policy))
+        .build()
+        .unwrap();
+    let app = Arc::new(
+        App::new(
+            Arc::new(kernel),
+            nucleos::contract::Principal::default(),
+            Vec::new(),
+        )
+        .with_system(
+            system,
+            std::path::PathBuf::from("/var/lib/nucleos"),
+            Arc::new(nucleos::adapter::SystemClock),
+        ),
+    );
+    (app, ops, ops_id, admin, admin_id)
+}
+
+#[tokio::test]
+async fn a_delegated_administrator_cannot_mint_a_key_that_holds_more_than_it_does() {
+    // The tenant half of this check was always there; the subject half was not. A caller in
+    // `default` could name any subject, so `{default, ops}` — allowed to manage keys, nothing else —
+    // enrolled a key for `{default, admin}` and inherited what the bootstrap policy grants that
+    // principal: every model, every source, the policy. Delegating `admin_keys` must not delegate
+    // everything any principal in the deployment holds.
+    let (app, ops, ops_id, _admin, _admin_id) = delegated_key_management().await;
+    let minted = nucleos_auth::KeyPair::generate();
+    let body = serde_json::json!({
+        "key": minted.public("default", "admin").key,
+        "tenant": "default",
+        "subject": "admin",
+    })
+    .to_string();
+
+    let (status, answer) = signed(&app, &ops, &ops_id, "POST", "/v1/admin/keys", &body).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a delegated key manager minted a more powerful identity: {answer}"
+    );
+    assert!(
+        answer["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("more than the caller does")),
+        "the refusal should name the reason: {answer}"
+    );
+
+    // And the delegation it *was* given still works: it may mint a key that holds what it holds.
+    let body = serde_json::json!({
+        "key": nucleos_auth::KeyPair::generate().public("default", "ops").key,
+        "tenant": "default",
+        "subject": "ops",
+    })
+    .to_string();
+    let (status, answer) = signed(&app, &ops, &ops_id, "POST", "/v1/admin/keys", &body).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+}

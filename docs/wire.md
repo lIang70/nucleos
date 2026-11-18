@@ -42,6 +42,29 @@ JSON per RFC 8259, UTF-8, `content-type: application/json`.
 | Empty vs missing     | a missing list is an empty list | A caller should be able to send `{}`.                                                                                                             |
 | Unknown fields       | ignored                         | A newer client talking to an older daemon is normal.                                                                                              |
 
+### 2.1 What "carry it" means, exactly
+
+An event kind this build does not know is carried — but *where* it is carried is not uniform, and
+the difference is the contract:
+
+| Path | Behaviour |
+| --- | --- |
+| The **store** | The original JSON row is kept verbatim; nothing rewrites an existing event. This is the copy that survives. |
+| **Loading** | Decoded as `EventKind::Unknown` and folded as narrative: the session's state is unchanged and the load succeeds. |
+| The **stream** | `kind: "unknown"`, `event: nucleos.v1.unknown`, and **the payload is gone**. The frame is built by re-serialising the decoded value, and the sentinel keeps no fields. |
+| The **schema** | `Event` is a `oneOf` over the known kinds, so a frame with `kind: "unknown"` validates as the sentinel. A frame carrying a *newer* kind name is not valid against this document — which is the point of the sentinel. |
+
+Two rules follow, and a client needs both:
+
+- **`unknown` is not an error.** It means "a frame I cannot interpret". Failing on it breaks the client
+  on every future event, which is the guarantee this design exists to give.
+- **The payload does not survive the stream.** A hop through an older daemon loses the body of a
+  newer event. Only the store keeps it, and reading it back is a `load` under the newer build's code.
+
+`schema_version` is not a gate either: this build applies v1 semantics to whatever version it reads,
+and the only warning is one line per load. A payload whose *meaning* changes must therefore arrive as
+a new `kind` — adding a version number is not a migration.
+
 `meta` — a `map<string,string>` on `Part`, `ToolCall` and `Event` — is the only extension hatch.
 The kernel never reads it, never interprets it, and never rejects an unknown key.
 
