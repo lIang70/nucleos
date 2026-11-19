@@ -308,7 +308,7 @@ impl Session {
     /// fired: `spent >= max` was a comparison against a number the session could not learn.
     pub(crate) fn add_usage(&mut self, report: &Usage) {
         if self.usage_reported {
-            self.usage.add(report);
+            self.usage.add_meter(report);
         } else {
             self.usage = report.clone();
             self.usage_reported = true;
@@ -436,7 +436,10 @@ impl Session {
             return Some(StopReason::Tokens);
         }
         if let Some(max) = self.budget.max_micros_usd
-            && self.usage.micros_usd.is_some_and(|spent| spent >= max)
+            && self
+                .usage
+                .cost_micros_usd()
+                .is_some_and(|spent| spent >= max)
         {
             return Some(StopReason::Cost);
         }

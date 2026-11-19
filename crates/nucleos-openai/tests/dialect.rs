@@ -100,8 +100,8 @@ fn completion_reports_usage_and_says_a_tool_was_called() {
         ModelDelta::Usage(usage) => {
             assert_eq!(usage.input_tokens, 53);
             assert_eq!(usage.output_tokens, 9);
-            assert_eq!(
-                usage.micros_usd, None,
+            assert!(
+                usage.billing.is_none(),
                 "the API reports tokens, never money"
             );
         }

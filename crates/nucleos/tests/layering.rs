@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 /// paths, in addition to `crate::kernel`-style names in `crate::contract` form.
 const FORBIDDEN: &[(&str, &[&str])] = &[
     // The contract is the bottom: it names nothing above it.
-    ("contract.rs", &["crate::kernel", "crate::adapter"]),
+    ("contract", &["crate::kernel", "crate::adapter"]),
     // An adapter implements a contract; it does not know the kernel that drives it.
     ("adapter", &["crate::kernel"]),
 ];

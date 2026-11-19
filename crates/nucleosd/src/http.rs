@@ -1575,6 +1575,7 @@ async fn inference(
         tools: request.tools.clone(),
         extensions,
         output: request.output,
+        model: request.model.clone(),
     };
     if !wants_stream(&headers) {
         let outcome = kernel
@@ -1584,6 +1585,7 @@ async fn inference(
         return Ok(Json(InferenceResponse {
             message: outcome.message,
             finish: format!("{:?}", outcome.finish).to_lowercase(),
+            metadata: outcome.metadata,
             usage: outcome.usage,
         })
         .into_response());
@@ -1647,6 +1649,7 @@ async fn inference(
                     Ok(Ok(outcome)) => Ok(Json(InferenceResponse {
                         message: outcome.message,
                         finish: format!("{:?}", outcome.finish).to_lowercase(),
+                        metadata: outcome.metadata,
                         usage: outcome.usage,
                     })
                     .into_response()),

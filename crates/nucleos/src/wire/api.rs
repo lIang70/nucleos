@@ -828,6 +828,14 @@ pub struct InferenceRequest {
     /// What to produce. Text — the next assistant turn — is the default.
     #[serde(default)]
     pub output: crate::contract::Output,
+    /// Use this model for this call, replacing the session's route.
+    ///
+    /// A replacement, not a preference: the route becomes one target and the session's fallback
+    /// chain does not apply. The name is resolved against the registry and filtered by the tenant's
+    /// allow-list, and `TurnStarted` records the model that was actually used, so the choice is
+    /// replayable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 /// What one inference produced.
@@ -837,6 +845,8 @@ pub struct InferenceResponse {
     pub message: Message,
     /// The provider's own reason for stopping.
     pub finish: String,
+    /// Who answered, and the provider's own identifiers for the call.
+    pub metadata: crate::contract::Metadata,
     /// What the session has spent so far.
     pub usage: Usage,
 }

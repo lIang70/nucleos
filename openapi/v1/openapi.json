@@ -360,6 +360,41 @@
         ],
         "type": "object"
       },
+      "Billing": {
+        "description": "Provider-reported billed units and exact cost, kept apart from the raw token counts so a\nprovider that bills differently from what it counts cannot be silently reconciled.",
+        "properties": {
+          "cost": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The exact price, with its own currency and scale."
+          },
+          "input_tokens": {
+            "description": "Tokens the provider says it billed for the prompt.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "output_tokens": {
+            "description": "Tokens the provider says it billed for the generation.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "Budget": {
         "description": "What a session may consume.",
         "properties": {
@@ -1007,6 +1042,46 @@
           "abi_version",
           "models"
         ],
+        "type": "object"
+      },
+      "Details": {
+        "description": "The non-summable half of one call's account. It has no `add`: a caller that wants to accumulate\na breakdown does so explicitly, and says which side of the ledger it belongs on.",
+        "properties": {
+          "cache_writes": {
+            "additionalProperties": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "description": "Cache writes by time-to-live. Their sum must equal `input.cache_write_tokens` when both are\npresent, or the two reports disagree.",
+            "type": "object"
+          },
+          "input_modalities": {
+            "additionalProperties": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "description": "Input tokens by modality. A subset of `input_tokens`.",
+            "type": "object"
+          },
+          "output": {
+            "$ref": "#/components/schemas/OutputTokenUsage",
+            "default": {
+              "reasoning_accounting": "unknown"
+            },
+            "description": "Output-side detail."
+          },
+          "output_modalities": {
+            "additionalProperties": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "description": "Output tokens by modality. A subset of `output_tokens`.",
+            "type": "object"
+          }
+        },
         "type": "object"
       },
       "DiscoveryPolicy": {
@@ -2247,6 +2322,13 @@
             },
             "type": "array"
           },
+          "model": {
+            "description": "Use this model for this call, replacing the session's route.\n\nA replacement, not a preference: the route becomes one target and the session's fallback\nchain does not apply. The name is resolved against the registry and filtered by the tenant's\nallow-list, and `TurnStarted` records the model that was actually used, so the choice is\nreplayable.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "output": {
             "$ref": "#/components/schemas/Output",
             "default": "text",
@@ -2294,6 +2376,10 @@
             "$ref": "#/components/schemas/Message",
             "description": "The assistant message. Nothing has been appended to the session."
           },
+          "metadata": {
+            "$ref": "#/components/schemas/Metadata",
+            "description": "Who answered, and the provider's own identifiers for the call."
+          },
           "usage": {
             "$ref": "#/components/schemas/Usage",
             "description": "What the session has spent so far."
@@ -2302,8 +2388,42 @@
         "required": [
           "message",
           "finish",
+          "metadata",
           "usage"
         ],
+        "type": "object"
+      },
+      "InputTokenUsage": {
+        "description": "The input-side cache counters, each a disjoint subset of the inclusive prompt total.\n\nA provider whose counters are *exclusive* normalises on the way in: Anthropic's `input_tokens`\ncounts only the tokens that were neither read from nor written to the cache, so its canonical\ntotal is `input_tokens + cache_read + cache_write` and `uncached_tokens` carries the exclusive\nbucket unchanged.\n\n`None` means \"zero, or not reported\": a driver omits cache read / write when the provider\nreports zero, so a missing bucket is inferred from the total rather than from its siblings.",
+        "properties": {
+          "cache_read_tokens": {
+            "description": "Tokens read from a provider-side cache.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cache_write_tokens": {
+            "description": "Tokens written into a provider-side cache.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "uncached_tokens": {
+            "description": "Tokens that were neither read from nor written to the cache.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
         "type": "object"
       },
       "Isolation": {
@@ -2409,6 +2529,33 @@
         "required": [
           "role",
           "content"
+        ],
+        "type": "object"
+      },
+      "Metadata": {
+        "description": "The identity half of one call's outcome: what answered, and can the answer be joined to the\nprovider's own logs.\n\nIt carries no payload. The request, the assistant turn and the produced parts are the response's\nbusiness; this is what a record, a span or a dashboard needs to say \"this is the call that came\nback\". The accounting half is [`Usage`], and the two travel together.",
+        "properties": {
+          "model": {
+            "description": "The provider-qualified model that produced the response, after routing.",
+            "type": "string"
+          },
+          "request_id": {
+            "description": "The provider-assigned request identifier, when the wire carries one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "response_id": {
+            "description": "The provider-assigned identifier of the response object.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "model"
         ],
         "type": "object"
       },
@@ -2665,6 +2812,33 @@
         ],
         "type": "object"
       },
+      "Money": {
+        "description": "`units / 10^scale` in `currency`, so a provider's 10^-10 USD ticks survive without floating\npoint. The scale is the provider's own, deliberately not normalised: converting between scales\nis a policy decision about rounding, and a type that normalised silently would be guessing at it.",
+        "properties": {
+          "currency": {
+            "description": "The currency, e.g. `USD`.",
+            "type": "string"
+          },
+          "scale": {
+            "description": "The base-10 exponent of the denominator.",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "units": {
+            "description": "The numerator.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "currency",
+          "units",
+          "scale"
+        ],
+        "type": "object"
+      },
       "Output": {
         "description": "What a call asks the model to produce.\n\nThe only modality switch in the contract: the same request type, the same response type and the\nsame `invoke` serve every output, because the answer is a [`Content`] whose parts say what\narrived. A modality that lands later adds one constant, not a request type — and everything\nmodality-specific that is not the modality (an image's size, a voice) is adapter configuration or\nan extension, never a field here.",
         "oneOf": [
@@ -2710,6 +2884,26 @@
         "required": [
           "text"
         ],
+        "type": "object"
+      },
+      "OutputTokenUsage": {
+        "description": "Output-side detail whose sum semantics depend on the provider. A detail, not a meter.",
+        "properties": {
+          "reasoning_accounting": {
+            "$ref": "#/components/schemas/ReasoningAccounting",
+            "default": "unknown",
+            "description": "How `reasoning_tokens` relates to `output_tokens`."
+          },
+          "reasoning_tokens": {
+            "description": "Tokens the provider spent on reasoning.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
         "type": "object"
       },
       "Part": {
@@ -3436,6 +3630,26 @@
           "changed"
         ],
         "type": "object"
+      },
+      "ReasoningAccounting": {
+        "description": "Whether reasoning tokens are part of the output total or additional to it.",
+        "oneOf": [
+          {
+            "const": "included_in_output",
+            "description": "`reasoning_tokens` is a subset of `output_tokens`.",
+            "type": "string"
+          },
+          {
+            "const": "additional",
+            "description": "The provider accounts for reasoning separately from `output_tokens`.",
+            "type": "string"
+          },
+          {
+            "const": "unknown",
+            "description": "A count was reported but its inclusion semantics are undocumented.",
+            "type": "string"
+          }
+        ]
       },
       "ReasoningEffort": {
         "description": "How hard a reasoning model should think.",
@@ -4777,28 +4991,53 @@
         "type": "object"
       },
       "Usage": {
-        "description": "What a model call consumed.\n\nA counter the provider did not report stays `None` rather than becoming zero: a budget\nthat charges for silence is worse than one that knows it does not know.",
+        "description": "The account of one call: token totals, typed work meters, the cache split, the non-summable\nbreakdowns, and [`Billing`] for provider-reported cost.",
         "properties": {
+          "billing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Billing"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Provider-reported billed units and exact cost. A price, not a meter."
+          },
+          "details": {
+            "$ref": "#/components/schemas/Details",
+            "default": {
+              "output": {
+                "reasoning_accounting": "unknown"
+              }
+            },
+            "description": "The breakdowns that cannot be summed across calls. `add_meter` never touches them."
+          },
+          "input": {
+            "$ref": "#/components/schemas/InputTokenUsage",
+            "default": {},
+            "description": "The cache split of `input_tokens`. Every bucket is a subset of the inclusive prompt total,\nso the buckets sum to at most `input_tokens` — they are not additions to it."
+          },
           "input_tokens": {
-            "description": "Prompt tokens.",
+            "description": "Inclusive prompt tokens.",
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
-          },
-          "micros_usd": {
-            "description": "Cost in micro-USD, when the provider reported one.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
           },
           "output_tokens": {
-            "description": "Completion tokens.",
+            "description": "Generated tokens.",
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
+          },
+          "work": {
+            "additionalProperties": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "description": "Non-token meters, keyed so a new modality is a new constant rather than another field.",
+            "type": "object"
           }
         },
         "required": [

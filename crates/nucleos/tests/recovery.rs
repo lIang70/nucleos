@@ -97,7 +97,7 @@ async fn spend_written_after_the_checkpoint_is_not_forgotten() {
             usage: Usage {
                 input_tokens: 700,
                 output_tokens: 300,
-                micros_usd: Some(1_500),
+                ..Usage::costing(1_500)
             },
             purpose: nucleos::contract::Purpose::Answer,
             model: "primary".to_owned(),
@@ -131,7 +131,7 @@ async fn one_attempt_that_reported_usage_three_times_is_one_entry_in_the_bill() 
         usage: Usage {
             input_tokens: 100,
             output_tokens: 50,
-            micros_usd: Some(10),
+            ..Usage::costing(10)
         },
         purpose: nucleos::contract::Purpose::Answer,
         model: "primary".to_owned(),
@@ -842,7 +842,7 @@ impl nucleos::adapter::Model for BreakingOnTheSecondCall {
             Ok(nucleos::adapter::ModelDelta::Usage(Usage {
                 input_tokens: tokens,
                 output_tokens: 0,
-                micros_usd: None,
+                ..Usage::default()
             })),
             Ok(nucleos::adapter::ModelDelta::PartAppend {
                 part_index: 0,

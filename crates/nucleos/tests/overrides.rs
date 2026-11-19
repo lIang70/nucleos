@@ -786,8 +786,8 @@ async fn a_response_carries_its_provider_metadata() {
     let mut session = kernel.open(&principal(), id.clone(), spec()).await.unwrap();
     let outcome = kernel.inference(&mut session, &[]).await.unwrap();
 
-    assert_eq!(outcome.response_id.as_deref(), Some("resp-1"));
-    assert_eq!(outcome.request_id.as_deref(), Some("req-1"));
+    assert_eq!(outcome.metadata.response_id.as_deref(), Some("resp-1"));
+    assert_eq!(outcome.metadata.request_id.as_deref(), Some("req-1"));
     assert_eq!(outcome.message.content.text(), "hi");
 }
 
@@ -1175,4 +1175,87 @@ async fn parts_are_ordered_by_index_not_by_arrival() {
         &parts[2].kind,
         nucleos::contract::PartKind::Text(text) if text.text == "after"
     ));
+}
+
+fn kernel_with_two_models(primary: Arc<dyn Model>, fallback: Arc<dyn Model>) -> Kernel {
+    Kernel::builder()
+        .model("primary", primary)
+        .model("fallback", fallback)
+        .store(Arc::new(SqliteStore::in_memory().unwrap()) as Arc<dyn Store>)
+        .policy(Arc::new(AllowAll))
+        .clock(Arc::new(FixedClock::at(0)))
+        .routing(Routing {
+            chain: vec!["primary".to_owned()],
+            retries: 0,
+        })
+        .build()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_per_call_model_override_replaces_the_session_route() {
+    // The route is a session's configuration, and a per-call model replaces it for that call:
+    // one target, no fallback. `TurnStarted` has to record the model that was actually used, or a
+    // replay cannot reconstruct the choice — and the ledger's `Attempt.model` would name a model
+    // that never answered.
+    let primary = Arc::new(Recorder::default());
+    let fallback = Arc::new(Recorder::default());
+    let kernel = kernel_with_two_models(primary.clone(), fallback.clone());
+    let id = SessionId::new("s1");
+    let mut session = kernel.open(&principal(), id.clone(), spec()).await.unwrap();
+
+    kernel
+        .inference_with(
+            &mut session,
+            &[],
+            InferenceOverrides {
+                model: Some("fallback".to_owned()),
+                ..InferenceOverrides::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        fallback.last.lock().unwrap().is_some(),
+        "the override was not used: the fallback model was never called"
+    );
+    assert!(
+        primary.last.lock().unwrap().is_none(),
+        "the session's own model was called instead"
+    );
+
+    // The event records the model that was actually used, so a replay sees the override.
+    let events = kernel.events(&principal(), &id, 0).await.unwrap();
+    let model = events.iter().find_map(|event| match &event.kind {
+        nucleos::contract::EventKind::TurnStarted { model, .. } => Some(model.clone()),
+        _ => None,
+    });
+    assert_eq!(model.as_deref(), Some("fallback"));
+}
+
+#[tokio::test]
+async fn a_per_call_model_override_is_filtered_by_the_tenant_allow_list() {
+    // An override is not a way around the tenant's allow-list: it passes the same filter a route
+    // passes, so naming a model the tenant may not use is refused before anything is spent.
+    let kernel =
+        kernel_with_two_models(Arc::new(Recorder::default()), Arc::new(Recorder::default()));
+    kernel
+        .set_tenant_models("acme", Some(vec!["primary".to_owned()]))
+        .unwrap();
+    let id = SessionId::new("s1");
+    let mut session = kernel.open(&principal(), id.clone(), spec()).await.unwrap();
+
+    let error = kernel
+        .inference_with(
+            &mut session,
+            &[],
+            InferenceOverrides {
+                model: Some("fallback".to_owned()),
+                ..InferenceOverrides::default()
+            },
+        )
+        .await
+        .expect_err("a model outside the tenant's allow-list must be refused");
+    assert_eq!(error.code(), ErrorCode::Denied);
 }

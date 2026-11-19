@@ -99,7 +99,7 @@ pub(crate) fn fold(session: &mut Session, event: &Event) -> Applied {
                 .iter_mut()
                 .find(|attempt| attempt.index == *attempt_index)
             {
-                Some(attempt) => attempt.usage.add(usage),
+                Some(attempt) => attempt.usage.add_meter(usage),
                 None => session.ledger.attempts.push(Attempt {
                     index: *attempt_index,
                     model: model.clone(),

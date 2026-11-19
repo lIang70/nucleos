@@ -21,10 +21,8 @@ use std::sync::Arc;
 pub(crate) struct CallResult {
     pub message: Message,
     pub finish: FinishReason,
-    /// The provider's response identifier, when it reported one.
-    pub response_id: Option<String>,
-    /// The provider's request identifier, when it reported one.
-    pub request_id: Option<String>,
+    /// Who answered, and the provider's own identifiers for the call.
+    pub metadata: crate::contract::Metadata,
 }
 
 /// How one attempt ended, before it becomes a ledger entry.
@@ -34,10 +32,8 @@ enum Ending {
         finish: FinishReason,
         usage: Usage,
         degraded: Vec<Degraded>,
-        /// The provider's response identifier, when it reported one.
-        response_id: Option<String>,
-        /// The provider's request identifier, when it reported one.
-        request_id: Option<String>,
+        /// Who answered, and the provider's own identifiers for the call.
+        metadata: crate::contract::Metadata,
     },
     Failed {
         error: Error,
@@ -65,10 +61,8 @@ struct Assembling {
     /// turns every reported cost into an unknown one.
     usage: Option<Usage>,
     produced: bool,
-    /// The provider's response identifier, when it reported one.
-    response_id: Option<String>,
-    /// The provider's request identifier, when it reported one.
-    request_id: Option<String>,
+    /// Who answered, and the provider's own identifiers for the call.
+    metadata: crate::contract::Metadata,
 }
 
 /// One content part under construction.
@@ -240,8 +234,7 @@ impl Kernel {
                         finish,
                         usage,
                         degraded,
-                        response_id,
-                        request_id,
+                        metadata,
                     } => {
                         session.ledger.record(Attempt {
                             index: attempt_index,
@@ -256,8 +249,10 @@ impl Kernel {
                         return Ok(CallResult {
                             message,
                             finish,
-                            response_id,
-                            request_id,
+                            metadata: crate::contract::Metadata {
+                                model: name.clone(),
+                                ..metadata
+                            },
                         });
                     }
                     Ending::Failed {
@@ -719,8 +714,8 @@ impl Kernel {
                     // Metadata about what answered, known once the response is identified. It does
                     // not change the answer, but it is how a caller correlates it with the provider's
                     // logs, so it is recorded with the turn rather than dropped.
-                    acc.response_id = response_id;
-                    acc.request_id = request_id;
+                    acc.metadata.response_id = response_id;
+                    acc.metadata.request_id = request_id;
                 }
                 Ok(ModelDelta::ToolCallStarted {
                     index,
@@ -759,7 +754,7 @@ impl Kernel {
                 Ok(ModelDelta::Usage(usage)) => {
                     match &mut acc.usage {
                         None => acc.usage = Some(usage.clone()),
-                        Some(total) => total.add(&usage),
+                        Some(total) => total.add_meter(&usage),
                     }
                     self.debit(session, &usage);
                     self.emit(
@@ -796,8 +791,7 @@ impl Kernel {
         let usage = acc.usage.take().unwrap_or_default();
         // Taken before `finish` consumes the accumulator: metadata is a fact about the response, and
         // a part of the turn even when the parts are empty.
-        let response_id = acc.response_id.take();
-        let request_id = acc.request_id.take();
+        let metadata = acc.metadata.clone();
         let produced = acc.produced;
 
         // A stream that ends without a finish reason did not finish. Reading that as `Stop` files a
@@ -847,8 +841,7 @@ impl Kernel {
             finish,
             usage,
             degraded,
-            response_id,
-            request_id,
+            metadata,
         })
     }
 
@@ -896,7 +889,7 @@ impl Kernel {
     /// Spend credit, and record the spend whether or not the answer turns out to be usable.
     fn debit(&self, session: &mut Session, usage: &Usage) {
         session.add_usage(usage);
-        session.turn_usage.add(usage);
+        session.turn_usage.add_meter(usage);
         if let Some(credit) = session.credit_tokens {
             session.credit_tokens = Some(credit.saturating_sub(usage.total_tokens()));
         }

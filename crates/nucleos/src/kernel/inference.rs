@@ -66,7 +66,26 @@ impl Kernel {
         // prompt is built: what a session shows this turn is decided with this turn's clock.
         self.begin_round(session);
         let routing = session.routing.clone();
-        let targets = self.permit_route(&session.principal, self.resolve_route(&routing)?)?;
+        // A per-call model replaces the route rather than extending it: one target, no fallback.
+        // The tenant filter is the same one a route passes, so an override cannot name a model the
+        // session's own route would have been refused. `TurnStarted` reads `targets.first()`, so the
+        // event records the model that was actually used and a replay can reconstruct the choice.
+        let targets = if let Some(name) = &overrides.model {
+            let model = self
+                .models
+                .read()
+                .map_err(|_| Error::internal("the model registry lock is poisoned"))?
+                .get(name)
+                .ok_or_else(|| {
+                    Error::new(
+                        crate::contract::ErrorCode::UnknownModel,
+                        format!("no model named {name:?}"),
+                    )
+                })?;
+            self.permit_route(&session.principal, vec![(name.clone(), model)])?
+        } else {
+            self.permit_route(&session.principal, self.resolve_route(&routing)?)?
+        };
         // The commit point. Everything above could fail without the log knowing a turn existed, so
         // those failures belong to the caller as a status code. Everything below is written down, and
         // a follower that saw this event is entitled to learn the outcome from the log rather than
@@ -176,8 +195,8 @@ impl Kernel {
             EventKind::MessageCompleted {
                 message: call.message.clone(),
                 step_index,
-                response_id: call.response_id.clone(),
-                request_id: call.request_id.clone(),
+                response_id: call.metadata.response_id.clone(),
+                request_id: call.metadata.request_id.clone(),
             },
         )
         .await?;
@@ -187,9 +206,8 @@ impl Kernel {
         Ok(InferenceOutcome {
             message: call.message,
             finish: call.finish,
+            metadata: call.metadata,
             usage: session.usage.clone(),
-            response_id: call.response_id,
-            request_id: call.request_id,
         })
     }
 }

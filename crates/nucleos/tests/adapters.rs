@@ -87,7 +87,7 @@ fn attempt(index: u32, ok: bool) -> Attempt {
         usage: Usage {
             input_tokens: 10,
             output_tokens: 0,
-            micros_usd: Some(5),
+            ..Usage::costing(5)
         },
         duration_millis: 3,
         degraded: Vec::new(),
@@ -260,21 +260,27 @@ fn the_ledger_counts_every_attempt_that_spent_money() {
         ledger.total.input_tokens, 20,
         "a failed attempt that produced tokens still paid for them"
     );
-    assert_eq!(ledger.total.micros_usd, Some(10));
+    assert_eq!(ledger.total.cost_micros_usd(), Some(10));
 }
 
 #[test]
-fn an_unreported_cost_stays_unreported_through_the_ledger() {
+fn an_unreported_cost_does_not_erase_a_reported_one() {
+    // The old rule was "unknown + known = unknown": a call that did not report its cost made the
+    // whole session's cost unknown. That is the wrong direction for a ledger: it throws away a
+    // number somebody actually reported. `fold_billing` keeps the reported side instead, because
+    // "this call did not say" is not "this call cost nothing" — and a total that can only ever go
+    // down to unknown is a total that under-reports exactly when a caller forgets to ask.
     let mut ledger = Ledger::default();
     ledger.record(attempt(0, true));
 
     let mut unreported = attempt(1, true);
-    unreported.usage.micros_usd = None;
+    unreported.usage.billing = None;
     ledger.record(unreported);
 
     assert_eq!(
-        ledger.total.micros_usd, None,
-        "adding an unknown as zero under-reports the bill"
+        ledger.total.cost_micros_usd(),
+        Some(5),
+        "a call that did not report its cost must not erase the one that did"
     );
     assert_eq!(ledger.total.input_tokens, 20, "tokens still add up");
 }
@@ -434,7 +440,7 @@ async fn a_valid_snapshot_round_trips() -> Result<()> {
             usage: Usage {
                 input_tokens: 10,
                 output_tokens: 2,
-                micros_usd: Some(42),
+                ..Usage::costing(42)
             },
             ledger: Default::default(),
             inference_calls: 1,
@@ -467,7 +473,7 @@ async fn a_valid_snapshot_round_trips() -> Result<()> {
     assert_eq!(loaded.seq, 0, "seq is the last event included");
     assert_eq!(loaded.generation, nucleos::Generation(7));
     assert_eq!(loaded.messages, vec![message]);
-    assert_eq!(loaded.usage.micros_usd, Some(42));
+    assert_eq!(loaded.usage.cost_micros_usd(), Some(42));
     Ok(())
 }
 

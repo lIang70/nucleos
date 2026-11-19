@@ -26,7 +26,15 @@ pub fn one_attempt(model: &str) -> nucleos::contract::Ledger {
         usage: Usage {
             input_tokens: 10,
             output_tokens: 20,
-            micros_usd: Some(30),
+            billing: Some(nucleos::contract::Billing {
+                cost: Some(nucleos::contract::Money {
+                    currency: "USD".to_owned(),
+                    units: 30,
+                    scale: 6,
+                }),
+                ..nucleos::contract::Billing::default()
+            }),
+            ..Usage::default()
         },
         duration_millis: 5,
         degraded: Vec::new(),

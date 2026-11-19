@@ -271,7 +271,7 @@ fn decode_usage(usage: &Value) -> Option<Usage> {
         output_tokens: output.unwrap_or(0),
         // The API reports tokens, never money. Guessing a price here would make the ledger's
         // "an unreported counter stays unreported" rule a lie one layer up.
-        micros_usd: None,
+        ..Usage::default()
     })
 }
 
@@ -350,7 +350,7 @@ impl ImageDecoder {
                         .get("output_tokens")
                         .and_then(Value::as_u64)
                         .unwrap_or(0),
-                    micros_usd: None,
+                    ..Usage::default()
                 }));
                 deltas.push(ModelDelta::Finished {
                     reason: FinishReason::Stop,

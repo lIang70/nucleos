@@ -45,12 +45,10 @@ pub struct InferenceOutcome {
     pub message: Message,
     /// The provider's own reason for stopping — the least trustworthy of the stop conditions.
     pub finish: crate::adapter::FinishReason,
+    /// Who answered, and the provider's own identifiers for the call.
+    pub metadata: crate::contract::Metadata,
     /// What the session has spent so far.
     pub usage: Usage,
-    /// The provider's response identifier, when it reported one.
-    pub response_id: Option<String>,
-    /// The provider's request identifier, when it reported one.
-    pub request_id: Option<String>,
 }
 
 use crate::adapter::{Clock, Model, ModelRegistry, Policy, Store, SystemClock, Tool};
@@ -111,6 +109,13 @@ pub struct InferenceOverrides {
     pub extensions: crate::adapter::ExtensionSet,
     /// What this call asks the model to produce. Defaults to text.
     pub output: crate::contract::Output,
+    /// Use this model for this call, replacing the session's route.
+    ///
+    /// A per-call override is a *replacement*, not a preference: the route is a single target, so
+    /// the session's fallback chain does not apply. The name is resolved against the registry and
+    /// filtered by the tenant's allow-list like any route, and `TurnStarted` records the model that
+    /// was actually used — which is what makes the choice replayable.
+    pub model: Option<String>,
 }
 
 /// How a session ended, or where it stopped.

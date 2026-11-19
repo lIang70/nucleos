@@ -16,11 +16,13 @@ use nucleos_sqlite::SqliteStore;
 use nucleos_testkit::FixedClock;
 use std::sync::Arc;
 
-const SPENT: Usage = Usage {
+/// What one call cost, built lazily because `Usage` owns a `String` and a map: a `const` would
+/// require `costing` to be a `const fn`, and it cannot be one.
+static SPENT: std::sync::LazyLock<Usage> = std::sync::LazyLock::new(|| Usage {
     input_tokens: 7,
     output_tokens: 3,
-    micros_usd: Some(120),
-};
+    ..Usage::costing(120)
+});
 
 /// Answers, and says what it cost.
 struct Billing;
@@ -51,7 +53,7 @@ impl Model for Billing {
                 part_index: 0,
                 part: nucleos::contract::Part::text("hi".to_owned()),
             }),
-            Ok(ModelDelta::Usage(SPENT)),
+            Ok(ModelDelta::Usage(SPENT.clone())),
             Ok(ModelDelta::Finished {
                 reason: FinishReason::Stop,
             }),
@@ -86,7 +88,7 @@ impl Model for Stalling {
     ) -> nucleos::error::Result<ModelStream> {
         let (sender, receiver) = tokio::sync::mpsc::channel(4);
         tokio::spawn(async move {
-            let _ = sender.send(Ok(ModelDelta::Usage(SPENT))).await;
+            let _ = sender.send(Ok(ModelDelta::Usage(SPENT.clone()))).await;
             // And never finishes on its own.
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
         });
@@ -259,7 +261,7 @@ async fn an_attempt_that_streamed_then_failed_is_billed_once() {
                     part_index: 0,
                     part: nucleos::contract::Part::text("partial".to_owned()),
                 }),
-                Ok(ModelDelta::Usage(SPENT)),
+                Ok(ModelDelta::Usage(SPENT.clone())),
                 Err(nucleos::error::Error::unavailable("the stream broke")),
             ];
             Ok(Box::pin(tokio_stream::iter(deltas)))

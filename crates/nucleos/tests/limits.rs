@@ -204,7 +204,7 @@ async fn a_cost_ceiling_stops_the_session() {
     let (kernel, _) = billing(Usage {
         input_tokens: 7,
         output_tokens: 3,
-        micros_usd: Some(120),
+        ..Usage::costing(120)
     });
     let (_id, mut session) = open_with(
         &kernel,
@@ -230,7 +230,7 @@ async fn a_token_ceiling_stops_the_session() {
     let (kernel, _) = billing(Usage {
         input_tokens: 10,
         output_tokens: 0,
-        micros_usd: None,
+        ..Usage::default()
     });
     let (_id, mut session) = open_with(
         &kernel,
@@ -258,7 +258,7 @@ async fn an_unreported_cost_never_trips_the_cost_ceiling() {
     let (kernel, _) = billing(Usage {
         input_tokens: 1,
         output_tokens: 1,
-        micros_usd: None,
+        ..Usage::default()
     });
     let (_id, mut session) = open_with(
         &kernel,
