@@ -16,27 +16,33 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: Contract
-        # proto3 rejects circular imports, so compiling the schema is
-        # also the test that the import graph still runs
-        # common -> {session, event, source} -> kernel.
+      # Pinned to commit SHAs, not to moving major tags. A tag like `@v4` can be re-pointed at new code
+      # without a commit in this repository, which is the same failure as an unpinned toolchain: the
+      # gate changes and nothing in the history says so. The comment carries the version a human reads.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # Read from `rust-toolchain.toml` rather than named here: the file governs a developer's machine
+      # and this job alike, and a ruler chosen in two places disagrees eventually. It did — the
+      # `Format` job went red on a commit that added TLS, because the stable channel had moved and the
+      # new rustfmt reformatted thirty-odd files nobody had touched.
+      - name: Toolchain
         run: |
-          sudo apt-get update && sudo apt-get install -y protobuf-compiler
-          protoc --proto_path=proto --include_imports \
-            --descriptor_set_out=/dev/null \
-            proto/nucleos/v1/kernel.proto
+          channel=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal --component rustfmt --component clippy
+          rustup default "$channel"
+          rustc --version
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets
+      - name: bubblewrap
+        # The Linux sandbox path is only exercised where it can run. Without this the tests
+        # that would catch a broken `bwrap` command line skip, loudly, on every run.
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
       - name: Test
-        # Includes the layering test: the module graph and the absence of a wire
-        # dependency are gates, not conventions.
+        # Includes the tests that are gates rather than checks: the module graph, the
+        # absence of a transport dependency in the kernel, and the committed schema
+        # matching the code.
         run: cargo test --workspace
       - name: Docs
         run: cargo doc --workspace --no-deps

@@ -1,0 +1,46 @@
+{
+  "default": "deny",
+  "rules": [
+    {
+      "decision": "allow",
+      "model": "*",
+      "reason": "every model the daemon registered is reachable"
+    },
+    {
+      "decision": "allow",
+      "tool": "tool_search"
+    },
+    {
+      "decision": "allow",
+      "tool": "read_*"
+    },
+    {
+      "decision": "ask",
+      "program": "git",
+      "argv_prefix": [
+        "push"
+      ],
+      "question": "Push this branch to the remote?"
+    },
+    {
+      "decision": "allow",
+      "program": "ls"
+    },
+    {
+      "decision": "allow",
+      "program": "cat"
+    },
+    {
+      "decision": "deny",
+      "program": "rm",
+      "reason": "rm is never allowed through this daemon"
+    },
+    {
+      "decision": "allow",
+      "config": "*",
+      "scope": "system",
+      "subject": "admin",
+      "reason": "the administrator may change deployment configuration, and nobody else may"
+    }
+  ]
+}
