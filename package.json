@@ -1,0 +1,10 @@
+{
+  "name": "nucleos-tools",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Formatting tools for the repository's documents. Not a JavaScript project.",
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "prettier": "3.10.1"
+  }
+}

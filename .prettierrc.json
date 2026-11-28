@@ -1,0 +1,11 @@
+{
+  "printWidth": 100,
+  "proseWrap": "preserve",
+  "endOfLine": "lf",
+  "overrides": [
+    {
+      "files": ["*.yml", "*.yaml"],
+      "options": { "proseWrap": "never" }
+    }
+  ]
+}

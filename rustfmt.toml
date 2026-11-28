@@ -1,0 +1,21 @@
+# Only stable options. One nightly-only key would make `cargo fmt` fail for everyone on a pinned
+# stable toolchain, and the failure would be in the formatter, not in the code.
+
+edition = "2024"
+
+# Wide enough for a signature plus its short body, narrow enough that two panes fit on a laptop.
+max_width = 100
+
+# One line ending in the repository. A formatter that respects the platform makes a diff depend on
+# who ran it.
+newline_style = "Unix"
+hard_tabs = false
+
+# Rewrites that are always right, so they do not belong in a review.
+use_field_init_shorthand = true
+use_try_shorthand = true
+
+# Import order is a lint, not a matter of taste: two people ordering imports differently produce
+# conflicts in blocks nobody changed semantically.
+reorder_imports = true
+reorder_modules = true

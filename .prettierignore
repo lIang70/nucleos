@@ -1,0 +1,27 @@
+# What a formatter must not touch.
+
+# Produced by `cargo xtask openapi` from the route table and the contract's schema, and checked for
+# zero diff. A formatter and a generator must not both own the same bytes: whichever runs second
+# turns the other's gate red for a reason that has nothing to do with the change being checked.
+openapi/
+
+# Build output, installed tooling, and the toolchain's own cache.
+target/
+node_modules/
+.cargo/
+
+# Dependency lockfiles are machine-written with their own stable format. Reformatting them produces
+# a diff on every upgrade, in a file nobody reads by hand.
+Cargo.lock
+package-lock.json
+
+# Escape hatch, left commented so the trade-off is visible rather than rediscovered:
+#
+#   docs/
+#
+# Prettier pads markdown tables by character count, not by display width. A table of Chinese cells is
+# therefore aligned in the rendered page and *ragged in the source*, because each Cangjie-composed
+# character is one character and two columns. Hand-aligned tables read better in a diff; formatted
+# tables cannot drift. Delete the `#` to keep hand alignment, and the prose, lists, fences and YAML
+# stay under the gate either way.
+# docs/
